@@ -11,8 +11,8 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "test": "tsc -p . && node --test --test-concurrency=1 dist/test/",
-    "test:unit": "tsc -p . && node --test dist/test/unit/"
+    "test": "tsc -p . && node --test --test-concurrency=1 'dist/test/**/*.test.js'",
+    "test:unit": "tsc -p . && node --test 'dist/test/unit/*.test.js'"
   },
   "license": "MIT",
   "dependencies": {
