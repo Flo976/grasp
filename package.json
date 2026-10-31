@@ -1,0 +1,26 @@
+{
+  "name": "grasp",
+  "version": "0.1.0",
+  "description": "Serveur de contrôle de navigateur pour agents IA, piloté par l'arbre d'accessibilité (CDP direct)",
+  "type": "module",
+  "bin": {
+    "grasp": "dist/src/cli/main.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test --test-concurrency=1 dist/test/",
+    "test:unit": "tsc -p . && node --test dist/test/unit/"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}
