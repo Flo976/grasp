@@ -2,7 +2,7 @@
 import { createServer, type Server } from 'node:http';
 import { chmodSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { launchChrome, type ChromeProcess } from '../browser/launch.js';
+import { launchChrome, assertSupportedVersion, type ChromeProcess } from '../browser/launch.js';
 import { CdpClient } from '../browser/cdp.js';
 import { PageController } from './page.js';
 import { bridgeHandler } from './server.js';
@@ -16,6 +16,8 @@ let chrome: ChromeProcess | undefined;
 let cdp: CdpClient | undefined;
 let server: Server | undefined;
 let socketPath: string | undefined;
+let page: PageController | undefined;
+let attached = false;
 let stopping = false;
 
 const log = (m: string) => process.stderr.write(`[bridge ${process.pid}] ${m}\n`);
@@ -27,6 +29,7 @@ async function shutdown(code: number, why: string): Promise<never> {
   setTimeout(() => process.exit(code === 0 ? 1 : code), 15_000).unref();
   server?.close();
   server?.closeAllConnections();
+  if (attached) await page?.closeTab();
   cdp?.close();
   let exit = code;
   if (chrome) {
@@ -37,6 +40,19 @@ async function shutdown(code: number, why: string): Promise<never> {
   }
   if (socketPath) rmSync(socketPath, { force: true });
   process.exit(exit);
+}
+
+/** http://hôte:port → URL WebSocket du navigateur (via /json/version) ; ws:// accepté tel quel. */
+async function resolveDevtools(url: string): Promise<{ wsUrl: string; version: string }> {
+  if (/^wss?:/.test(url)) return { wsUrl: url, version: 'Chrome/999.0' };
+  let r: Response;
+  try { r = await fetch(new URL('/json/version', url), { signal: AbortSignal.timeout(5000) }); } catch (e) {
+    throw new Error(`navigateur injoignable sur ${url} (${(e as Error).cause instanceof Error ? ((e as Error).cause as Error).message : (e as Error).message}) — Chrome est-il lancé avec --remote-debugging-port ?`);
+  }
+  if (!r.ok) throw new Error(`${url}/json/version a répondu ${r.status}`);
+  const j = await r.json() as { webSocketDebuggerUrl?: string; Browser?: string };
+  if (!j.webSocketDebuggerUrl) throw new Error(`${url} n'expose pas de webSocketDebuggerUrl`);
+  return { wsUrl: j.webSocketDebuggerUrl, version: j.Browser ?? '' };
 }
 
 function getInit(): Promise<BridgeInit> {
@@ -60,17 +76,29 @@ async function main(): Promise<void> {
   const policy = Object.freeze({ ...init.policy, allowedDomains: Object.freeze([...init.policy.allowedDomains]) });
   socketPath = init.socketPath;
   const warnings: string[] = [];
-  mkdirSync(init.userDataDir, { recursive: true, mode: 0o700 });
-  chmodSync(init.userDataDir, 0o700);
-  const launchOpts = { browser: init.browser, userDataDir: init.userDataDir, headless: init.headless, onWarning: (w: string) => { warnings.push(w); log(w); } };
-  chrome = await launchChrome(init.stderrLog !== undefined ? { ...launchOpts, stderrLog: init.stderrLog } : launchOpts);
-  chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Chrome s'est arrêté (code=${c} signal=${s})`); });
-  cdp = await CdpClient.connect(chrome.wsUrl);
+  let info: { pid: number; pgid: number; version: string };
+  if (init.attach !== undefined) {
+    // Mode attach : navigateur existant. On ne le lance pas, on ne le tuera pas.
+    attached = true;
+    const { wsUrl, version } = await resolveDevtools(init.attach);
+    assertSupportedVersion(version);
+    cdp = await CdpClient.connect(wsUrl);
+    info = { pid: 0, pgid: 0, version };
+  } else {
+    if (init.browser === undefined) throw new Error('bridge : ni navigateur ni URL attach');
+    mkdirSync(init.userDataDir, { recursive: true, mode: 0o700 });
+    chmodSync(init.userDataDir, 0o700);
+    const launchOpts = { browser: init.browser, userDataDir: init.userDataDir, headless: init.headless, onWarning: (w: string) => { warnings.push(w); log(w); } };
+    chrome = await launchChrome(init.stderrLog !== undefined ? { ...launchOpts, stderrLog: init.stderrLog } : launchOpts);
+    chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Chrome s'est arrêté (code=${c} signal=${s})`); });
+    cdp = await CdpClient.connect(chrome.wsUrl);
+    info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version };
+  }
   cdp.once('close', () => { if (!stopping) void shutdown(1, 'connexion CDP perdue'); });
-  const page = await PageController.attach(cdp, policy, { downloadDir: init.downloadDir ?? join(init.userDataDir, 'downloads') });
+  page = await PageController.attach(cdp, policy, { downloadDir: init.downloadDir ?? join(init.userDataDir, 'downloads'), newTab: attached });
 
-  const c = chrome;
-  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version })));
+  const c = info;
+  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached })));
   if (existsSync(socketPath)) rmSync(socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const prev = process.umask(0o077);

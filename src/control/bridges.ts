@@ -6,7 +6,10 @@ import type { EffectivePolicy } from '../core/policy.js';
 export interface BridgeInit {
   id: string;
   socketPath: string;
-  browser: DiscoveredBrowser;
+  /** Absent en mode attach. */
+  browser?: DiscoveredBrowser;
+  /** Mode attach : URL DevTools d'un navigateur existant, jamais tué par Grasp. */
+  attach?: string;
   userDataDir: string;
   headless: boolean;
   policy: Readonly<EffectivePolicy>;
@@ -38,6 +41,8 @@ function waitExit(child: ChildProcess, timeoutMs: number): Promise<number | null
 }
 
 function killGroupNow(pgid: number): void {
+  // pgid 0 = « pas de groupe à nous » (mode attach). kill(-0) viserait NOTRE groupe : interdit.
+  if (!(pgid > 1)) return;
   try { process.kill(-pgid, 'SIGKILL'); } catch { /* groupe déjà vide */ }
 }
 

@@ -19,6 +19,8 @@ export interface ResolvedConfig {
   allowCookies: boolean;
   transport: 'unix' | 'tcp';
   port: number;
+  /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
+  cdpUrl: string | null;
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -34,6 +36,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowCookies: false,
   transport: 'unix',
   port: 7319,
+  cdpUrl: null,
 });
 
 export const PUBLIC_KEYS: readonly ConfigKey[] = Object.freeze(Object.keys(DEFAULTS) as ConfigKey[]);
@@ -89,6 +92,11 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
     },
     help: '1-65535',
   },
+  cdpUrl: {
+    check: (v): v is string | null => v === null || (typeof v === 'string' && /^(https?|wss?):\/\/[^\s/]+/.test(v)),
+    parse(raw) { if (!/^(https?|wss?):\/\/[^\s/]+/.test(raw)) throw new Error('URL http(s):// ou ws(s):// attendue, ex. http://127.0.0.1:9222'); return raw; },
+    help: 'http://hôte:port du navigateur à piloter (mode attach)',
+  },
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -110,6 +118,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowCookies: pick('allowCookies'),
     transport: pick('transport'),
     port: pick('port'),
+    cdpUrl: pick('cdpUrl'),
   };
 }
 

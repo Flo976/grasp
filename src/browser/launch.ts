@@ -112,6 +112,7 @@ async function waitGroupGone(pgid: number, timeoutMs: number): Promise<boolean> 
 
 /** SIGTERM au groupe, SIGKILL après délai. Lève si le groupe survit : on ne l'abandonne jamais en silence. */
 export async function killGroup(pgid: number, timeoutMs = 5000): Promise<'none' | 'term' | 'kill'> {
+  if (!(pgid > 1)) throw new Error(`pgid invalide : ${pgid}`);
   if (!groupAlive(pgid)) return 'none';
   try { process.kill(-pgid, 'SIGTERM'); } catch { /* déjà parti */ }
   if (await waitGroupGone(pgid, timeoutMs)) return 'term';

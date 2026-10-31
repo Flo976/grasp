@@ -25,6 +25,8 @@ export class PageController {
   private blocked: Blocked | null = null;
   private lastDialog: string | null = null;
   private mainFrameId = '';
+  /** Navigateur qui ne nous appartient pas : pas d'auto-attach sur les autres onglets. */
+  private foreign = false;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -33,12 +35,14 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
-    let targetId = targetInfos.find((t) => t.type === 'page')?.targetId;
+    // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
+    let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
     if (targetId === undefined) targetId = (await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' })).targetId;
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
     const pc = new PageController(cdp, sessionId, targetId, policy);
+    pc.foreign = opts.newTab === true;
     await pc.init(opts.downloadDir);
     return pc;
   }
@@ -55,11 +59,13 @@ export class PageController {
     await this.guard(this.sessionId);
     const { frameTree } = await this.s<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree');
     this.mainFrameId = frameTree.frame.id;
-    await this.cdp.send('Browser.setDownloadBehavior', this.policy.allowDownload
-      ? { behavior: 'allow', downloadPath: downloadDir }
-      : { behavior: 'deny' });
+    const dl = this.policy.allowDownload ? { behavior: 'allow', downloadPath: downloadDir } : { behavior: 'deny' };
+    // Navigateur partagé : réglage limité à notre onglet, pas à tout le navigateur de l'utilisateur.
+    if (this.foreign) await this.s('Page.setDownloadBehavior', dl).catch(() => undefined);
+    else await this.cdp.send('Browser.setDownloadBehavior', dl);
     // Popups (window.open, target=_blank) : attachés en pause, gardés AVANT de s'exécuter.
-    await this.cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    // En mode attach, on ne s'impose pas aux autres onglets de l'utilisateur.
+    if (!this.foreign) await this.cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   }
 
   /** Interception de toutes les requêtes de document (navigation, redirection, iframe). */
@@ -85,7 +91,12 @@ export class PageController {
       if (e.method === 'Target.attachedToTarget' && e.sessionId === undefined) {
         const sid: string = e.params.sessionId;
         const info = e.params.targetInfo as { targetId: string; type: string };
-        if (info.targetId === this.targetId) { await this.cdp.send('Target.detachFromTarget', { sessionId: sid }); return; }
+        if (info.targetId === this.targetId || this.foreign) {
+          // Onglets de l'utilisateur (mode attach) : on ne les garde pas, on les laisse vivre.
+          if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
+          await this.cdp.send('Target.detachFromTarget', { sessionId: sid });
+          return;
+        }
         if (info.type === 'page' || info.type === 'iframe') await this.guard(sid);
         if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
         return;
@@ -109,6 +120,11 @@ export class PageController {
   }
 
   lastBlocked(): Blocked | null { return this.blocked; }
+
+  /** Ferme l'onglet de la session (mode attach : le navigateur, lui, reste ouvert). */
+  async closeTab(): Promise<void> {
+    await this.cdp.send('Target.closeTarget', { targetId: this.targetId }).catch(() => undefined);
+  }
 
   async location(): Promise<{ url: string; title: string }> {
     const h = await this.s<{ currentIndex: number; entries: Array<{ url: string; title: string }> }>('Page.getNavigationHistory');

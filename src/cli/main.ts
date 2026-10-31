@@ -138,7 +138,7 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
     const inst = JSON.parse(readFileSync(paths.instancesFile, 'utf8')) as Array<{ bridgePid: number; chromePgid: number }>;
     for (const i of inst) {
       try { process.kill(i.bridgePid, 'SIGKILL'); } catch { /* déjà mort */ }
-      try { process.kill(-i.chromePgid, 'SIGKILL'); groups++; } catch { /* déjà mort */ }
+      if (i.chromePgid > 1) { try { process.kill(-i.chromePgid, 'SIGKILL'); groups++; } catch { /* déjà mort */ } }
     }
   } catch { /* pas d'instances */ }
   if (ep.transport === 'unix') rmSync(ep.socketPath, { force: true });

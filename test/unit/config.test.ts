@@ -63,6 +63,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   allowCookies: { raw: 'true', value: true },
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
+  cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {
@@ -108,6 +109,7 @@ test('config set : valeur invalide ou clé inconnue → erreur, fichier inchang�
     assert.throws(() => setConfigKey(file, 'nimporte', '1'), /nimporte/);
     assert.throws(() => setConfigKey(file, 'port', '99999'), /port/);
     assert.throws(() => setConfigKey(file, 'transport', 'udp'), /transport/);
+    assert.throws(() => setConfigKey(file, 'cdpUrl', 'pas-une-url'), /cdpUrl/);
     assert.equal(readFileSync(file, 'utf8'), '{"headless":true}');
   } finally { t.cleanup(); }
 });

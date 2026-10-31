@@ -96,9 +96,16 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   const tokenHash = sha(token);
 
   // 4. Navigateur : découverte et version vérifiées au démarrage, pas à la première requête.
-  const browser: DiscoveredBrowser = discoverChrome(o.env, realProbe, o.home, config.chromePath === null ? undefined : config.chromePath);
-  const version = assertSupportedVersion(await chromeVersion(browser.path));
-  log(`navigateur : ${browser.path} (${browser.kind}, Chrome ${version})`);
+  //    Mode attach (cdpUrl) : rien à lancer, la version est vérifiée à la connexion.
+  let browser: DiscoveredBrowser | undefined;
+  let version: number | string = 'attach';
+  if (config.cdpUrl !== null) {
+    log(`mode attach : sessions ouvertes dans le navigateur existant ${config.cdpUrl} (jamais lancé ni tué par Grasp)`);
+  } else {
+    browser = discoverChrome(o.env, realProbe, o.home, config.chromePath === null ? undefined : config.chromePath);
+    version = assertSupportedVersion(await chromeVersion(browser.path));
+    log(`navigateur : ${browser.path} (${browser.kind}, Chrome ${version})`);
+  }
   if (process.getuid?.() === 0 && o.env.GRASP_ALLOW_NO_SANDBOX !== '1') {
     throw new Error("Grasp tourne en root : le sandbox Chrome ne peut pas fonctionner. Utilisez un utilisateur non-root ou --cap-add=SYS_ADMIN ; sinon GRASP_ALLOW_NO_SANDBOX=1 en connaissance de cause.");
   }
@@ -112,9 +119,12 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     if (profile !== undefined && [...sessions.values()].some((s) => s.profile === profile)) throw new GraspError(409, `le profil « ${profile} » est déjà utilisé par une session`);
     const id = `s${randomBytes(6).toString('hex')}`;
     const ephemeral = profile === undefined;
-    const userDataDir = ephemeral ? join(paths.tmpProfilesDir, id) : profileDirFor(browser, profile, paths.profilesDir, o.home);
+    if (config.cdpUrl !== null && profile !== undefined) throw new GraspError(400, 'mode attach : le profil est celui du navigateur existant, --profile est sans effet');
+    const userDataDir = ephemeral || browser === undefined ? join(paths.tmpProfilesDir, id) : profileDirFor(browser, profile, paths.profilesDir, o.home);
     const bridge = await spawnBridge({
-      id, browser, userDataDir, policy, headless: config.headless,
+      id, userDataDir, policy, headless: config.headless,
+      ...(browser !== undefined ? { browser } : {}),
+      ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}),
       socketPath: join(paths.bridgesDir, `${id}.sock`),
       downloadDir: join(paths.dataDir, 'downloads', id),
       stderrLog: join(paths.logDir, `chrome-${id}.log`),
