@@ -416,6 +416,100 @@ export const MODALE_PAGE = `<!doctype html>
 </div>
 </body></html>`;
 
+/**
+ * Page de challenge anti-bot (Booking, AWS WAF) : vérification par requête réseau, puis la page se remplace
+ * elle-même (location.replace) par la vraie page. La vraie page n'existe qu'après la redirection.
+ */
+export const CHALLENGE_RESEAU_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Vérification</title></head><body><p>Vérification de votre navigateur…</p>
+<script>addEventListener('load', () => { fetch('/api/lent?ms=700').then((r) => r.json()).then(() => location.replace('/challenge-ok')); });</script>
+</body></html>`;
+
+/** Challenge façon Cloudflare : rien sur le réseau, minuterie de 1500 ms puis location.replace. */
+export const CHALLENGE_MINUTERIE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Un instant…</title></head><body>
+<div id="challenge-running"><p>Vérification que vous êtes humain</p></div>
+<script>setTimeout(() => location.replace('/challenge-ok'), 1500);</script>
+</body></html>`;
+
+export const CHALLENGE_OK_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Hôtels à Paris</title></head><body>
+<main><h1>Résultats de recherche</h1><a href="/hotel/1">Hôtel du Lac</a> <button>Réserver</button></main>
+</body></html>`;
+
+/**
+ * Recherche d'une application monopage (Leboncoin) : Entrée → pushState puis chargement asynchrone (700 ms)
+ * des résultats et du titre. #differe : requête lancée 150 ms après le clic (wait --idle). #annonces : lien
+ * routé (pushState, même document).
+ */
+export const SPA_RECHERCHE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Recherche</title></head><body>
+<main><label for="q">Rechercher</label> <input id="q" type="search">
+<button id="differe">Différé</button> <a id="annonces" href="/spa-recherche/annonces">Annonces</a>
+<div id="res"></div></main>
+<script>
+const q = document.getElementById('q');
+const res = document.getElementById('res');
+q.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  setTimeout(() => {
+    history.pushState({}, '', '/spa-recherche?q=' + encodeURIComponent(q.value));
+    fetch('/api/lent?ms=700').then((r) => r.json()).then(() => {
+      document.title = 'Résultats : ' + q.value;
+      res.innerHTML = '<h2>Annonces trouvées</h2><ul><li><a href="/a1">Vélo ' + q.value + '</a></li></ul>';
+    });
+  }, 30);
+});
+document.getElementById('differe').addEventListener('click', () => {
+  setTimeout(() => fetch('/api/lent?ms=600').then((r) => r.json()).then(() => { res.innerHTML = '<h2>Différé chargé</h2>'; }), 150);
+});
+document.getElementById('annonces').addEventListener('click', (e) => {
+  e.preventDefault();
+  history.pushState({}, '', '/spa-recherche/annonces');
+  document.title = 'Annonces';
+  res.innerHTML = '<h2>Liste des annonces</h2>';
+});
+</script>
+</body></html>`;
+
+/** « Enregistrer » qui poste (700 ms) puis met le DOM à jour ; autocomplétion à suggestions asynchrones. */
+export const ENREGISTRER_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Profil</title></head><body>
+<main><h1>Profil</h1>
+<label for="nom">Nom</label> <input id="nom" value="Jean"> <button id="save">Enregistrer</button>
+<p id="msg"></p>
+<label for="ville">Ville</label> <input id="ville" role="combobox" aria-autocomplete="list" aria-controls="sugg">
+<ul id="sugg" role="listbox" aria-label="Suggestions"></ul></main>
+<script>
+const $ = (id) => document.getElementById(id);
+$('save').addEventListener('click', () => {
+  fetch('/api/lent?ms=700', { method: 'POST', body: $('nom').value }).then((r) => r.json()).then(() => { $('msg').textContent = 'Profil enregistré'; });
+});
+let t;
+$('ville').addEventListener('input', () => {
+  clearTimeout(t);
+  t = setTimeout(() => fetch('/api/lent?ms=500').then((r) => r.json()).then(() => {
+    const v = $('ville').value.toLowerCase();
+    $('sugg').innerHTML = ['Paris', 'Parme', 'Lyon'].filter((x) => x.toLowerCase().startsWith(v)).map((x) => '<li role="option">' + x + '</li>').join('');
+  }), 250);
+});
+</script>
+</body></html>`;
+
+/** Éditeur riche (contenteditable) dont le contenu commence par un titre puis une liste : formats de bloc. */
+export const EDITEUR_RICHE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Éditeur riche</title></head><body>
+<div id="ed" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Description"><h1>Ancien titre</h1><ul><li>Ancien point</li></ul></div>
+</body></html>`;
+
+/** Rendu par requestAnimationFrame (suspendu dans un onglet en arrière-plan). */
+export const ARRIERE_PLAN_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Arrière-plan</title></head><body>
+<button id="raf" onclick="requestAnimationFrame(() => { document.getElementById('out').textContent = 'Rendu fait'; })">Rendre</button>
+<p id="out">Rien</p>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -436,6 +530,19 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/absent.png') { res.statusCode = 404; res.end('introuvable'); return; }
     if (u.pathname === '/api/data') { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); return; }
     if (u.pathname === '/api/secret') { res.statusCode = 401; res.setHeader('content-type', 'application/json'); res.end('{"error":"corps-réponse-secret"}'); return; }
+    if (u.pathname === '/api/lent') {
+      const ms = Math.min(5000, Number(u.searchParams.get('ms') ?? '500'));
+      res.setHeader('content-type', 'application/json');
+      setTimeout(() => res.end('{"ok":true}'), ms);
+      return;
+    }
+    if (u.pathname === '/challenge-reseau') { res.end(CHALLENGE_RESEAU_PAGE); return; }
+    if (u.pathname === '/challenge-minuterie') { res.end(CHALLENGE_MINUTERIE_PAGE); return; }
+    if (u.pathname === '/challenge-ok') { res.end(CHALLENGE_OK_PAGE); return; }
+    if (u.pathname.startsWith('/spa-recherche')) { res.end(SPA_RECHERCHE_PAGE); return; }
+    if (u.pathname === '/enregistrer') { res.end(ENREGISTRER_PAGE); return; }
+    if (u.pathname === '/editeur-riche') { res.end(EDITEUR_RICHE_PAGE); return; }
+    if (u.pathname === '/arriere-plan') { res.end(ARRIERE_PLAN_PAGE); return; }
     if (u.pathname === '/long') { res.end(LONG_PAGE); return; }
     if (u.pathname === '/spa') { res.end(SPA_PAGE); return; }
     if (u.pathname === '/agite') { res.end(AGITE_PAGE); return; }

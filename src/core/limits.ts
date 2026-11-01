@@ -21,8 +21,20 @@ export interface Limits {
 
 export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({ snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300 });
 
-/** Fenêtre de calme exigée : aucune mutation pendant ce délai = DOM stable. */
+/** Fenêtre de calme exigée : aucune mutation du DOM ni activité réseau pendant ce délai = page stable. */
 export const STABLE_QUIET_MS = 400;
+
+/**
+ * Requête en vol depuis plus longtemps que ce délai : présumée de longue durée (long-polling, flux,
+ * EventSource déguisé) et ignorée par l'attente de stabilité, sinon chaque attente irait au plafond.
+ */
+export const LONG_REQUEST_MS = 4000;
+
+/**
+ * Après une action (click, press, fill…) : délai d'observation d'une réaction différée (navigation, pushState,
+ * requête réseau) avant de rendre la main sans attente de stabilité.
+ */
+export const ACTION_GRACE_MS = 120;
 
 /** Dernière ligne d'une sortie coupée. */
 export function truncationLine(rest: number, extra = ''): string {

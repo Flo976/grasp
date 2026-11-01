@@ -286,8 +286,10 @@ en headless, en fenêtré (si `DISPLAY`) et, avec `GRASP_TEST_WINDOWS=1`, sur ch
   l'élément a disparu est absente, même si un homonyme subsiste.
 
 `--snap-diff` sur une action mutante renvoie `+` (apparu), `-` (disparu), `~` (modifié), **calculé sur un
-DOM stable** (voir ci-dessous). Si l'action a déclenché une navigation : `navigation → <url>` puis le
-snapshot de la nouvelle page. La sortie est bornée à **4000 caractères** (clé `diffMax` ; `--max N` par
+DOM stable** (voir ci-dessous). Si l'action a chargé un nouveau document : `navigation → <url> (nouvelle
+page : snapshot complet)` puis le snapshot de la nouvelle page. Une route d'application monopage (`pushState`,
+même document) donne un diff, précédé de `~ url <url>` (et `~ title "…"` si le titre change). Le titre est
+toujours relu dans le document au moment du snapshot. La sortie est bornée à **4000 caractères** (clé `diffMax` ; `--max N` par
 appel), coupée en fin de ligne avec la même dernière ligne `… tronqué : N caractères restants — affinez
 avec --max N / --scope <ref|css>` ; `--scope <ref|css>` restreint le diff à une zone (si la zone a disparu
 après l'action, le diff le dit au lieu d'échouer : l'action, elle, a eu lieu).
@@ -324,12 +326,26 @@ donc aussi les erreurs dans le DOM (monde isolé, code fixe, aucune modification
 Une page moderne se rend **après** son `load` (React, Booking, Amazon) : sans attente, le snapshot suivant
 est vide, le titre aussi, et un `--snap-diff` saisit le DOM en pleine transition (refs aussitôt invalides).
 
-- **`nav`** attend le `load`, puis que le DOM ne bouge plus pendant **400 ms**, au plus **5 s** (clé
-  `stableTimeoutMs` ; `0` = pas d'attente). Titre et URL sont lus après. Une page qui bouge encore au
-  plafond rend la main quand même, avec une note sur stderr : `note: DOM encore instable après 5021 ms
-  (63 mutations) : la page peut encore changer`.
-- **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui navigue** (lien, envoi de
-  formulaire, route `pushState` d'une application monopage) l'attend aussi, même sans `--snap-diff`. Une action sans navigation ni diff n'attend pas.
+- **`nav`** attend le `load`, puis que la page soit calme pendant **400 ms** — ni mutation du DOM, ni
+  activité réseau (document, XHR, fetch, script ; pas les images, polices, balises de mesure ni flux
+  permanents ; une requête en vol depuis plus de 4 s est présumée de longue durée et ignorée ; le réseau
+  n'est suivi qu'avec `allowConsole=true`, la valeur par défaut — sans console, aucun domaine Network
+  n'est activé et seul le DOM compte) —, au plus
+  **5 s** (clé `stableTimeoutMs` ; `0` = pas d'attente). Une **navigation de document qui démarre pendant
+  l'attente** (redirection JS, `location.replace` d'une page de challenge anti-bot) est suivie, et la
+  stabilité du nouveau document attendue, dans le même plafond. Une page de challenge reconnue (peu de texte,
+  titre ou marqueurs typiques : « Just a moment », `#challenge-…`, captcha…) est guettée jusqu'à sa
+  redirection. Titre et URL sont lus après. Une page qui bouge encore au plafond rend la main quand même,
+  avec une note sur stderr : `note: DOM encore instable après 5021 ms (63 mutations) : la page peut encore
+  changer` (ou `réseau encore actif après … (N requête(s) en cours)`, `page de challenge anti-bot probable,
+  toujours affichée après …`).
+- **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui fait réagir la page** —
+  navigation, route `pushState` d'une application monopage, requête réseau partie depuis l'action (XHR
+  d'un « Enregistrer », suggestions d'une autocomplétion) — l'attend aussi, même sans `--snap-diff`, dans
+  le même plafond. Une action sans aucune de ces réactions dans les 120 ms ne l'attend pas.
+- **Onglet en arrière-plan** (`document.visibilityState = hidden`) : les entrées y sont livrées mais la page
+  ne rend plus (`requestAnimationFrame` suspendu). L'onglet est ramené au premier plan avant l'action, avec
+  une note (`onglet en arrière-plan (document caché) : ramené au premier plan avant l'action`).
 - **Mécanisme** : un `MutationObserver` injecté par Grasp dans un **monde isolé** (`grasp-lecture`) : la page
   ne voit ni la fonction ni ses variables, et ne peut pas fausser la mesure (ses propres `setTimeout` ou
   prototypes sont ceux de son monde). C'est du code fixe de Grasp, pas une expression de l'agent : autorisé
@@ -346,7 +362,8 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 - `--text T` : T apparaît dans le texte visible de la page (`innerText`, espaces normalisés).
 - `--sel S` : un élément CSS **visible** correspond (`checkVisibility`) ; une ref ou un `text:` : présent dans
   le snapshot (une ambiguïté compte comme « présent »).
-- `--idle` (défaut sans option) : DOM stable, comme après `nav`.
+- `--idle` (défaut sans option) : page stable, comme après `nav` : DOM **et** réseau calmes pendant 400 ms,
+  requêtes en vol comprises — une activité qui démarre juste après l'appel est attendue.
 - Délai : 10 000 ms par défaut (`--idle` : `stableTimeoutMs`), 60 000 au plus. Dépassé → **504** qui dit ce
   qui manque (`« Jamais affiché » absent de la page après 300 ms`, `#cache présent mais invisible après
   300 ms`, `DOM encore instable après 600 ms (8 mutations)`). Une seule condition à la fois (400 sinon).
@@ -361,7 +378,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `text [--max N] [--scope <ref\|css\|frame=…>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
-| `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). |
+| `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
 | `check <sél> [--uncheck]` | Coche ou décoche, puis **vérifie l'état**. |
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |

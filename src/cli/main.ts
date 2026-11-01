@@ -499,8 +499,9 @@ Lecture      snap [--max octets] [--scope <ref|css|frame=…>]   budget 12000 oc
                message d'erreur visible sous le champ même aria-hidden) ; message hors arbre sans champ : « alerte "…" »
              pdf [-o f.pdf]
 Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, élément visible (CSS) ou présent
-               (ref, text:), DOM stable (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
-               nav et --snap-diff attendent déjà le load puis 400 ms sans mutation du DOM (plafond stableTimeoutMs, 5000)
+               (ref, text:), page stable : DOM ET réseau calmes (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
+               nav et --snap-diff attendent déjà le load puis 400 ms sans mutation du DOM ni activité réseau, en suivant
+               une redirection JS (challenge anti-bot) ; une action qui navigue ou lance des requêtes aussi (plafond stableTimeoutMs, 5000)
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
@@ -515,7 +516,9 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                (événement de confiance, délai inputDeliveryMs = 300) ; sinon onglet au premier plan + focus émulé
                et 2e essai, puis repli synthétique ANNONCÉ (« note: clic synthétique : l'entrée native n'a pas
                atteint la page ») ; sans effet observable → ERROR (jamais de faux OK)
-             --snap-diff  diff du snapshot en un aller-retour, après stabilité du DOM ; 4000 caractères par défaut
+             --snap-diff  diff du snapshot en un aller-retour, après stabilité (DOM, réseau) ; 4000 caractères par défaut ;
+                          route SPA : « ~ url … » puis le diff ; nouveau document : « navigation → url (nouvelle page :
+                          snapshot complet) »
                           (config diffMax ; --max N l'élargit, --scope <ref|css> le restreint à une zone)
                           erreurs de formulaire : « ~ champ … [invalide: …] », « + alerte "…" » ; clic sans effet sur un
                           formulaire invalide : « (aucun changement — formulaire invalide : <champs>) »
