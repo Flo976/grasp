@@ -238,6 +238,37 @@ const SETTER_ONLY_INPUTS = new Set(['date', 'time', 'datetime-local', 'month', '
 const FRAME_TAGS = new Set(['IFRAME', 'FRAME', 'OBJECT', 'EMBED', 'FENCEDFRAME', 'PORTAL']);
 const NO_CHANGE = '(aucun changement)';
 
+/**
+ * Marqueur data-grasp-pw (moteur Playwright) posé sur l'élément, ou sur le parent d'un nœud texte ; renvoie
+ * alors le centre du (premier fragment du) texte relatif à la boîte du parent, comme le point du clic natif.
+ */
+const TAG_FN = `function (t) {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  el.setAttribute('data-grasp-pw', t);
+  if (this.nodeType === 1) return null;
+  const r = document.createRange(); r.selectNodeContents(this);
+  const q = [...r.getClientRects()].find((x) => x.width > 0 && x.height > 0);
+  if (!q) return null;
+  const b = el.getBoundingClientRect();
+  return { x: q.left + q.width / 2 - b.left, y: q.top + q.height / 2 - b.top };
+}`;
+/** Deux frames rendues (au plus 300 ms : un onglet sans rendu ne bloque pas). */
+const FRAMES_FN = `new Promise((r) => { const t = setTimeout(() => r(false), 300); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(true); })); })`;
+/** Locator dont les actions au pointeur visent `position` (centre d'un nœud texte dans son parent). */
+function atPosition(loc: PwLocator, position: { x: number; y: number }): PwLocator {
+  const pointer = new Set<PropertyKey>(['click', 'hover', 'check', 'uncheck']);
+  return new Proxy(loc, {
+    get(t, k) {
+      const v: unknown = Reflect.get(t, k, t);
+      if (typeof v !== 'function') return v;
+      if (pointer.has(k)) return (o: Record<string, unknown> = {}) => (v as (o: object) => Promise<void>).call(t, { ...o, position });
+      return (v as (...a: unknown[]) => unknown).bind(t);
+    },
+  });
+}
+/** Vérification d'une action Playwright : au pointeur (clic, case ; survol `hover`, `soft`) ou au clavier (`focused` : touche sans cible). */
+interface PwCheck { pointer?: boolean; hover?: boolean; soft?: boolean; focused?: boolean }
+
 type DeliveryKind = 'clic' | 'touche' | 'saisie' | 'survol';
 const KIND: Record<DeliveryKind, { failed: string; synth: string; note: string }> = {
   clic: { failed: 'clic non livré', synth: 'le clic synthétique', note: 'clic synthétique' },
@@ -352,6 +383,9 @@ export class PageController {
 
   get playwrightConnected(): boolean { return this.pw?.connected === true; }
 
+  /** Connexions Playwright encore ouvertes, suivies ou non (diagnostic : 0 attendu après closeEngine). */
+  get playwrightLinks(): number { return this.pw?.liveLinks ?? 0; }
+
   /** Moteur d'une action : --engine (validé), et frame= impose Playwright. */
   private engineFor(opts: { engine?: string | undefined }, sel?: string): 'native' | 'playwright' {
     const e = opts.engine;
@@ -361,23 +395,27 @@ export class PageController {
     return framed || e === 'playwright' ? 'playwright' : 'native';
   }
 
-  /** Page Playwright de l'onglet ; la première connexion est notée (coût visible). */
-  private async pwPage(): Promise<PwPage> {
-    if (this.pw === undefined) throw new GraspError(501, 'moteur Playwright non configuré pour ce bridge');
-    const r = await this.pw.page();
-    if (r.connectedMs !== undefined) this.notes?.push(`moteur Playwright connecté en ${r.connectedMs} ms`);
-    return r.page;
+  /**
+   * Opération sur la page Playwright de l'onglet : la première connexion est notée (coût visible), et la
+   * déconnexion d'inactivité attend la fin de l'opération (une longue attente n'est jamais coupée).
+   */
+  private pwUse<T>(fn: (page: PwPage) => Promise<T>): Promise<T> {
+    if (this.pw === undefined) return Promise.reject(new GraspError(501, 'moteur Playwright non configuré pour ce bridge'));
+    return this.pw.use(fn, (ms) => { this.notes?.push(`moteur Playwright connecté en ${ms} ms`); });
   }
 
   /**
    * Élément Grasp (backendNodeId) → locator Playwright : marqueur temporaire data-grasp-pw posé depuis le
-   * monde isolé, retiré après l'action (seule trace visible par la page, le temps de l'action).
+   * monde isolé, retiré après l'action (seule trace visible par la page, le temps de l'action). Nœud TEXTE
+   * (cible text:) : le marqueur va sur son parent, et `position` désigne le centre du texte dans la boîte du
+   * parent — sans elle, Playwright cliquerait au centre du parent, peut-être sur un lien voisin.
    */
   private async tagged(page: PwPage, id: number): Promise<{ loc: PwLocator; untag: () => Promise<void> }> {
     const tok = `g${process.pid}-${++this.probeSeq}`;
-    await this.callIsolated(id, `function (t) { const el = this.nodeType === 1 ? this : this.parentElement; el.setAttribute('data-grasp-pw', t); return true; }`, tok);
+    const position = await this.callIsolated<{ x: number; y: number } | null>(id, TAG_FN, tok);
+    const loc = page.locator(`[data-grasp-pw="${tok}"]`);
     return {
-      loc: page.locator(`[data-grasp-pw="${tok}"]`),
+      loc: position !== null ? atPosition(loc, position) : loc,
       untag: async () => { await this.callIsolated(id, `function () { const el = this.nodeType === 1 ? this : this.parentElement; if (el) el.removeAttribute('data-grasp-pw'); return true; }`).catch(() => undefined); },
     };
   }
@@ -414,68 +452,92 @@ export class PageController {
 
   /**
    * Action par le moteur Playwright, dans le même cadre qu'une action native (--snap-diff, --console, notes,
-   * garde). `pointer` : action au pointeur (clic, survol, case) dont la livraison est vérifiée par la sonde.
+   * garde). Livraison vérifiée par la sonde dans le document principal : `pointer` (clic, survol, case) ou
+   * `keys` (frappe, touche). Dans un cadre, la sonde ne voit rien : c'est dit.
    */
-  private pwAct(opts: ActionOptions, sel: string, what: string, fn: (loc: PwLocator, page: PwPage) => Promise<string | void>, pointer?: { types: string[]; soft?: boolean }): Promise<ActionResult> {
-    return this.act(opts, async (snap) => {
-      const page = await this.pwPage();
+  private pwAct(opts: ActionOptions, sel: string, what: string, fn: (loc: PwLocator, page: PwPage) => Promise<string | void>, check?: PwCheck): Promise<ActionResult> {
+    return this.act(opts, (snap) => this.pwUse(async (page) => {
       const { loc, untag } = await this.pwLocator(page, sel, snap);
       try {
-        if (pointer === undefined) return await fn(loc, page);
+        if (check === undefined) return await fn(loc, page);
+        if (check.pointer === true) await this.pwReady(loc, PW_ACTION_TIMEOUT_MS);
         if (parseFrameTarget(sel) !== null) {
           const r = await fn(loc, page);
           this.notes?.push('action dans un cadre : livraison non vérifiable depuis la page (actionnabilité vérifiée par Playwright)');
           return r;
         }
         let out: string | void = undefined;
-        await this.pwVerified(pointer.types, what, async () => { out = await fn(loc, page); }, pointer.soft === true);
+        await this.pwVerified(check, what, async () => { out = await fn(loc, page); });
         return out;
       } catch (e) { throw pwError(e, what); } finally { await untag?.(); }
-    });
+    }));
   }
 
   /**
-   * Action Playwright au pointeur, VÉRIFIÉE comme une entrée native : Playwright peut répondre OK alors que la
-   * page n'a rien reçu (constaté : 1er clic juste après un défilement, sur une page qui contient une iframe hors
-   * processus). Aucun événement de confiance → un second essai (élément déjà défilé), puis erreur (ou note si
-   * `soft` : un survol sur un pointeur déjà en place peut ne produire aucun événement).
+   * Avant une action Playwright au pointeur. (1) Onglet en arrière-plan : Playwright attend un rendu (élément
+   * « stable ») qui n'arrive jamais — on ramène l'onglet au premier plan, comme l'étage (a) natif, et c'est dit.
+   * (2) Défilement fait PAR AVANCE, puis deux frames : sinon Chrome route le clic qui suit aussitôt un
+   * défilement d'après un hit-test périmé, vers l'iframe hors processus qui occupait ce point (constaté sur
+   * Chrome 150 : clic reçu par l'iframe, invisible pour la sonde du document principal).
    */
-  private async pwVerified(types: string[], what: string, run: () => Promise<void>, soft = false): Promise<void> {
-    for (let attempt = 1; ; attempt++) {
-      let probe: { token: string; hit: string | null };
-      try { probe = await this.armProbe(types, undefined); } catch (e) {
+  private async pwReady(loc: PwLocator, timeout: number): Promise<void> {
+    if (await this.evalIsolated<string>('document.visibilityState').catch(() => 'visible') === 'hidden') {
+      await this.s('Page.bringToFront').catch(() => undefined);
+      await this.evalIsolated(`new Promise((r) => { if (document.visibilityState !== 'hidden') return r(true); const t = setTimeout(() => r(false), 1000); document.addEventListener('visibilitychange', () => { clearTimeout(t); r(true); }, { once: true }); })`, true).catch(() => undefined);
+      this.notes?.push("onglet ramené au premier plan : Playwright n'agit au pointeur que sur un onglet rendu");
+    }
+    await loc.scrollIntoViewIfNeeded({ timeout });
+    await this.evalIsolated(FRAMES_FN, true).catch(() => undefined);
+  }
+
+  /**
+   * Action Playwright VÉRIFIÉE comme une entrée native : Playwright peut répondre OK alors que la page n'a rien
+   * reçu. JAMAIS rejouée : un clic dont la page principale n'a rien vu a pu atteindre un autre document (iframe
+   * sous le point, focus dans un cadre) — le rejouer ferait deux actions. Aucun événement de confiance → 502
+   * (ou note si `soft` : un survol sur un pointeur déjà en place peut ne produire aucun événement).
+   */
+  private async pwVerified(check: PwCheck, what: string, run: () => Promise<void>): Promise<void> {
+    const types = check.pointer === true ? (check.hover === true ? HOVER_EVENTS : CLICK_EVENTS) : KEY_EVENTS;
+    let probe: { token: string; hit: string | null };
+    try { probe = await this.armProbe(types, undefined); } catch (e) {
+      await run();
+      this.notes?.push(`livraison de l'entrée non vérifiée (sonde impossible : ${(e as Error).message})`);
+      return;
+    }
+    try {
+      // Touche sans cible : elle part vers l'élément focalisé ; une iframe focalisée = un autre document.
+      if (check.focused === true && probe.hit !== null && FRAME_TAGS.has(probe.hit)) {
         await run();
-        this.notes?.push(`livraison de l'entrée non vérifiée (sonde impossible : ${(e as Error).message})`);
+        this.notes?.push(`touche envoyée dans un cadre (<${probe.hit.toLowerCase()}> focalisé) : livraison non vérifiable depuis la page`);
         return;
       }
-      try {
-        const m = this.mark();
-        let err: unknown;
-        try { await run(); } catch (e) { err = e; }
-        const seen = await this.awaitProbe(probe.token, m, (p) => p.trusted > 0);
-        if (seen !== 'no') {
-          if (err !== undefined) throw err;
-          if (attempt > 1) this.notes?.push(`${what} Playwright livré au 2e essai (le 1er n'a pas atteint la page)`);
-          return;
-        }
-        // Échec réel (élément invisible, délai…) : remonté tel quel. « État inchangé » sans événement : entrée perdue.
-        if (err !== undefined && !/did not change its state/.test(err instanceof Error ? err.message : String(err))) throw err;
-        if (attempt >= 2) {
-          if (soft) { this.notes?.push(`${what} Playwright : aucun événement reçu par la page (pointeur déjà sur l'élément ?)`); return; }
-          throw new GraspError(502, `${what} non livré (moteur Playwright) : Playwright a répondu sans erreur mais la page n'a reçu aucun événement, en deux essais — écran Windows verrouillé, fenêtre sans rendu ?`);
-        }
-      } finally { this.stopProbe(probe.token); }
-    }
+      const m = this.mark();
+      let err: unknown;
+      try { await run(); } catch (e) { err = e; }
+      const seen = await this.awaitProbe(probe.token, m, (p) => p.trusted > 0);
+      if (seen !== 'no') {
+        if (err !== undefined) throw err;
+        return;
+      }
+      // Échec réel (élément invisible, délai…) : remonté tel quel. « État inchangé » sans événement : entrée perdue.
+      if (err !== undefined && !/did not change its state/.test(err instanceof Error ? err.message : String(err))) throw err;
+      if (check.soft === true) { this.notes?.push(`${what} Playwright : aucun événement reçu par la page (pointeur déjà sur l'élément ?)`); return; }
+      throw new GraspError(502, check.pointer === true
+        ? `${what} non livré (moteur Playwright) : Playwright a répondu sans erreur mais la page n'a reçu aucun événement de confiance — non rejoué : l'entrée a pu atteindre un autre document (iframe) ou être jetée par Chrome (écran Windows verrouillé, fenêtre sans rendu) ; vérifiez l'état de la page (snap) avant de recommencer`
+        : `${what} non livrée (moteur Playwright) : Playwright a répondu sans erreur mais la page n'a reçu aucun événement clavier de confiance — non rejouée (risque de double saisie) ; vérifiez le champ (snap), ou reprenez sans --engine playwright : le moteur natif a un repli synthétique annoncé`);
+    } finally { this.stopProbe(probe.token); }
   }
 
   /** Clic Playwright sur un élément résolu par Grasp (rejeu automatique) ; `verify` : sonde propre (hors de deliver). */
-  private async pwClickNode(id: number, timeout: number, verify: boolean): Promise<void> {
-    const page = await this.pwPage();
-    const { loc, untag } = await this.tagged(page, id);
-    try {
-      if (verify) await this.pwVerified(CLICK_EVENTS, 'clic', () => loc.click({ timeout }));
-      else await loc.click({ timeout });
-    } catch (e) { throw pwError(e, 'click'); } finally { await untag(); }
+  private pwClickNode(id: number, timeout: number, verify: boolean): Promise<void> {
+    return this.pwUse(async (page) => {
+      const { loc, untag } = await this.tagged(page, id);
+      try {
+        await this.pwReady(loc, timeout);
+        if (verify) await this.pwVerified({ pointer: true }, 'clic', () => loc.click({ timeout }));
+        else await loc.click({ timeout });
+      } catch (e) { throw pwError(e, 'click'); } finally { await untag(); }
+    });
   }
 
   private s<T = any>(method: string, params: object = {}): Promise<T> {
@@ -872,9 +934,10 @@ export class PageController {
   async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<string> {
     if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
     const scope = opts.scope.trim();
-    const { loc } = await this.pwLocator(await this.pwPage(), scope, undefined, 'body');
-    let aria: string;
-    try { aria = await loc.ariaSnapshot({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'snap'); }
+    const aria = await this.pwUse(async (page) => {
+      const { loc } = await this.pwLocator(page, scope, undefined, 'body');
+      try { return await loc.ariaSnapshot({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'snap'); }
+    });
     const frames = scope.split(/\s*>>\s*/).filter((x) => x.startsWith('frame=')).join(' >> ');
     return truncateText(`cadre ${scope} (arbre ARIA de Playwright, sans refs : agissez avec « ${frames} >> <css|text:…> »)\n${aria}`, opts.maxBytes ?? this.limits.snapMax, { wholeLines: true });
   }
@@ -893,8 +956,10 @@ export class PageController {
     let t: string;
     if (scope !== undefined && parseFrameTarget(scope) !== null) {
       // Cadre (même d'une autre origine) : lu par le moteur Playwright.
-      const { loc } = await this.pwLocator(await this.pwPage(), scope, undefined, 'body');
-      try { t = await loc.innerText({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'text'); }
+      t = await this.pwUse(async (page) => {
+        const { loc } = await this.pwLocator(page, scope, undefined, 'body');
+        try { return await loc.innerText({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'text'); }
+      });
     } else if (scope !== undefined && scope.trim() !== '') {
       const id = await this.resolve(scope.trim());
       const r = await this.callIsolated<{ text?: string; frame?: boolean; src?: string }>(id, SCOPE_TEXT_FN);
@@ -1010,11 +1075,14 @@ export class PageController {
     const timeout = o.timeout ?? WAIT_DEFAULT_MS;
     if (o.sel !== undefined && parseFrameTarget(o.sel) !== null) {
       // Élément visible dans un cadre (même d'une autre origine) : attente du moteur Playwright.
-      const { loc } = await this.pwLocator(await this.pwPage(), o.sel, undefined, 'body');
-      try { await loc.waitFor({ state: 'visible', timeout }); } catch (e) {
-        const ge = pwError(e, 'wait');
-        throw ge.status === 504 ? new GraspError(504, `${o.sel} absent ou invisible après ${timeout} ms`) : ge;
-      }
+      const sel = o.sel;
+      await this.pwUse(async (page) => {
+        const { loc } = await this.pwLocator(page, sel, undefined, 'body');
+        try { await loc.waitFor({ state: 'visible', timeout }); } catch (e) {
+          const ge = pwError(e, 'wait');
+          throw ge.status === 504 ? new GraspError(504, `${sel} absent ou invisible après ${timeout} ms`) : ge;
+        }
+      });
       return { ok: true, waited: Date.now() - t0, condition: 'sel' };
     }
     const end = t0 + timeout;
@@ -1357,7 +1425,7 @@ export class PageController {
   click(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
     let engine: 'native' | 'playwright';
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
-    if (engine === 'playwright') return this.pwAct(opts, sel, 'clic', (l) => l.click({ timeout: PW_ACTION_TIMEOUT_MS }), { types: CLICK_EVENTS });
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'clic', (l) => l.click({ timeout: PW_ACTION_TIMEOUT_MS }), { pointer: true });
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       try { await this.clickNode(id); } catch (e) {
@@ -1375,7 +1443,7 @@ export class PageController {
   hover(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
     let engine: 'native' | 'playwright';
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
-    if (engine === 'playwright') return this.pwAct(opts, sel, 'survol', (l) => l.hover({ timeout: PW_ACTION_TIMEOUT_MS }), { types: HOVER_EVENTS, soft: true });
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'survol', (l) => l.hover({ timeout: PW_ACTION_TIMEOUT_MS }), { pointer: true, hover: true, soft: true });
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       await this.deliver({
@@ -1397,7 +1465,7 @@ export class PageController {
     if (text === '') return Promise.reject(badRequest('type attend un texte non vide'));
     let engine: 'native' | 'playwright';
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
-    if (engine === 'playwright') return this.pwAct(opts, sel, 'type', (l) => l.pressSequentially(text, { delay, timeout: PW_ACTION_TIMEOUT_MS }));
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'saisie', (l) => l.pressSequentially(text, { delay, timeout: PW_ACTION_TIMEOUT_MS }), {});
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);
@@ -1509,7 +1577,7 @@ export class PageController {
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
     if (engine === 'playwright') {
       // Playwright vérifie lui-même que l'état a changé (« did not change its state » → 409).
-      return this.pwAct(opts, sel, desired ? 'check' : 'uncheck', (l) => (desired ? l.check({ timeout: PW_ACTION_TIMEOUT_MS }) : l.uncheck({ timeout: PW_ACTION_TIMEOUT_MS })), { types: CLICK_EVENTS });
+      return this.pwAct(opts, sel, desired ? 'check' : 'uncheck', (l) => (desired ? l.check({ timeout: PW_ACTION_TIMEOUT_MS }) : l.uncheck({ timeout: PW_ACTION_TIMEOUT_MS })), { pointer: true });
     }
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
@@ -1536,12 +1604,11 @@ export class PageController {
     if (engine === 'playwright') {
       const k = playwrightKey(parsed);
       if (sel === undefined || sel === '') {
-        return this.act(opts, async () => {
-          const page = await this.pwPage();
-          try { await page.keyboard.press(k); } catch (e) { throw pwError(e, 'press'); }
-        });
+        return this.act(opts, () => this.pwUse(async (page) => {
+          try { await this.pwVerified({ focused: true }, 'touche', () => page.keyboard.press(k)); } catch (e) { throw pwError(e, 'press'); }
+        }));
       }
-      return this.pwAct(opts, sel, 'press', (l) => l.press(k, { timeout: PW_ACTION_TIMEOUT_MS }));
+      return this.pwAct(opts, sel, 'touche', (l) => l.press(k, { timeout: PW_ACTION_TIMEOUT_MS }), {});
     }
     return this.act(opts, async (snap) => {
       const target = sel !== undefined && sel !== '' ? await this.resolve(sel, snap) : undefined;

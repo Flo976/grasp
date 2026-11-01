@@ -521,13 +521,17 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
              --engine playwright  (click fill select check press hover type upload) action par Playwright branché sur
                           le Chrome de Grasp : attente d'actionnabilité (visible, stable, activé), widgets riches ;
                           optionnel : npm i playwright-core ; absent → ERROR qui le dit. Le garde de navigation et la
-                          politique (upload) s'appliquent pareil ; clics et survols vérifiés par la sonde
+                          politique (upload) s'appliquent pareil ; clics, survols, frappes et touches vérifiés par
+                          la sonde : rien reçu → ERROR, jamais rejoué (le clic a pu partir dans une iframe) ;
+                          onglet en arrière-plan → ramené au premier plan (note)
              config fallbackEngine playwright : un clic natif non livré ou non actionnable (invisible, désactivé)
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
 Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN aller-retour (stdin par défaut)
                une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
                hover type wait eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
-               analysé en entier avant d'exécuter ; arrêt au premier échec (--continue pour poursuivre) ;
+               analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)
+               → ERROR, jamais ignorée ; arrêt au premier échec (--continue pour poursuivre) ; client coupé
+               (Ctrl-C, délai de l'agent) → aucune étape de plus ne démarre (journal du serveur) ;
                stdout « [n] commande → OK|ERROR: raison » + sortie utile (snap, text, diff, console, chemin)
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
                eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)

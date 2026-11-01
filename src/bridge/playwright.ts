@@ -12,13 +12,16 @@ import type { ParsedKey } from './keys.js';
  * Types locaux (sous-ensemble de l'API publique) : aucune dépendance de compilation à playwright-core.
  */
 export interface PwTimeout { timeout?: number }
+/** Point du clic relatif au coin supérieur gauche de la boîte de l'élément (Playwright : `position`). */
+export interface PwPosition { position?: { x: number; y: number } }
 export interface PwLocator {
-  click(o?: PwTimeout): Promise<void>;
-  hover(o?: PwTimeout): Promise<void>;
+  click(o?: PwTimeout & PwPosition): Promise<void>;
+  hover(o?: PwTimeout & PwPosition): Promise<void>;
   fill(value: string, o?: PwTimeout): Promise<void>;
   selectOption(value: string, o?: PwTimeout): Promise<string[]>;
-  check(o?: PwTimeout): Promise<void>;
-  uncheck(o?: PwTimeout): Promise<void>;
+  check(o?: PwTimeout & PwPosition): Promise<void>;
+  uncheck(o?: PwTimeout & PwPosition): Promise<void>;
+  scrollIntoViewIfNeeded(o?: PwTimeout): Promise<void>;
   press(key: string, o?: PwTimeout): Promise<void>;
   pressSequentially(text: string, o?: PwTimeout & { delay?: number }): Promise<void>;
   setInputFiles(files: string[], o?: PwTimeout): Promise<void>;
@@ -40,13 +43,19 @@ export interface PwPage {
   keyboard: { press(key: string): Promise<void> };
   isClosed(): boolean;
 }
-export interface PwContext { pages(): PwPage[]; newCDPSession(page: PwPage): Promise<PwCdpSession> }
+export interface PwContext {
+  pages(): PwPage[];
+  newCDPSession(page: PwPage): Promise<PwCdpSession>;
+  on(event: 'dialog', f: (dialog: unknown) => void): void;
+}
 export interface PwBrowser {
   contexts(): PwContext[];
   /** Sur une connexion connectOverCDP : ferme le WebSocket de Playwright, JAMAIS le navigateur (vérifié par les tests). */
   close(): Promise<void>;
   isConnected(): boolean;
   on(event: 'disconnected', f: () => void): void;
+  /** Événement non documenté mais émis par playwright-core (nouveau contexte : fenêtre de navigation privée…). */
+  on(event: 'context', f: (ctx: PwContext) => void): void;
 }
 export interface PwModule {
   chromium: { connectOverCDP(endpoint: string, o: { noDefaults?: boolean; isLocal?: boolean; timeout?: number }): Promise<PwBrowser> };
@@ -163,10 +172,34 @@ export class PlaywrightEngine {
   private link: Promise<Link> | undefined;
   private idle: NodeJS.Timeout | undefined;
   private current: Link | undefined;
+  /** Connexions Playwright ouvertes et pas encore fermées, suivies ou non (diagnostic, tests de fuite). */
+  private live = 0;
+  /** Opérations Playwright en cours : la déconnexion d'inactivité attend qu'elles soient finies. */
+  private busy = 0;
 
   constructor(private readonly o: EngineOptions) {}
 
   get connected(): boolean { return this.current !== undefined && this.current.browser.isConnected(); }
+
+  /** Connexions ouvertes par ce moteur et pas encore fermées (0 attendu après disconnect()). */
+  get liveLinks(): number { return this.live; }
+
+  /**
+   * Opération Playwright sur la page de l'onglet. Tant qu'elle dure, la déconnexion d'inactivité est
+   * repoussée (une attente de 60 s n'est pas coupée par un délai d'inactivité de 60 s) ; le délai repart à la fin.
+   * `onConnect` : appelé si cette opération a ouvert la connexion (coût visible dans les notes).
+   */
+  async use<T>(fn: (page: PwPage) => Promise<T>, onConnect?: (ms: number) => void): Promise<T> {
+    this.busy++;
+    try {
+      const r = await this.page();
+      if (r.connectedMs !== undefined) onConnect?.(r.connectedMs);
+      return await fn(r.page);
+    } finally {
+      this.busy--;
+      this.touch();
+    }
+  }
 
   /** Page Playwright de l'onglet ; `connectedMs` : présent si cet appel a ouvert la connexion. */
   async page(): Promise<{ page: PwPage; connectedMs?: number }> {
@@ -182,7 +215,8 @@ export class PlaywrightEngine {
     this.link = p;
     try {
       const l = await p;
-      this.current = l;
+      // Une déconnexion a pu passer pendant la connexion : seule la connexion encore suivie devient courante.
+      if (this.link === p) this.current = l;
       this.touch();
       return { page: l.page, connectedMs: Date.now() - t0 };
     } catch (e) {
@@ -201,7 +235,19 @@ export class PlaywrightEngine {
       // Grasp restent en place), pas de focus émulé, pas d'émulation de média sur le contexte existant.
       browser = await pw.chromium.connectOverCDP(this.o.endpoint, { noDefaults: true, isLocal: this.o.isLocal, timeout: 15_000 });
     } catch (e) { throw pwError(e, 'connexion au navigateur'); }
-    browser.on('disconnected', () => { this.link = undefined; this.current = undefined; });
+    this.live++;
+    // Seule la connexion COURANTE est oubliée à sa fermeture : la fermeture d'une ancienne connexion (inactivité,
+    // closeEngine) qui croise une reconnexion ne doit pas effacer la nouvelle, qui ne serait alors plus jamais fermée.
+    browser.on('disconnected', () => {
+      this.live--;
+      if (this.current?.browser === browser) { this.link = undefined; this.current = undefined; }
+    });
+    // Dialogues : sans écouteur « dialog », Playwright REJETTE confirm()/prompt() et ferme alert() sur toutes les
+    // pages qu'il voit — en mode attach, les onglets de l'utilisateur. Un écouteur muet les laisse ouverts : ceux
+    // de l'onglet de la session restent traités par Grasp (CDP), ceux des autres onglets ne sont pas touchés.
+    const keepDialogs = (ctx: PwContext) => { ctx.on('dialog', () => undefined); };
+    for (const ctx of browser.contexts()) keepDialogs(ctx);
+    browser.on('context', keepDialogs);
     try {
       for (const ctx of browser.contexts()) {
         for (const page of ctx.pages()) {
@@ -218,7 +264,10 @@ export class PlaywrightEngine {
 
   private touch(): void {
     clearTimeout(this.idle);
-    this.idle = setTimeout(() => { void this.disconnect('inactivité'); }, this.o.idleMs);
+    this.idle = setTimeout(() => {
+      if (this.busy > 0) { this.touch(); return; } // opération en cours : jamais coupée par l'inactivité
+      void this.disconnect('inactivité');
+    }, this.o.idleMs);
     this.idle.unref();
   }
 

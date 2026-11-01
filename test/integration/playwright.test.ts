@@ -126,16 +126,84 @@ test('garde de navigation : un clic Playwright qui sort de l\'allowlist est bloq
   assert.match(fx.page.lastBlocked()?.url ?? '', /^http:\/\/\[::1\]:/);
 });
 
-test('clic Playwright vérifié par la sonde : le 1er clic après défilement (page à iframe hors processus) est perdu par Chrome → rejoué, un seul clic', { skip: needPw }, async () => {
+test('clic Playwright après défilement (page à iframe hors processus) : un seul clic, sur la cible, rien dans l\'iframe, jamais rejoué', { skip: needPw }, async () => {
+  // Constaté sur Chrome 150 : sans précaution, le 1er clic juste après le défilement partait dans l'iframe d'une
+  // autre origine qui occupait ce point avant le défilement (hit-test périmé), invisible pour la sonde du document.
+  for (let i = 0; i < 3; i++) {
+    const f = await openPage(POLICY);
+    const sp = await spyOn(f);
+    try {
+      await f.page.navigate(`${site.url}/pw-cadres`);
+      await new Promise((r) => setTimeout(r, 300)); // iframe chargée : son espion écoute
+      const r = await f.page.click('#bas', pw);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.deepEqual(await inPage<string[]>(sp, 'window.__cadre'), [], `aucun clic dans l'iframe (note : ${r.detail})`);
+      assert.equal(await inPage(sp, 'document.getElementById("compte").textContent'), 'Compte : 1', `exactement un clic (note : ${r.detail})`);
+      assert.doesNotMatch(r.detail ?? '', /2e essai|rejou/);
+    } finally { sp.cdp.close(); await f.close(); }
+  }
+});
+
+test('clic Playwright sans aucun événement reçu par la page : 502, jamais rejoué (il a pu partir ailleurs)', { skip: needPw }, async () => {
   const f = await openPage(POLICY);
+  const sp = await spyOn(f);
+  try {
+    await f.page.navigate(`${site.url}/sonde`);
+    await f.page.click('#compter', pw); // connexion établie
+    await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: true }, sp.sid);
+    await assert.rejects(f.page.click('#compter', pw), (e: GraspError) => e.status === 502 && /non livré \(moteur Playwright\)/.test(e.message) && /non rejoué/.test(e.message) && !/deux essais/.test(e.message));
+    await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: false }, sp.sid);
+  } finally { sp.cdp.close(); await f.close(); }
+});
+
+test('text: résolu sur un nœud texte : Playwright clique sur le texte, pas au centre du parent (lien voisin)', { skip: needPw }, async () => {
+  for (const engine of ['native', 'playwright'] as const) {
+    await fx.page.navigate(`${site.url}/pw-texte`);
+    await fx.page.click('text:Voir :', { engine });
+    assert.equal(await inPage(me(), 'window.cible'), 'P:P', `moteur ${engine} : le lien voisin ne doit pas recevoir le clic`);
+    await fx.page.navigate(`${site.url}/pw-texte`);
+    await fx.page.hover('text:Voir :', { engine });
+  }
+});
+
+test('type et press via Playwright vérifiés : touches perdues → 502, jamais un faux OK', { skip: needPw }, async () => {
+  const f = await openPage(POLICY);
+  const sp = await spyOn(f);
   try {
     await f.page.navigate(`${site.url}/pw-cadres`);
-    // Bouton sous la ligne de flottaison : Playwright défile puis clique aussitôt.
-    const r = await f.page.click('#bas', pw);
-    assert.equal(await f.page.text(undefined, '#compte'), 'Compte : 1', `exactement un clic (note : ${r.detail})`);
-    // Constaté sur Chrome 150 headless : ce 1er clic n'atteint pas la page ; Playwright répond pourtant OK.
-    if (!/livré au 2e essai/.test(r.detail ?? '')) process.stderr.write(`# (perte du 1er clic Playwright non reproduite cette fois : ${r.detail})\n`);
-  } finally { await f.close(); }
+    await f.page.type('#ville', 'A', pw);
+    assert.equal(await inPage(sp, 'document.getElementById("ville").value'), 'A');
+    await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: true }, sp.sid);
+    await assert.rejects(f.page.type('#ville', 'Tana', pw), (e: GraspError) => e.status === 502 && /moteur Playwright/.test(e.message));
+    await assert.rejects(f.page.press('Backspace', '#ville', pw), (e: GraspError) => e.status === 502 && /moteur Playwright/.test(e.message));
+    await assert.rejects(f.page.press('Enter', undefined, pw), (e: GraspError) => e.status === 502 && /moteur Playwright/.test(e.message));
+    await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: false }, sp.sid);
+    assert.equal(await inPage(sp, 'document.getElementById("ville").value'), 'A', 'rien de saisi en douce');
+    // Livrées : OK sans note ; focus dans une iframe : la touche part vers un autre document, c'est dit.
+    const ok = await f.page.press('Backspace', '#ville', pw);
+    assert.doesNotMatch(ok.detail ?? '', /non vérifi/);
+    assert.equal(await inPage(sp, 'document.getElementById("ville").value'), '');
+    await f.page.click('frame=#editeur >> #titre');
+    const r = await f.page.press('a', undefined, pw);
+    assert.match(r.detail ?? '', /cadre.*non vérifiable/);
+    assert.equal(await f.page.text(undefined, 'frame=#editeur >> #etat'), 'Rien');
+  } finally { sp.cdp.close(); await f.close(); }
+});
+
+test('onglet de la session en arrière-plan : clic Playwright ramène l\'onglet au premier plan (pas 10 s d\'attente puis 504)', { skip: needPw }, async () => {
+  const f = await openPage(POLICY);
+  const sp = await spyOn(f);
+  try {
+    await f.page.navigate(`${site.url}/sonde`);
+    await f.cdp.send('Target.createTarget', { url: `${site.url}/sonde` });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(await inPage(sp, 'document.visibilityState'), 'hidden', 'précondition : onglet en arrière-plan');
+    const t0 = Date.now();
+    const r = await f.page.click('#compter', pw);
+    assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0} ms`);
+    assert.match(r.detail ?? '', /premier plan/);
+    assert.equal(await inPage(sp, 'document.getElementById("compte").textContent'), 'Compte : 1');
+  } finally { sp.cdp.close(); await f.close(); }
 });
 
 test('upload via Playwright : 403 sans allowUpload (avant toute connexion), fichier posé dans le cadre avec', { skip: needPw }, async () => {
@@ -171,6 +239,22 @@ test('repli automatique (fallbackEngine=playwright) : clic natif non livré → 
     assert.equal(await inPage(sp, 'document.getElementById("compte").textContent'), 'Compte : 1', 'jamais de double clic');
     const ev = await inPage<string[]>(sp, 'window.__ev.splice(0)');
     assert.ok(ev.includes('click:true') && !ev.some((e) => e.endsWith(':false')), ev.join(' '));
+  } finally { sp.cdp.close(); await f.close(); }
+});
+
+test('repli automatique sur la page à iframe : le rejeu Playwright ne part jamais dans l\'iframe', { skip: needPw }, async () => {
+  const f = await openPage({ ...POLICY, fallbackEngine: 'playwright' });
+  const sp = await spyOn(f);
+  try {
+    await f.page.navigate(`${site.url}/pw-cadres`);
+    await new Promise((r) => setTimeout(r, 300));
+    await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: true }, sp.sid);
+    f.page.testHooks = { recovering: async (stage) => { if (stage === 'playwright') await sp.cdp.send('Input.setIgnoreInputEvents', { ignore: false }, sp.sid); } };
+    const r = await f.page.click('#bas');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.match(r.detail ?? '', /rejoué via Playwright/);
+    assert.deepEqual(await inPage<string[]>(sp, 'window.__cadre'), []);
+    assert.equal(await inPage(sp, 'document.getElementById("compte").textContent'), 'Compte : 1');
   } finally { sp.cdp.close(); await f.close(); }
 });
 
@@ -260,5 +344,58 @@ test('téléchargements : brancher Playwright ne détourne pas le dossier de Gra
     for (let i = 0; i < 40 && !got; i++) { await new Promise((r) => setTimeout(r, 250)); got = existsSync(file); }
     assert.ok(got, `${file} absent : Playwright a redirigé les téléchargements`);
     assert.equal(readFileSync(file, 'utf8'), 'contenu grasp');
+  } finally { await f.close(); }
+});
+
+test('cycle de vie : une déconnexion qui croise une reconnexion ne laisse aucune connexion Playwright orpheline', { skip: needPw }, async () => {
+  const f = await openPage(POLICY);
+  try {
+    await f.page.navigate(`${site.url}/sonde`);
+    await f.page.click('#compter', pw);
+    const closing = f.page.closeEngine(); // comme l'inactivité, ou la fermeture de session…
+    await f.page.click('#compter', pw); // …pendant qu'une action arrive
+    await closing;
+    await f.page.closeEngine();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(f.page.playwrightConnected, false);
+    assert.equal(f.page.playwrightLinks, 0, 'connexion Playwright ouverte mais plus suivie');
+  } finally { await f.close(); }
+});
+
+test('cycle de vie : une attente Playwright plus longue que le délai d\'inactivité n\'est pas coupée', { skip: needPw }, async () => {
+  const f = await openPage(POLICY, undefined, { idleMs: 500 });
+  try {
+    await f.page.navigate(`${site.url}/pw-cadres`);
+    const t0 = Date.now();
+    await assert.rejects(f.page.wait({ sel: 'frame=#editeur >> #absent', timeout: 1500 }), (e: GraspError) => e.status === 504 && /absent ou invisible après 1500 ms/.test(e.message));
+    assert.ok(Date.now() - t0 >= 1400, `${Date.now() - t0} ms`);
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(f.page.playwrightConnected, false, "toujours fermée après l'inactivité qui suit");
+  } finally { await f.close(); }
+});
+
+test('dialogues : Playwright connecté ne ferme pas ceux des autres onglets (mode attach : onglets de l\'utilisateur)', { skip: needPw }, async () => {
+  const f = await openPage(POLICY);
+  try {
+    // Onglet de la session : le dialogue reste fermé par Grasp, et signalé.
+    await f.page.navigate(`${site.url}/dialogue`);
+    const d = await f.page.click('#demander', pw);
+    assert.equal(f.page.playwrightConnected, true);
+    assert.match(d.detail ?? '', /dialogue fermé — confirm: Supprimer \?/);
+    assert.equal(await f.page.text(undefined, '#rep'), 'Réponse : false');
+    const c = await CdpClient.connect(f.chrome.wsUrl);
+    try {
+      const { targetId } = await c.send<{ targetId: string }>('Target.createTarget', { url: `${site.url}/dialogue` });
+      await new Promise((r) => setTimeout(r, 600));
+      const { sessionId } = await c.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
+      await c.send('Page.enable', {}, sessionId);
+      const res = await Promise.race([
+        c.send<{ result: { value: unknown } }>('Runtime.evaluate', { expression: 'confirm("Quitter sans enregistrer ?")', returnByValue: true }, sessionId).then((x) => `fermé (${String(x.result.value)})`),
+        new Promise<string>((r) => setTimeout(() => r('ouvert'), 1500)),
+      ]);
+      assert.equal(res, 'ouvert', "le confirm() de l'onglet de l'utilisateur a été rejeté par Playwright");
+      await c.send('Page.handleJavaScriptDialog', { accept: false }, sessionId).catch(() => undefined);
+      await c.send('Target.closeTarget', { targetId }).catch(() => undefined);
+    } finally { c.close(); }
   } finally { await f.close(); }
 });

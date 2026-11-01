@@ -17,7 +17,7 @@ import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
 import { reapStaleInstances } from './stale.js';
-import { compileScript, runScript } from './run.js';
+import { compileScript, runScript, type RunResult } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
@@ -484,7 +484,19 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         const body = await readJson(req);
         const steps = compileScript(str(body, 'script'));
         const s = pickSession(req, url);
-        return sendJson(res, 200, await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true));
+        // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
+        // lesquelles ont été exécutées — l'appelant, lui, ne verra jamais la réponse.
+        const ac = new AbortController();
+        const onClose = () => { if (!res.writableFinished) ac.abort(); };
+        res.on('close', onClose);
+        let r: RunResult;
+        try { r = await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true, ac.signal); } finally { res.off('close', onClose); }
+        if (r.aborted === true) {
+          const last = r.steps.at(-1);
+          log(`AVERTISSEMENT : session ${s.id} : run interrompu : client déconnecté après ${r.executed} étape(s) exécutée(s)${last !== undefined ? ` (dernière : [${last.n}] ${last.text} → ${last.ok ? 'OK' : `ERROR: ${last.error ?? ''}`})` : ''} ; ${r.total - r.executed} étape(s) non exécutée(s)`);
+          return;
+        }
+        return sendJson(res, 200, r);
       }
       if (SESSION_ROUTES.has(url.pathname)) {
         const s = pickSession(req, url);

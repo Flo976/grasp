@@ -403,10 +403,17 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
 - Le script est **analysé en entier avant d'exécuter** : guillemet non fermé, commande inconnue ou hors run
-  (`serve`, `pdf`, `screenshot -o` : le fichier serait écrit par le serveur…) → `ERROR: run: ligne N : …`, rien
-  n'est exécuté. 500 commandes au plus.
+  (`serve`, `pdf`, `screenshot -o` : le fichier serait écrit par le serveur…), option inconnue de la commande
+  (`click e3 --snapdiff`) ou option **globale** sur une ligne (`--session`, `--json`, `--profile`, `--continue`,
+  `--port` : elles changeraient le sens de la ligne sans effet réel — `click e3 --session autre` agirait sur la
+  session du run) → `ERROR: run: ligne N : …`, rien n'est exécuté : une option n'est jamais ignorée en silence.
+  500 commandes au plus.
 - Arrêt au **premier échec** (code 1, `ERROR: run: étape N (commande) : raison`, et le nombre de commandes non
   exécutées) ; `--continue` poursuit et rapporte chaque étape.
+- **Client coupé** (Ctrl-C, délai de l'outil Bash de l'agent) : le serveur ne démarre **aucune étape de plus**
+  (l'étape en cours va à son terme) — pas de clic « Payer » à l'aveugle pendant que l'appelant relance le script.
+  Le journal du serveur dit où le run s'est arrêté (`run interrompu : client déconnecté après N étape(s)
+  exécutée(s) (dernière : [n] … → OK) ; M étape(s) non exécutée(s)`) ; testé.
 - Sortie compacte : `[n] commande → OK` ou `→ ERROR: raison`, puis **seulement** la sortie utile (snap, text,
   diff, console, chemin d'une capture, valeur d'eval), avec les mêmes limites de taille qu'en commande isolée ;
   notes numérotées (`[6] note: sélectionné : Madagascar`) et bilan (`7 commandes, 7 OK (…)`) sur stderr.
@@ -458,11 +465,26 @@ est bloqué, testé) ; connexion en `noDefaults` : Playwright ne touche ni au co
 Grasp (sans cette option, il redirigeait les téléchargements vers son dossier temporaire : testé), ni au focus,
 ni à l'émulation. Les refs sont traduites par Grasp (même résolution qu'en natif, ref disparue comprise) puis
 marquées le temps de l'action par un attribut `data-grasp-pw`, retiré ensuite ; CSS est confié à Playwright
-(il attend que l'élément apparaisse) ; `text:` dans le document principal est résolu par Grasp. Les clics et
-survols Playwright du document principal sont **vérifiés par la sonde** de Grasp, comme les entrées natives.
+(il attend que l'élément apparaisse) ; `text:` dans le document principal est résolu par Grasp, et une cible qui
+est un **nœud texte** est cliquée au centre de ce texte (option `position` de Playwright), pas au centre de son
+parent, où pourrait se trouver un lien voisin (testé). Les clics, survols, cases, frappes (`type`) et touches
+(`press`, avec ou sans cible) Playwright du document principal sont **vérifiés par la sonde** de Grasp, comme
+les entrées natives : si la page n'a reçu aucun événement de confiance, c'est une **erreur 502, jamais rejouée**
+(un clic invisible pour le document principal a pu atteindre une iframe ; le rejouer ferait deux actions) ; une
+touche sans cible alors que le focus est dans une iframe est notée `livraison non vérifiable`. Avant une action
+au pointeur, Grasp fait défiler l'élément **par avance** puis attend deux frames : sinon Chrome 150 route le clic
+qui suit aussitôt un défilement d'après un hit-test périmé, vers l'iframe hors processus qui occupait ce point
+(constaté, testé : aucun clic reçu par l'iframe). Onglet de la session en **arrière-plan** (popup, mode attach) :
+Playwright attend un rendu qui n'arrive pas ; Grasp ramène l'onglet au premier plan avant une action au pointeur,
+comme l'étage (a) natif, et le dit (`note: onglet ramené au premier plan`).
+**Dialogues** : sans écouteur, Playwright rejette `confirm()`/`prompt()` et ferme `alert()` sur toutes les pages
+qu'il voit ; Grasp enregistre un écouteur muet sur chaque contexte : les dialogues des autres onglets (ceux de
+l'utilisateur en mode attach) restent ouverts (testé), ceux de l'onglet de la session restent traités par Grasp.
 
 **Cycle de vie.** Une connexion par bridge, ouverte au premier usage, **fermée après 60 s d'inactivité**, à
-la fermeture de session et à la bascule de profil (arrêt du bridge). La déconnexion ne ferme que le WebSocket
+la fermeture de session et à la bascule de profil (arrêt du bridge). L'inactivité se compte à partir de la **fin**
+de la dernière opération : une attente Playwright plus longue (`wait --sel 'frame=…' --timeout 60000`) n'est
+jamais coupée (testé). Une déconnexion qui croise une reconnexion ne laisse aucune connexion orpheline (testé). La déconnexion ne ferme que le WebSocket
 de Playwright : jamais le navigateur ni l'onglet (testé : Chrome vivant, onglet présent, connexion CDP de
 Grasp intacte). Aucun processus supplémentaire (Playwright tourne dans le bridge). Upload : par chemin avec
 Chrome Linux ; par contenu (≤ 50 Mo) avec chrome.exe et en mode attach, où le navigateur ne voit pas les
@@ -471,22 +493,25 @@ chemins Linux.
 **Coût mesuré** (Chrome 150 headless, Linux, WSL2, page de test ; 5 processus pour le chargement, 21 clics
 par moteur, médianes) : chargement de playwright-core ≈ 220 ms, connexion et recherche de l'onglet ≈ 35 ms
 (15 ms pour une reconnexion), soit **≈ 250 ms de plus sur la première action** (`note: moteur Playwright
-connecté en … ms`) ; ensuite un clic Playwright coûte 83 ms contre 69 ms en natif (tous deux vérifiés par la
-sonde) ; mémoire du bridge : ≈ +90 Mo (RSS) une fois Playwright chargé et connecté. playwright-core pèse 14 Mo sur disque.
+connecté en … ms`) ; ensuite un clic Playwright coûte ≈ 150 ms contre ≈ 67 ms en natif (tous deux vérifiés par la
+sonde ; 83 ms avant le défilement préalable et l'attente de deux frames, prix de « aucun clic dans l'iframe ») ; mémoire du bridge : ≈ +90 Mo (RSS) une fois Playwright chargé et connecté. playwright-core pèse 14 Mo sur disque.
 
 **Limites.**
 - Pendant qu'il est connecté, Playwright active `Runtime`, `Network`, `Page`… sur l'onglet (détectable par
   certains anti-robots, y compris avec `allowConsole=false`) ; en mode attach, il s'attache aussi aux
-  **autres onglets** du navigateur de l'utilisateur (sans y agir). D'où la déconnexion après inactivité.
+  **autres onglets** du navigateur de l'utilisateur (Grasp neutralise le rejet automatique de leurs dialogues,
+  voir plus haut ; un dialogue ouvert dans une fenêtre privée créée pendant la connexion, avant que l'écouteur y
+  soit posé, peut encore être rejeté). D'où la déconnexion après inactivité.
 - Pas de refs dans un cadre : on agit avec `frame=… >> css|text:` ; le `snap` d'un cadre est l'arbre ARIA de
   Playwright (format YAML), borné par `snapMax` compté en caractères ; `--snap-diff` ne voit pas l'intérieur des
   cadres ; `text:` dans un cadre suit `getByText` de Playwright (texte exact, puis sous-chaîne), pas les noms
   accessibles du snapshot.
 - Une action **dans un cadre** n'est pas vérifiable par la sonde (note `livraison non vérifiable`) : seule
   l'actionnabilité de Playwright la garantit.
-- Constaté sur Chrome 150 : le **premier clic Playwright juste après un défilement**, sur une page qui contient
-  une iframe hors processus, n'atteint pas la page alors que Playwright répond OK. La sonde le détecte et Grasp
-  rejoue une fois (`note: clic Playwright livré au 2e essai`) ; deux pertes → erreur 502.
+- Une entrée Playwright que la page n'a pas reçue n'est **jamais rejouée** (erreur 502 : vérifiez l'état de la
+  page avant de recommencer). Le moteur natif, lui, a son repli synthétique annoncé.
+- Ramener l'onglet au premier plan (onglet en arrière-plan) le fait passer devant l'onglet de l'utilisateur en
+  mode attach, comme l'étage (a) natif.
 - Le marqueur `data-grasp-pw` est une vraie mutation du DOM, visible par la page pendant l'action ; un élément
   dans un shadow root **fermé** est introuvable pour Playwright.
 - Écran Windows verrouillé : si Chrome jette les entrées de CDP, il jette aussi celles de Playwright (même

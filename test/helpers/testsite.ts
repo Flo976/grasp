@@ -234,6 +234,8 @@ export const PW_CADRES_PAGE = `<!doctype html>
 <label for="ville">Ville</label> <input id="ville">
 <button id="dl" onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['contenu grasp'])); a.download = 'grasp-dl.txt'; document.body.append(a); a.click();">Télécharger</button>
 <script>let n = 0;
+// Espion : clics reçus par le document de l'iframe (autre origine), rapportés par postMessage.
+window.__cadre = []; addEventListener('message', (e) => { if (typeof e.data === 'string' && e.data.startsWith('cadre:')) __cadre.push(e.data); });
 document.getElementById('editeur').src = 'http://localhost:' + location.port + '/pw-editeur';
 document.getElementById('sortir').href = 'http://[::1]:' + location.port + '/';</script>
 </body></html>`;
@@ -248,8 +250,21 @@ export const PW_EDITEUR_PAGE = `<!doctype html>
 <p id="etat">Rien</p>
 <input type="file" id="piece" aria-label="Pièce jointe">
 <p id="fichier">Aucun fichier</p>
-<script>document.getElementById('piece').onchange = (e) => { document.getElementById('fichier').textContent = 'Fichier : ' + e.target.files[0].name; };</script>
+<script>for (const t of ['mousedown', 'click']) addEventListener(t, (e) => parent.postMessage('cadre:' + t + ' ' + e.target.nodeName, '*'), true);
+document.getElementById('piece').onchange = (e) => { document.getElementById('fichier').textContent = 'Fichier : ' + e.target.files[0].name; };</script>
 </body></html>`;
+
+/** Texte suivi d'un lien dans le même paragraphe : le centre du paragraphe tombe sur le lien, pas sur le texte. */
+export const PW_TEXTE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Texte et lien</title></head><body style="margin:0">
+<p id="p" style="width:max-content;white-space:nowrap;font:16px monospace;margin:0">Voir : <a href="#" id="annuler" onclick="window.cible = 'LIEN'; return false">annuler la commande tout de suite</a></p>
+<script>window.cible = 'aucune';
+document.getElementById('p').addEventListener('click', (e) => { if (e.target.id !== 'annuler') window.cible = 'P:' + e.target.nodeName; });</script>
+</body></html>`;
+
+/** Boîte de dialogue à la demande (onglet de l'utilisateur, mode attach). */
+export const DIALOGUE_PAGE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Dialogue</title></head><body><p>Onglet de l'utilisateur</p>
+<button id="demander" onclick="document.getElementById('rep').textContent = 'Réponse : ' + confirm('Supprimer ?')">Demander</button><p id="rep">Réponse : -</p></body></html>`;
 
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
@@ -287,6 +302,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cadres') { res.end(CADRES_PAGE); return; }
     if (u.pathname === '/pw-cadres') { res.end(PW_CADRES_PAGE); return; }
     if (u.pathname === '/pw-editeur') { res.end(PW_EDITEUR_PAGE); return; }
+    if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
+    if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

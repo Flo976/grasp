@@ -180,6 +180,42 @@ export function consoleBody(a: Args): Record<string, unknown> {
 export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
+const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
+/** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
+const RUN_FLAGS: Record<string, readonly string[]> = {
+  nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
+  check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
+  snap: ['max', 'scope'], text: ['max', 'scope'],
+  wait: ['text', 'sel', 'timeout', 'idle'],
+  console: ['level', 'since', 'limit', 'clear'],
+  // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
+  screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
+  upload: ['engine'], eval: [], cookies: [], profile: [],
+};
+/** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
+const RUN_GLOBAL: Record<string, string> = {
+  session: "une ligne ne change pas de session : grasp run --session <id> (un run par session)",
+  json: 'la sortie est celle du run : grasp run --json',
+  continue: 'option du run : grasp run --continue',
+  port: 'option de grasp serve', tcp: 'option de grasp serve',
+  profile: 'pour basculer de profil au milieu du script : une ligne « profile <nom> »',
+};
+
+/**
+ * `grasp run` : une option qu'une ligne ne transmettrait pas est REFUSÉE, jamais ignorée en silence
+ * (« click e3 --session autre » agirait sinon sur la session du run). Options globales : message dédié.
+ */
+export function checkRunFlags(a: Args): void {
+  const allowed = RUN_FLAGS[a.cmd];
+  if (allowed === undefined) return; // commande inconnue ou hors run : buildRequest le dit
+  for (const k of a.flags.keys()) {
+    if (allowed.includes(k)) continue;
+    const g = RUN_GLOBAL[k];
+    if (g !== undefined) throw new ScriptError(`--${k} n'a pas de sens sur une ligne de run : ${g}`);
+    throw new ScriptError(`option --${k} inconnue pour ${a.cmd} dans run${allowed.length > 0 ? ` (options : ${allowed.filter((x) => x !== 'output').map((x) => `--${x}`).join(' ')})` : ' (aucune option)'}`);
+  }
+}
+
 /** Ligne de commande → requête du bridge, exactement comme la CLI la construit pour une commande isolée. */
 export function buildRequest(a: Args): StepRequest {
   const cmd = a.cmd;

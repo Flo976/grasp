@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { makeTestEnv, type TestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit, type Server } from '../helpers/server.js';
@@ -119,6 +120,8 @@ test('run : erreurs de syntaxe détectées avant toute exécution (guillemet non
     ['screenshot -o /tmp/x.png\n', /ligne 1 : screenshot -o n'est pas disponible dans run/],
     ['fill text:Nom\n', /ligne 1 : usage : grasp fill/],
     ['# rien\n\n', /aucune commande/],
+    ['snap\nclick e1 --session autre\n', /ligne 2 : --session n'a pas de sens sur une ligne de run/],
+    ['click e1 --snapdiff\n', /ligne 1 : option --snapdiff inconnue pour click/],
   ] as const) {
     const r = await runCli(env, ['run'], script);
     assert.equal(r.code, 1, script);
@@ -136,4 +139,25 @@ screenshot --el h1
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, /\[3\] console --level error --limit 3 → OK\n(#\d+ error .*\n){1,3}/);
   assert.match(r.stdout, /\[4\] screenshot --el h1 → OK\n\/.*\.png\n/);
+});
+
+test('run : client déconnecté (Ctrl-C, délai de l\'agent) → les étapes restantes ne sont PAS exécutées, et le journal dit où le run s\'est arrêté', async () => {
+  assert.equal((await runCli(env, ['nav', `${site.url}/sonde`])).code, 0);
+  // --continue : sans l'arrêt sur déconnexion, le clic partirait même après l'échec de l'attente.
+  const script = `wait --text Jamais --timeout 1500\nclick '#compter'\nclick '#compter'\n`;
+  const ep = JSON.parse(readFileSync(srv.paths.endpointFile, 'utf8')) as { socketPath: string };
+  const payload = Buffer.from(JSON.stringify({ script, continue: true }));
+  await new Promise<void>((resolve) => {
+    const req = httpRequest({
+      socketPath: ep.socketPath, method: 'POST', path: '/run',
+      headers: { authorization: `Bearer ${srv.token()}`, 'x-grasp-session': env.GRASP_SESSION!, 'content-type': 'application/json', 'content-length': String(payload.length) },
+    });
+    req.on('error', () => resolve());
+    req.end(payload);
+    setTimeout(() => { req.destroy(); resolve(); }, 400);
+  });
+  await new Promise((r) => setTimeout(r, 2500));
+  const t = await runCli(env, ['text', '--scope', '#compte']);
+  assert.equal(t.stdout.trim(), 'Compte : 0', 'aucun clic après la déconnexion du client');
+  assert.match(srv.stderr(), /run interrompu : client déconnecté.*2 étape\(s\) non exécutée\(s\)/);
 });

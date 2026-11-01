@@ -1,6 +1,6 @@
 import { GraspError } from '../core/errors.js';
 import { formatEntry, type ConsoleEntry } from '../core/console.js';
-import { buildRequest, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
+import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
 export const MAX_RUN_STEPS = 500;
@@ -24,7 +24,7 @@ export interface RunStep {
   result?: unknown;
   ms: number;
 }
-export interface RunResult { ok: boolean; total: number; executed: number; steps: RunStep[] }
+export interface RunResult { ok: boolean; total: number; executed: number; steps: RunStep[]; aborted?: boolean }
 
 /** Exécute une étape : réponse du bridge (JSON ou texte), ou erreur GraspError avec le statut HTTP. */
 export type StepExecutor = (rq: StepRequest) => Promise<unknown>;
@@ -36,18 +36,28 @@ export function compileScript(script: string): Array<{ src: ScriptLine; rq: Step
   if (lines.length === 0) throw new GraspError(400, 'aucune commande dans le script (lignes vides et commentaires # seulement)');
   if (lines.length > MAX_RUN_STEPS) throw new GraspError(400, `script trop long : ${lines.length} commandes (${MAX_RUN_STEPS} au plus)`);
   return lines.map((src) => {
-    try { return { src, rq: buildRequest(parseArgs(src.argv)) }; } catch (e) {
+    try {
+      const a = parseArgs(src.argv);
+      checkRunFlags(a);
+      return { src, rq: buildRequest(a) };
+    } catch (e) {
       throw new GraspError(400, `ligne ${src.line} : ${e instanceof ScriptError ? e.message : (e as Error).message}`);
     }
   });
 }
 
-/** Séquentiel ; arrêt au premier échec sauf `cont`. Chaque étape passe par la même route qu'en commande isolée. */
-export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean): Promise<RunResult> {
+/**
+ * Séquentiel ; arrêt au premier échec sauf `cont`. Chaque étape passe par la même route qu'en commande isolée.
+ * `signal` (client déconnecté : Ctrl-C, délai de l'outil de l'agent) : aucune étape de plus ne démarre — un
+ * appelant qui ne verra jamais la réponse ne doit pas laisser des clics partir à l'aveugle. L'étape en cours
+ * va à son terme (une action CDP ne s'interrompt pas proprement) ; `aborted` le signale.
+ */
+export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal): Promise<RunResult> {
   const out: RunStep[] = [];
   let failed = false;
   for (const [i, { src, rq }] of steps.entries()) {
     if (failed && !cont) break;
+    if (signal?.aborted === true) return { ok: false, total: steps.length, executed: out.length, steps: out, aborted: true };
     const t0 = Date.now();
     const step: RunStep = { n: i + 1, line: src.line, text: src.text, cmd: rq.cmd, ok: false, ms: 0 };
     try {
