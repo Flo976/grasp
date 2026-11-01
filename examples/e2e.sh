@@ -13,13 +13,13 @@ cleanup() { grasp stop >/dev/null 2>&1 || true; [[ -n "${SITE_PID:-}" ]] && kill
 trap cleanup EXIT
 
 # 1. Site de test local
-coproc SITE { node examples/testsite.mjs; }
+coproc SITE { exec node examples/testsite.mjs; }
 SITE_PID=$SITE_PID
 read -r URL <&"${SITE[0]}"
 echo "# site de test : $URL"
 
 # 2. Serveur (premier plan, en tâche de fond pour la démo) et session
-grasp serve 2>"$DEMO/serve.log" &
+grasp serve >"$DEMO/serve.log" 2>&1 &
 for _ in $(seq 100); do grasp status >/dev/null 2>&1 && break; sleep 0.1; done
 export GRASP_SESSION=$(grasp session create)
 echo "# session : $GRASP_SESSION"
