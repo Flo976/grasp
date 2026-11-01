@@ -66,16 +66,37 @@ export async function windowsLocalAppData(run: Runner = realRunner): Promise<str
 }
 
 /** Arguments de chrome.exe. Pas de guillemets : l'interop WSL cite elle-même les arguments contenant des espaces. */
-export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless: boolean }): string[] {
+export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless: boolean; port: number }): string[] {
+  if (!(Number.isInteger(input.port) && input.port > 0 && input.port < 65536)) throw new Error(`port DevTools invalide : ${input.port}`);
   return mergeDisableFeatures([
     `--user-data-dir=${input.userDataDirWin}`,
-    '--remote-debugging-port=0',
+    // Jamais 0 : avec un port choisi par Chrome, navigator.webdriver vaut true (voir launch.ts).
+    `--remote-debugging-port=${input.port}`,
     '--no-first-run',
     '--no-default-browser-check',
     ...ANTI_BACKGROUND_ARGS,
     ...(input.headless ? ['--headless=new'] : []),
     'about:blank',
   ], ALWAYS_DISABLED_FEATURES);
+}
+
+/** Plages « Port de début / Port de fin » de `netsh int ipv4 show excludedportrange tcp` (toute langue). */
+export function parseExcludedPortRanges(out: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^\s*(\d{1,5})\s+(\d{1,5})\s*\*?\s*$/.exec(line);
+    if (m) ranges.push([Number(m[1]), Number(m[2])]);
+  }
+  return ranges;
+}
+
+/**
+ * Ports TCP réservés par Windows (Hyper-V, WSL, administrateur) : chrome.exe ne pourrait pas y écouter
+ * alors que le même port paraît libre côté WSL. Échec de netsh : liste vide (Chrome signalera le port).
+ */
+export async function windowsExcludedPorts(run: Runner = realRunner): Promise<Array<[number, number]>> {
+  const r = await run('netsh.exe', ['int', 'ipv4', 'show', 'excludedportrange', 'tcp'], { timeoutMs: 15_000 });
+  return r.code === 0 ? parseExcludedPortRanges(r.stdout) : [];
 }
 
 /**

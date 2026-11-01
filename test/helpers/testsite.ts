@@ -266,6 +266,72 @@ document.getElementById('p').addEventListener('click', (e) => { if (e.target.id 
 export const DIALOGUE_PAGE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Dialogue</title></head><body><p>Onglet de l'utilisateur</p>
 <button id="demander" onclick="document.getElementById('rep').textContent = 'Réponse : ' + confirm('Supprimer ?')">Demander</button><p id="rep">Réponse : -</p></body></html>`;
 
+/**
+ * Erreurs de formulaire, toutes les variantes de balisage, dans un tiroir sans <form> ni bouton submit
+ * (comme Malt). « Enregistrer » valide et n'enregistre rien tant qu'un champ est invalide.
+ * - Code postal : message relié par aria-describedby (avec un texte d'aide) + aria-invalid ;
+ * - Téléphone : message relié par aria-errormessage + aria-invalid ;
+ * - Nom : aria-invalid, message NON relié, juste sous le champ ;
+ * - Email : validité native (:user-invalid, validationMessage) ;
+ * - Intitulé du poste : balisage Malt relevé tel quel (Vue « joy ») : champ sans aucun aria-*, seulement
+ *   la classe joy-input--field-invalid ; message dans un div role="alert" mais aria-hidden="true" (donc
+ *   absent de l'arbre d'accessibilité), affiché dès la saisie ;
+ * - bandeau role="alert" global rempli à la validation.
+ * - toast d'erreur aria-hidden hors du tiroir, rattaché à aucun champ.
+ */
+export const ERREURS_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Erreurs</title>
+<style>[hidden]{display:none} .joy-form-error{display:none;color:#c00} .joy-form-error.joy-has-error{display:flex}</style></head>
+<body>
+<h1>Profil</h1>
+<div id="toast" class="toast toast-error" aria-hidden="true" hidden></div>
+<p>Bio publique</p>
+<div role="dialog" aria-modal="true" aria-labelledby="titre" id="tiroir">
+  <h2 id="titre">Modifier l'introduction</h2>
+  <div><label for="cp">Code postal</label><input id="cp" aria-describedby="cp-aide cp-err"><div id="cp-aide">Format : 5 chiffres</div><div id="cp-err" hidden></div></div>
+  <div><label for="tel">Téléphone</label><input id="tel" aria-errormessage="tel-err"><div id="tel-err" hidden></div></div>
+  <div class="champ"><label for="nom">Nom</label><input id="nom"><div class="msg-erreur" id="nom-err" hidden></div></div>
+  <div><label for="mail">Email</label><input id="mail" type="email"></div>
+  <div data-testid="edit-header-headline"><div class="joy-input--medium"><div class="joy-input">
+    <div class="joy-label__group" for="headline"><div class="joy-label__group___main"><label data-joy-form-label="" class="joy-label joy-label--medium" for="headline">Intitulé du poste<!----><!----></label></div></div>
+    <div class="joy-input--wrapper"><input minlength="5" maxlength="50" data-testid="profile-edition-section-headline-input" id="headline" data-joy-form-field="" name="headline" class="" type="text" value="Développeur PHP"></div></div></div>
+    <div data-joy-form-error="" aria-hidden="true" class="joy-form-error joy-mt-2" role="alert" data-testid="profile-edition-section-headline-error"><span class="joy-icon joy-icon--secondary joy-icon--xsmall joy-icon-error"><i class="icon icon-warning-triangle" aria-hidden="true"></i></span><div><ul><li id="headline-msg"></li></ul></div></div>
+  </div>
+  <div id="bandeau" role="alert"></div>
+  <button type="button" id="annuler">Annuler</button>
+  <button type="button" id="enregistrer">Enregistrer</button>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const headline = $('headline');
+// Malt : maxlength posé, mais la valeur peut le dépasser (collage, saisie programmatique) ; message à chaque saisie.
+headline.addEventListener('input', () => {
+  const trop = headline.value.length > 50;
+  headline.className = trop ? 'joy-input--field-invalid' : '';
+  headline.closest('.joy-input').classList.toggle('joy-input--invalid', trop);
+  document.querySelector('.joy-form-error').classList.toggle('joy-has-error', trop);
+  $('headline-msg').textContent = trop ? 'Doit compter au maximum 50 caractères' : '';
+});
+function marquer(champ, msgEl, msg) {
+  if (msg) { champ.setAttribute('aria-invalid', 'true'); msgEl.textContent = msg; msgEl.hidden = false; }
+  else { champ.removeAttribute('aria-invalid'); msgEl.textContent = ''; msgEl.hidden = true; }
+  return msg ? 1 : 0;
+}
+$('enregistrer').addEventListener('click', () => {
+  let n = 0;
+  n += marquer($('cp'), $('cp-err'), /^\\d{5}$/.test($('cp').value) ? '' : 'Code postal à 5 chiffres');
+  n += marquer($('tel'), $('tel-err'), /^0\\d{9}$/.test($('tel').value) ? '' : 'Numéro à 10 chiffres');
+  n += marquer($('nom'), $('nom-err'), $('nom').value.trim() ? '' : 'Le nom est obligatoire');
+  if (headline.value.length > 50) n++;
+  if (!$('mail').checkValidity()) n++;
+  const txt = n ? n + ' erreur(s) dans le formulaire' : '';
+  if ($('bandeau').textContent !== txt) $('bandeau').textContent = txt;
+  $('toast').textContent = n ? 'Enregistrement impossible' : ''; $('toast').hidden = !n;
+  if (n === 0) document.querySelector('p').textContent = 'Enregistré';
+});
+</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -304,6 +370,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/pw-editeur') { res.end(PW_EDITEUR_PAGE); return; }
     if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
     if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
+    if (u.pathname === '/erreurs') { res.end(ERREURS_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

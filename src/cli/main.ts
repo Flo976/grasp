@@ -495,6 +495,8 @@ Lecture      snap [--max octets] [--scope <ref|css|frame=…>]   budget 12000 oc
                snap y donne l'arbre ARIA de Playwright, sans refs
                sortie coupée : dernière ligne « … tronqué : N caractères restants — affinez avec --max N / --scope <ref|css> »
                snap : dernière ligne « … élagué : … » si des nœuds sont masqués (liens sans nom, iframes non parcourues)
+               champ invalide : « [invalide: message] » (aria-invalid, aria-errormessage/describedby, validité native,
+               message d'erreur visible sous le champ même aria-hidden) ; message hors arbre sans champ : « alerte "…" »
              pdf [-o f.pdf]
 Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, élément visible (CSS) ou présent
                (ref, text:), DOM stable (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
@@ -515,6 +517,10 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                atteint la page ») ; sans effet observable → ERROR (jamais de faux OK)
              --snap-diff  diff du snapshot en un aller-retour, après stabilité du DOM ; 4000 caractères par défaut
                           (config diffMax ; --max N l'élargit, --scope <ref|css> le restreint à une zone)
+                          erreurs de formulaire : « ~ champ … [invalide: …] », « + alerte "…" » ; clic sans effet sur un
+                          formulaire invalide : « (aucun changement — formulaire invalide : <champs>) »
+             notes        fill : « champ invalide après la saisie : … », valeur > maxlength ; click sur un bouton dont
+                          le formulaire a des champs invalides : « formulaire invalide : … »
              --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
                           lignes écartées signalées sur stderr avec la commande pour les relire
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur

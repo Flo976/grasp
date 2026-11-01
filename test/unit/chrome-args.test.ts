@@ -1,15 +1,55 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChromeArgs, parseChromeVersion, assertSupportedVersion, MIN_CHROME_MAJOR, ANTI_BACKGROUND_ARGS, mergeDisableFeatures } from '../../src/browser/launch.js';
+import { buildChromeArgs, parseChromeVersion, assertSupportedVersion, MIN_CHROME_MAJOR, ANTI_BACKGROUND_ARGS, mergeDisableFeatures, parseDevtoolsStderr, freeLocalPort, windowsFreePort, linuxEphemeralRange } from '../../src/browser/launch.js';
 
-const base = { userDataDir: '/p', headless: true, env: {}, uid: 1000, shmBytes: 2 * 1024 ** 3 };
+const base = { userDataDir: '/p', headless: true, env: {}, uid: 1000, shmBytes: 2 * 1024 ** 3, port: 45678 };
 
 test('headless = --headless=new, jamais l\'ancien mode', () => {
   const { args } = buildChromeArgs(base);
   assert.ok(args.includes('--headless=new'));
   assert.ok(!args.includes('--headless'));
   assert.ok(args.includes('--user-data-dir=/p'));
-  assert.ok(args.includes('--remote-debugging-port=0'));
+});
+
+test('port DevTools : choisi par Grasp, jamais 0 (avec 0, Chrome expose navigator.webdriver === true)', () => {
+  const { args } = buildChromeArgs(base);
+  assert.ok(args.includes('--remote-debugging-port=45678'));
+  assert.ok(!args.includes('--remote-debugging-port=0'));
+  assert.throws(() => buildChromeArgs({ ...base, port: 0 }), /port/);
+});
+
+test('stderr de Chrome : ligne « DevTools listening », échecs de port détectés', () => {
+  const ok = parseDevtoolsStderr('[1:2:ERROR:x] bruit\nDevTools listening on ws://127.0.0.1:45678/devtools/browser/4a45d5d4-fc5b\n');
+  assert.deepEqual(ok, { listening: { host: '127.0.0.1', port: 45678, path: '/devtools/browser/4a45d5d4-fc5b' } });
+  assert.deepEqual(parseDevtoolsStderr(''), {});
+  assert.deepEqual(parseDevtoolsStderr('DevTools listening on ws://127.0.0.1:45'), {}, 'ligne incomplète : pas encore');
+  // Linux : 127.0.0.1:port déjà pris → Chrome se replie sur [::1] (mesuré) : ce n'est pas notre port.
+  const v6 = parseDevtoolsStderr('bind() failed: Address already in use (98)\nDevTools listening on ws://[::1]:45678/devtools/browser/x\n');
+  assert.match(v6.portFailure ?? '', /\[::1\]/);
+  // Windows : port pris → Chrome continue sans DevTools (mesuré).
+  const win = parseDevtoolsStderr('[3:4:ERROR:devtools_http_handler.cc:322] Cannot start http server for devtools.\n');
+  assert.match(win.portFailure ?? '', /DevTools/);
+});
+
+test('port libre : jamais dans une plage exclue (Windows : netsh excludedportrange)', async () => {
+  const seq = [50010, 5357, 50059, 41234];
+  const port = await freeLocalPort([[5357, 5357], [50000, 50059]], async () => seq.shift()!);
+  assert.equal(port, 41234);
+  const real = await freeLocalPort();
+  assert.ok(real > 0 && real < 65536);
+  await assert.rejects(freeLocalPort([[1, 65535]], async () => 50010), /port/);
+});
+
+test('port pour chrome.exe : hors plage éphémère Linux (réservée côté Windows en mirrored), hors exclusions, libre', async () => {
+  assert.deepEqual(linuxEphemeralRange('44620\t48715\n'), [44620, 48715]);
+  assert.deepEqual(linuxEphemeralRange('n importe quoi'), [32768, 60999], 'valeur par défaut du noyau');
+  // Tirages successifs : 0 → 20000 (exclu), 0.9 → dans la plage Linux, 0.5 → pris, 0.1 → libre.
+  const draws = [0, 0.9, 0.5, 0.1];
+  const tried: number[] = [];
+  const port = await windowsFreePort([[20000, 20000]], [44620, 48715], async (p: number) => { tried.push(p); return tried.length > 1; }, () => draws.shift()!);
+  assert.ok(port >= 20000 && port < 44620, `${port}`);
+  assert.equal(tried.length, 2, 'seuls les ports hors plages sont essayés au bind');
+  await assert.rejects(windowsFreePort([], [44620, 48715], async () => false, () => 0.3), /port/);
 });
 
 test('--no-sandbox : jamais ajouté pour un utilisateur normal', () => {

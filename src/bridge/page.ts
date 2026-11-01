@@ -5,7 +5,7 @@ import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/e
 import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
-import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type Snapshot } from './snapshot.js';
+import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot } from './snapshot.js';
 import { parseKey } from './keys.js';
 import { DEFAULT_LIMITS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
@@ -229,6 +229,86 @@ const SCOPE_TEXT_FN = `function () {
   return { text: el.innerText };
 }`;
 
+/**
+ * Erreurs de formulaire relevées dans le DOM, sous `root` (document ou élément) — ce que l'arbre
+ * d'accessibilité ne dit pas. Relevé sur Malt (Vue « joy ») : champ sans aucun aria-*, seule la classe
+ * `joy-input--field-invalid` ; message dans un `div role="alert" aria-hidden="true"` (absent de l'arbre).
+ * Pour chaque champ visible : invalide si aria-invalid ou :user-invalid ; message par aria-errormessage,
+ * aria-describedby (les éléments d'allure « erreur » en priorité), validationMessage, ou message
+ * d'erreur visible non relié (classe/id error|invalid|erreur, role=alert, aria-live=assertive) trouvé
+ * en remontant au plus 4 ancêtres. Un champ seulement marqué par une classe « invalid » sans message
+ * visible est ignoré (Angular met ng-invalid sur un champ vierge). Messages aria-hidden rattachés à
+ * aucun champ : `alerts`. Retour : { meta (JSON), els (champs, indexés par meta.fields[].i) }.
+ */
+const FORM_ERRORS_FN = `function (root) {
+  const scope = root.nodeType === 9 ? root.documentElement : (root.nodeType === 1 ? root : root.parentElement);
+  const doc = scope.ownerDocument;
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const shown = (el) => {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.display !== 'none';
+  };
+  const ERR = /(^|[^a-z])(err|errors?|invalid|erreurs?)([^a-z]|$)/i;
+  const cls = (el) => (typeof el.className === 'string' ? el.className : (el.getAttribute('class') || ''));
+  const errorish = (el) => ERR.test(cls(el)) || ERR.test(el.id || '') || el.getAttribute('role') === 'alert' || el.getAttribute('aria-live') === 'assertive';
+  const FIELD = 'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]),textarea,select,[contenteditable=""],[contenteditable="true"],[role=textbox],[role=combobox],[role=searchbox],[role=spinbutton],[role=checkbox],[role=radio],[role=switch],[role=listbox],[role=slider]';
+  const fields = [...scope.querySelectorAll(FIELD)].slice(0, 3000).filter(shown);
+  const refs = (el, a) => norm(el.getAttribute(a)).split(' ').filter(Boolean).map((id) => doc.getElementById(id)).filter(Boolean);
+  const ariaInvalid = (f) => { const v = f.getAttribute('aria-invalid'); return v !== null && v !== 'false'; };
+  const userInvalid = (f) => { try { return f.matches(':user-invalid'); } catch (e) { return false; } };
+  const recs = new Map();
+  const used = [];
+  for (const f of fields) {
+    const strong = ariaInvalid(f) || userInvalid(f);
+    let msg = '';
+    for (const el of refs(f, 'aria-errormessage')) if (shown(el) && norm(el.innerText)) { msg = norm(el.innerText); used.push(el); break; }
+    if (!msg && strong) {
+      const ds = refs(f, 'aria-describedby').filter((el) => shown(el) && norm(el.innerText));
+      const errs = ds.filter(errorish);
+      const pick = errs.length ? errs : ds;
+      if (pick.length) { msg = pick.map((el) => norm(el.innerText)).join(' '); used.push(...pick); }
+    }
+    if (!msg && userInvalid(f) && f.validationMessage) msg = norm(f.validationMessage);
+    if (strong || msg) recs.set(f, msg);
+  }
+  const cands = [...scope.querySelectorAll('[role=alert],[aria-live=assertive],[class*=err i],[class*=invalid i],[id*=err i],[id*=invalid i]')].slice(0, 500)
+    .filter((el) => !el.matches(FIELD) && errorish(el) && !el.querySelector(FIELD + ',button,a[href]') && shown(el));
+  const outer = cands.filter((el) => !cands.some((o) => o !== el && o.contains(el)));
+  const alerts = [];
+  for (const m of outer) {
+    const t = norm(m.innerText);
+    if (!t || t.length > 300 || used.some((u) => u.contains(m) || m.contains(u))) continue;
+    let field = null;
+    let a = m.parentElement;
+    for (let k = 0; k < 4 && a && !field; k++, a = a.parentElement) {
+      const inside = fields.filter((f) => a.contains(f));
+      if (inside.length === 1) field = inside[0];
+      else if (inside.length > 1) {
+        const prev = inside.filter((f) => f.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING);
+        field = prev.length ? prev[prev.length - 1] : null;
+        break;
+      }
+    }
+    if (field && !recs.get(field) && (recs.has(field) || ERR.test(cls(field)) || ERR.test(cls(m)))) { recs.set(field, t); used.push(m); }
+    else if (!field && m.closest('[aria-hidden="true"]')) alerts.push(t);
+  }
+  const els = [];
+  const metaFields = [];
+  for (const [f, t] of recs) { if (els.length >= 100) break; metaFields.push({ i: els.length, t: t.slice(0, 300) }); els.push(f); }
+  return { meta: JSON.stringify({ fields: metaFields, alerts: alerts.slice(0, 20) }), els };
+}`;
+
+/** Conteneur de formulaire d'un bouton cliqué (form, dialogue) ; null si l'élément n'est pas un bouton. */
+const BUTTON_FORM_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  const b = el && el.closest('button, input[type=submit], input[type=button], input[type=image], [role=button]');
+  if (!b) return null;
+  return b.form || b.closest('form, dialog, [role=dialog], [role=alertdialog], [aria-modal=true]') || b.ownerDocument.body;
+}`;
+
 const CLICK_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
 const HOVER_EVENTS = ['pointerover', 'pointermove', 'mouseover', 'mousemove'];
 const KEY_EVENTS = ['keydown', 'keyup', 'keypress', 'beforeinput', 'input'];
@@ -425,7 +505,7 @@ export class PageController {
    * qu'en natif), CSS laissé à Playwright (il attend que l'élément apparaisse). Cadre (frame=… >> …) : CSS ou
    * text: dans le cadre, même d'une autre origine ; `whole` : cadre entier si aucun élément n'est précisé (lectures).
    */
-  private async pwLocator(page: PwPage, sel: string, snap: Snapshot | undefined, whole?: string): Promise<{ loc: PwLocator; untag?: () => Promise<void> }> {
+  private async pwLocator(page: PwPage, sel: string, snap: Snapshot | undefined, whole?: string): Promise<{ loc: PwLocator; untag?: () => Promise<void>; id?: number }> {
     const s = sel.trim();
     if (s === '') throw badRequest('sélecteur vide');
     const ft = parseFrameTarget(s);
@@ -446,7 +526,7 @@ export class PageController {
       }
       return { loc: fl.locator(`css=${t.startsWith('css:') ? t.slice(4) : t}`) };
     }
-    if (REF_RE.test(s) || s.startsWith('text:')) return this.tagged(page, await this.resolve(s, snap));
+    if (REF_RE.test(s) || s.startsWith('text:')) { const id = await this.resolve(s, snap); return { ...(await this.tagged(page, id)), id }; }
     return { loc: page.locator(`css=${s.startsWith('css:') ? s.slice(4) : s}`) };
   }
 
@@ -455,9 +535,17 @@ export class PageController {
    * garde). Livraison vérifiée par la sonde dans le document principal : `pointer` (clic, survol, case) ou
    * `keys` (frappe, touche). Dans un cadre, la sonde ne voit rien : c'est dit.
    */
-  private pwAct(opts: ActionOptions, sel: string, what: string, fn: (loc: PwLocator, page: PwPage) => Promise<string | void>, check?: PwCheck): Promise<ActionResult> {
+  private pwAct(opts: ActionOptions, sel: string, what: string, fn: (loc: PwLocator, page: PwPage) => Promise<string | void>, check?: PwCheck, post?: (res: ActionResult, id: number | undefined) => Promise<string | undefined>): Promise<ActionResult> {
+    let target: number | undefined;
+    // `post` reçoit l'élément du document principal (ref, text: : déjà résolu ; CSS : résolu par Grasp après
+    // l'action) ; dans un cadre, aucun : les notes d'invalidité ne portent que sur le document principal.
+    const after = post === undefined ? undefined : async (res: ActionResult) => {
+      if (target === undefined && parseFrameTarget(sel) === null) target = await this.resolve(sel).catch(() => undefined);
+      return post(res, target);
+    };
     return this.act(opts, (snap) => this.pwUse(async (page) => {
-      const { loc, untag } = await this.pwLocator(page, sel, snap);
+      const { loc, untag, id } = await this.pwLocator(page, sel, snap);
+      target = id;
       try {
         if (check === undefined) return await fn(loc, page);
         if (check.pointer === true) await this.pwReady(loc, PW_ACTION_TIMEOUT_MS);
@@ -470,7 +558,7 @@ export class PageController {
         await this.pwVerified(check, what, async () => { out = await fn(loc, page); });
         return out;
       } catch (e) { throw pwError(e, what); } finally { await untag?.(); }
-    }));
+    }), after);
   }
 
   /**
@@ -920,8 +1008,9 @@ export class PageController {
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     const { nodes } = await this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree');
+    const formErrors = await this.formErrors(scopeBackendId);
     const { url, title } = await this.location();
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, formErrors, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -940,6 +1029,65 @@ export class PageController {
     });
     const frames = scope.split(/\s*>>\s*/).filter((x) => x.startsWith('frame=')).join(' >> ');
     return truncateText(`cadre ${scope} (arbre ARIA de Playwright, sans refs : agissez avec « ${frames} >> <css|text:…> »)\n${aria}`, opts.maxBytes ?? this.limits.snapMax, { wholeLines: true });
+  }
+
+  /**
+   * Erreurs de formulaire relevées dans le DOM sous `root` (défaut : le document), code fixe dans le monde
+   * isolé de lecture. Enrichissement du snapshot : un échec (navigation en cours, contexte détruit) ne fait
+   * jamais échouer la lecture, il donne seulement un relevé vide.
+   */
+  private async formErrors(root?: number): Promise<FormErrors> {
+    const group = 'grasp-erreurs';
+    try {
+      const ctx = await this.isolatedContext();
+      type Res = { result: { objectId?: string }; exceptionDetails?: unknown };
+      let res: Res;
+      if (root === undefined) {
+        res = await this.s<Res>('Runtime.evaluate', { contextId: ctx, expression: `(${FORM_ERRORS_FN})(document)`, objectGroup: group });
+      } else {
+        const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: root, executionContextId: ctx, objectGroup: group });
+        res = await this.s<Res>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function () { return (${FORM_ERRORS_FN})(this); }`, objectGroup: group });
+      }
+      if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return { fields: new Map(), alerts: [] };
+      type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
+      const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
+      const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { fields?: Array<{ i: number; t: string }>; alerts?: string[] };
+      const fields = new Map<number, string>();
+      const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
+      if (elsId !== undefined && meta.fields !== undefined && meta.fields.length > 0) {
+        const items = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
+        const byIndex = new Map(items.result.filter((p) => /^\d+$/.test(p.name)).map((p) => [Number(p.name), p.value?.objectId]));
+        for (const f of meta.fields) {
+          const objectId = byIndex.get(f.i);
+          if (objectId === undefined) continue;
+          const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId });
+          fields.set(node.backendNodeId, f.t);
+        }
+      }
+      return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [] };
+    } catch {
+      this.isoCtx = undefined;
+      return { fields: new Map(), alerts: [] };
+    } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
+  }
+
+  /**
+   * Après un clic sur un bouton : champs invalides de son formulaire (form, dialogue, sinon la page),
+   * en lignes de snapshot. Vide si l'élément n'est pas un bouton ou n'existe plus (navigation).
+   */
+  private async invalidAround(id: number): Promise<string[]> {
+    const group = 'grasp-erreurs';
+    let container: number | undefined;
+    try {
+      const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: id, objectGroup: group });
+      const r = await this.s<{ result: { objectId?: string; subtype?: string } }>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: BUTTON_FORM_FN, objectGroup: group });
+      if (r.result.objectId === undefined) return [];
+      container = (await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId: r.result.objectId })).node.backendNodeId;
+    } catch { return []; } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
+    const around = await this.formErrors(container);
+    if (around.fields.size === 0) return [];
+    const snap = await this.snapshot();
+    return snap.invalid.filter((i) => i.backendId !== undefined && around.fields.has(i.backendId)).map((i) => i.line);
   }
 
   /** Mémorise (rôle, nom) de chaque ref remise à l'agent ; borné, les plus anciennes sortent d'abord. */
@@ -1244,7 +1392,11 @@ export class PageController {
     }`);
   }
 
-  private async act(opts: ActionOptions, fn: (snap: Snapshot | undefined) => Promise<string | void>): Promise<ActionResult> {
+  /**
+   * `post` : après le diff, sur le DOM de fin d'action — peut annoter `res.diff` et renvoyer une note.
+   * Un échec de `post` (navigation, élément parti) ne fait jamais échouer l'action, qui a eu lieu.
+   */
+  private async act(opts: ActionOptions, fn: (snap: Snapshot | undefined) => Promise<string | void>, post?: (res: ActionResult) => Promise<string | undefined>): Promise<ActionResult> {
     if (opts.console === true) this.assertConsole();
     this.lastDialog = null;
     const seq = this.consoleBuf.seq;
@@ -1268,6 +1420,10 @@ export class PageController {
         res.diff = await this.diffAfter(before, opts);
         // « Aucun changement » après une entrée qui n'a pas atteint la page : ce n'est pas un OK ordinaire.
         if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
+      }
+      if (post !== undefined) {
+        const extra = await post(res).catch(() => undefined);
+        if (extra !== undefined && extra !== '') res.detail = res.detail !== undefined ? `${res.detail} ; ${extra}` : extra;
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
@@ -1425,9 +1581,11 @@ export class PageController {
   click(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
     let engine: 'native' | 'playwright';
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
-    if (engine === 'playwright') return this.pwAct(opts, sel, 'clic', (l) => l.click({ timeout: PW_ACTION_TIMEOUT_MS }), { pointer: true });
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'clic', (l) => l.click({ timeout: PW_ACTION_TIMEOUT_MS }), { pointer: true }, (res, id) => this.invalidFormNote(id, res));
+    let clicked: number | undefined;
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
+      clicked = id;
       try { await this.clickNode(id); } catch (e) {
         // Erreur d'actionnabilité (pas de zone cliquable, désactivé) : Playwright attend que l'élément le devienne.
         if (this.fallback !== 'playwright' || !(e instanceof GraspError) || e.status !== 409) throw e;
@@ -1436,7 +1594,27 @@ export class PageController {
         }
         this.notes?.push(`rejoué via Playwright : ${e.message}`);
       }
-    });
+    }, (res) => this.invalidFormNote(clicked, res));
+  }
+
+  /**
+   * Après un clic : bouton sans effet visible alors que son formulaire a des champs invalides — c'est la cause
+   * probable. Annote le diff « aucun changement », sinon renvoie une note.
+   */
+  private async invalidFormNote(id: number | undefined, res: ActionResult): Promise<string | undefined> {
+    if (id === undefined) return undefined;
+    const bad = await this.invalidAround(id);
+    if (bad.length === 0) return undefined;
+    const list = bad.slice(0, 5).join(' ; ') + (bad.length > 5 ? ` ; … ${bad.length - 5} autre(s)` : '');
+    if (res.diff === NO_CHANGE) { res.diff = `(aucun changement — formulaire invalide : ${list})`; return undefined; }
+    return `formulaire invalide : ${list}`;
+  }
+
+  /** Après un fill : le champ est-il invalide (message de la page) ? */
+  private async invalidFieldNote(id: number | undefined): Promise<string | undefined> {
+    if (id === undefined) return undefined;
+    const msg = (await this.formErrors()).fields.get(id);
+    return msg === undefined ? undefined : `champ invalide après la saisie${msg ? ` : ${msg}` : ''}`;
   }
 
   /** Survol : pointeur déplacé sur l'élément (menus au survol, infobulles), livraison vérifiée. */
@@ -1502,9 +1680,11 @@ export class PageController {
         // On vérifie l'effet, pas l'émission (maxlength, masque de saisie) ; contenteditable : texte affiché.
         let actual: string;
         try { actual = await l.inputValue({ timeout: 2000 }); } catch { actual = (await l.innerText({ timeout: 2000 })).trim(); value = value.trim(); }
+        // Playwright respecte maxlength (valeur tronquée → 409 ici) : pas de note « au-delà de maxlength » à faire.
         if (actual !== value) throw conflict(`la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
-      });
+      }, undefined, (_res, id) => this.invalidFieldNote(id));
     }
+    let fieldId: number | undefined;
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);
@@ -1543,7 +1723,12 @@ export class PageController {
       // On vérifie l'effet, pas l'émission : une valeur tronquée (maxlength, masque) est une erreur.
       if (actual !== value) throw conflict(`la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
       await this.callOn(id, `function () { this.dispatchEvent(new Event('change', { bubbles: true })); }`);
-    });
+      fieldId = id;
+      // La saisie programmatique passe outre maxlength (mesuré sur Malt : 56 caractères pour maxlength=50).
+      const max = await this.callOn<number>(id, `function () { return typeof this.maxLength === 'number' ? this.maxLength : -1; }`);
+      if (max > 0 && value.length > max) return `valeur de ${value.length} caractères pour maxlength=${max} : un humain ne pourrait pas la saisir, la page la refusera probablement`;
+      return undefined;
+    }, () => this.invalidFieldNote(fieldId));
   }
 
   select(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {
