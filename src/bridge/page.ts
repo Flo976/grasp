@@ -7,7 +7,7 @@ import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot } from './snapshot.js';
 import { parseKey } from './keys.js';
-import { DEFAULT_LIMITS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
+import { ACTION_GRACE_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
@@ -61,8 +61,34 @@ export interface SavedShot { path: string; width: number; height: number; bytes:
 
 export interface WaitOptions { text?: string | undefined; sel?: string | undefined; idle?: boolean | undefined; timeout?: number | undefined }
 export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel' | 'idle' }
-/** Résultat d'une attente de stabilité du DOM. `error` : l'attente elle-même a échoué (jamais silencieux). */
-interface Stability { stable: boolean; ms: number; mutations: number; error?: string }
+/**
+ * Résultat d'une attente de stabilité (DOM et réseau). `error` : l'attente elle-même a échoué (jamais
+ * silencieux). `requests` : requêtes encore en vol au plafond. `challenge` : page de challenge anti-bot
+ * toujours affichée (aucune redirection dans le plafond).
+ */
+interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean }
+/** Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent. */
+interface StableOptions { since?: number; challenge?: boolean }
+
+/**
+ * Types de requêtes attendus par l'attente de stabilité : celles qui peuvent changer l'arbre d'accessibilité
+ * (document, XHR, fetch, script). Images, polices, feuilles de style, médias, balises de mesure (Ping) et flux
+ * permanents (EventSource, WebSocket) n'en font pas partie : sinon une page chargée d'images irait au plafond.
+ */
+const TRACKED_REQUESTS = new Set(['Document', 'XHR', 'Fetch', 'Script']);
+
+/**
+ * Page de challenge anti-bot (Cloudflare, AWS WAF de Booking, DataDome…) : peu de texte, et un titre, un texte
+ * ou des marqueurs typiques. Elle se remplace d'elle-même par la vraie page (location.replace) après quelques
+ * secondes : l'attente de stabilité guette alors cette navigation, dans le plafond.
+ */
+const CHALLENGE_FN = `function () {
+  const t = (document.body ? document.body.innerText : '').trim();
+  if (t.length > 600) return false;
+  const words = /just a moment|un (instant|moment)\\b|attention required|checking (your|if)|v[ée]rification|verify(ing)? (you|that)|are you (a )?human|[êe]tes[- ]vous (un )?humain|captcha|security check|please wait|veuillez patienter|redirect/i;
+  if (words.test(document.title + ' ' + t.slice(0, 400))) return true;
+  return !!document.querySelector('[id*="challenge" i], [class*="challenge" i], script[src*="challenge" i], meta[http-equiv="refresh" i], iframe[src*="captcha" i]');
+}`;
 
 interface Box { x: number; y: number; width: number; height: number }
 interface CallFrame { functionName: string; url: string; lineNumber: number; columnNumber: number }
@@ -204,13 +230,60 @@ const SYNTH_HOVER_FN = `function (x, y) {
   el.dispatchEvent(new MouseEvent('mousemove', o));
   return true;
 }`;
-/** Repli d'une saisie : setter natif de value + input (contenteditable : texte remplacé). */
+/** Repli d'une saisie : setter natif de value + input (contenteditable : un paragraphe par ligne, texte brut). */
 const SYNTH_FILL_FN = `function (v) {
-  if (this.isContentEditable) { this.textContent = v; this.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v })); return true; }
+  if (this.isContentEditable) {
+    let h = this.nodeType === 1 ? this : this.parentElement;
+    while (h.parentElement && h.parentElement.isContentEditable) h = h.parentElement;
+    const lines = v.split('\\n');
+    if (lines.length < 2) h.textContent = v;
+    else h.replaceChildren(...lines.map((l) => { const p = document.createElement('p'); if (l === '') p.append(document.createElement('br')); else p.textContent = l; return p; }));
+    h.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v }));
+    return true;
+  }
   const p = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(p, 'value').set.call(this, v);
   this.dispatchEvent(new Event('input', { bubbles: true }));
   return true;
+}`;
+
+/** fill sur un contenteditable : sélectionne TOUT le contenu de l'hôte d'édition (pas seulement le bloc visé). */
+const SELECT_EDITABLE_FN = `function () {
+  let h = this.nodeType === 1 ? this : this.parentElement;
+  while (h.parentElement && h.parentElement.isContentEditable) h = h.parentElement;
+  if (document.activeElement !== h && typeof h.focus === 'function') h.focus();
+  const r = document.createRange(); r.selectNodeContents(h);
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  return true;
+}`;
+
+/**
+ * Après suppression du contenu d'un contenteditable : le bloc restant garde son format (titre, liste,
+ * citation…) et le curseur ses styles (gras…) — le texte inséré en hériterait. Commandes d'édition natives
+ * (beforeinput formatBlock / insert*List, que les éditeurs riches interceptent ou observent) : bloc ramené
+ * à un paragraphe, styles de caractère désactivés. Renvoie les formats retirés.
+ */
+const PLAIN_FORMAT_FN = `function () {
+  let h = this.nodeType === 1 ? this : this.parentElement;
+  while (h.parentElement && h.parentElement.isContentEditable) h = h.parentElement;
+  const out = [];
+  const blockAt = () => {
+    let n = getSelection().anchorNode;
+    if (n && n.nodeType !== 1) n = n.parentElement;
+    for (; n && n !== h && h.contains(n); n = n.parentElement) if (/^(H[1-6]|LI|BLOCKQUOTE|PRE)$/.test(n.nodeName)) return n;
+    return null;
+  };
+  for (let i = 0; i < 4; i++) {
+    const b = blockAt();
+    if (!b) break;
+    out.push(b.nodeName);
+    if (b.nodeName === 'LI') document.execCommand(b.parentElement && b.parentElement.nodeName === 'OL' ? 'insertOrderedList' : 'insertUnorderedList');
+    else document.execCommand('formatBlock', false, 'p');
+  }
+  for (const c of ['bold', 'italic', 'underline', 'strikeThrough']) {
+    try { if (document.queryCommandState(c)) { document.execCommand(c); out.push(c); } } catch (e) { /* commande inconnue */ }
+  }
+  return out;
 }`;
 
 /**
@@ -423,6 +496,10 @@ export class PageController {
   private notes: string[] | undefined;
   /** Chargements démarrés dans le cadre principal (une action qui navigue a été livrée). */
   private loadStarts = 0;
+  /** Requêtes réseau en vol de l'onglet (requestId → instant de départ), pour l'attente de stabilité. */
+  private readonly inflight = new Map<string, number>();
+  /** Dernières activités réseau (départ ou fin : `at`) et instant de départ de la requête concernée. */
+  private readonly netEvents: Array<{ at: number; start: number }> = [];
   /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
   private undelivered = false;
   private probeSeq = 0;
@@ -628,6 +705,11 @@ export class PageController {
     });
   }
 
+  private netEvent(start: number): void {
+    this.netEvents.push({ at: Date.now(), start });
+    if (this.netEvents.length > 64) this.netEvents.shift();
+  }
+
   private s<T = any>(method: string, params: object = {}): Promise<T> {
     return this.cdp.send<T>(method, params, this.sessionId);
   }
@@ -639,6 +721,9 @@ export class PageController {
     await this.s('Accessibility.enable');
     // Console : seulement si la politique l'autorise. Runtime.enable est détectable par la page.
     if (this.policy.allowConsole) await this.enableConsole(this.sessionId);
+    // Les événements Network (activés avec la console) nourrissent aussi l'attente de stabilité : requêtes
+    // déclenchées par une navigation ou une action. allowConsole=false : aucun domaine Network (discrétion,
+    // voir console.test.ts), l'attente ne porte alors que sur le DOM et les navigations.
     await this.guard(this.sessionId);
     // Iframes hors processus (OOPIF) de NOTRE onglet : attachées en pause, gardées (leurs propres
     // navigations ne passent pas par l'interception de la page) et écoutées, puis relâchées.
@@ -862,6 +947,23 @@ export class PageController {
       if (this.policy.allowConsole) this.onConsoleEvent(e);
       const main = e.params?.frameId === this.mainFrameId;
       switch (e.method) {
+        case 'Network.requestWillBeSent': {
+          const url = String(e.params.request?.url ?? '');
+          if (!TRACKED_REQUESTS.has(String(e.params.type)) || /^(data|blob):/.test(url)) break;
+          if (this.inflight.size > 500) this.inflight.delete(this.inflight.keys().next().value as string);
+          // Redirection : même requestId, la requête continue (instant de départ conservé).
+          const start = this.inflight.get(e.params.requestId) ?? Date.now();
+          this.inflight.set(e.params.requestId, start);
+          this.netEvent(start);
+          break;
+        }
+        case 'Network.loadingFinished': case 'Network.loadingFailed': {
+          const start = this.inflight.get(e.params.requestId);
+          if (start === undefined) break;
+          this.inflight.delete(e.params.requestId);
+          this.netEvent(start);
+          break;
+        }
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
         case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; this.loadStarts++; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
@@ -909,10 +1011,19 @@ export class PageController {
     await this.cdp.send('Target.closeTarget', { targetId: this.targetId }).catch(() => undefined);
   }
 
+  /**
+   * URL et titre COURANTS. Le titre est relu dans le document (document.title) : celui de l'historique de
+   * navigation peut rester celui d'avant une route SPA ou un changement de document.title.
+   */
   async location(): Promise<{ url: string; title: string }> {
     const h = await this.s<{ currentIndex: number; entries: Array<{ url: string; title: string }> }>('Page.getNavigationHistory');
     const cur = h.entries[h.currentIndex];
-    return { url: cur?.url ?? 'about:blank', title: cur?.title ?? '' };
+    let title = cur?.title ?? '';
+    try {
+      const t = await this.evalIsolated<unknown>('document.title');
+      if (typeof t === 'string') title = t;
+    } catch { /* document en cours de remplacement : titre de l'historique */ }
+    return { url: cur?.url ?? 'about:blank', title };
   }
 
   /** Attend la fin d'une éventuelle navigation déclenchée par une action. */
@@ -932,10 +1043,11 @@ export class PageController {
     const seq = this.consoleBuf.seq;
     try {
       const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
+      const doc0 = this.docGen;
       const { loc, stab } = await this.navigateStable(url);
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
       if (!stab.stable) out.detail = PageController.unstableNote(stab);
-      if (before) out.diff = await this.diffAfter(before, opts);
+      if (before) out.diff = await this.diffAfter(before, opts, doc0);
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
     } catch (e) { throw await this.decorate(e, opts, seq); }
@@ -946,25 +1058,42 @@ export class PageController {
     return (await this.navigateStable(url)).loc;
   }
 
+  /**
+   * Navigue, attend le load, puis la stabilité (DOM et réseau) — en suivant une navigation de document qui
+   * démarre pendant l'attente (challenge anti-bot qui se remplace par la vraie page), dans le plafond.
+   */
   private async navigateStable(url: string): Promise<{ loc: { url: string; title: string }; stab: Stability }> {
+    const since = Date.now();
     await this.navigateLoaded(url);
-    const stab = await this.waitStable();
+    const stab = await this.waitStable(this.limits.stableTimeoutMs, { since, challenge: true });
     return { loc: await this.location(), stab };
   }
 
   private static unstableNote(st: Stability): string {
+    if (st.challenge === true) return `page de challenge anti-bot probable, toujours affichée après ${st.ms} ms (aucune redirection) : la page peut encore changer`;
+    if (st.requests !== undefined && st.requests > 0) return `réseau encore actif après ${st.ms} ms (${st.requests} requête(s) en cours) : la page peut encore changer`;
     return `DOM encore instable après ${st.ms} ms (${st.mutations} mutations)${st.error !== undefined ? ` — attente impossible : ${st.error}` : ''} : la page peut encore changer`;
   }
 
-  /** Diff après l'action, borné (diffMax ou --max), sur la zone --scope s'il y en a une. */
-  private async diffAfter(before: Snapshot, opts: ActionOptions): Promise<string> {
+  /**
+   * Diff après l'action, borné (diffMax ou --max), sur la zone --scope s'il y en a une. `doc0` : document
+   * (docGen) du snapshot d'avant. Nouveau document → snapshot complet, annoncé ; changement d'URL dans le même
+   * document (route SPA) → diff, précédé de « ~ url ».
+   */
+  private async diffAfter(before: Snapshot, opts: ActionOptions, doc0: number): Promise<string> {
     let after: Snapshot;
     try { after = await this.snapshot({ scope: opts.scope }); } catch (e) {
       // L'action a eu lieu : une zone disparue n'en fait pas un échec, mais c'est dit.
       if (opts.scope !== undefined && e instanceof GraspError && (e.status === 404 || e.status === 409)) return `(zone ${opts.scope} introuvable après l'action : ${e.message})`;
       throw e;
     }
-    return truncateText(diffSnapshots(before, after), opts.max ?? this.limits.diffMax, { wholeLines: true });
+    let out: string;
+    if (this.docGen !== doc0) out = `navigation → ${after.url} (nouvelle page : snapshot complet)\n${after.text}`;
+    else if (before.url !== after.url) {
+      const d = diffSnapshots({ ...before, url: after.url }, after);
+      out = `~ url ${after.url}${d === NO_CHANGE ? '' : `\n${d}`}`;
+    } else out = diffSnapshots(before, after);
+    return truncateText(out, opts.max ?? this.limits.diffMax, { wholeLines: true });
   }
 
   private async navigateLoaded(url: string): Promise<void> {
@@ -1173,33 +1302,77 @@ export class PageController {
     }
   }
 
+  /** Requêtes en vol parties depuis `since`, hors requêtes de longue durée (long-polling, flux). */
+  private activeRequests(since: number): number {
+    const now = Date.now();
+    let n = 0;
+    for (const start of this.inflight.values()) if (start >= since && now - start < LONG_REQUEST_MS) n++;
+    return n;
+  }
+
+  /** Activité réseau (départ ou fin d'une requête partie depuis `since`) après l'instant `after`. */
+  private netActiveAfter(since: number, after: number): boolean {
+    return this.netEvents.some((ev) => ev.at > after && ev.start >= since);
+  }
+
+  /** Navigation de document en cours ou demandée (location.replace, lien, formulaire). */
+  private navigating(): boolean {
+    return this.loading || (this.pendingNavAt !== 0 && Date.now() - this.pendingNavAt < 1500);
+  }
+
   /**
-   * Attend que le DOM ne bouge plus pendant STABLE_QUIET_MS (MutationObserver dans un monde isolé), au plus
-   * `capMs`. Une navigation pendant l'attente détruit le monde isolé : on attend la fin du chargement et on
-   * recommence avec le temps restant. Ne lève jamais : le résultat dit si la page est stable.
+   * Attend que la page soit STABLE : ni mutation du DOM (MutationObserver dans un monde isolé) ni activité
+   * réseau pendant STABLE_QUIET_MS, aucune requête en vol (partie depuis `o.since`), aucune navigation en cours
+   * — au plus `capMs`. Une navigation de document qui démarre pendant l'attente est suivie : on attend la fin du
+   * chargement et on recommence avec le temps restant. `o.challenge` : une page de challenge anti-bot stable
+   * est guettée jusqu'à sa redirection. Ne lève jamais : le résultat dit si la page est stable.
    */
-  private async waitStable(capMs = this.limits.stableTimeoutMs): Promise<Stability> {
+  private async waitStable(capMs = this.limits.stableTimeoutMs, o: StableOptions = {}): Promise<Stability> {
     const t0 = Date.now();
+    const since = o.since ?? 0;
     let mutations = 0;
     let error: string | undefined;
     if (capMs <= 0) return { stable: true, ms: 0, mutations: 0 };
+    const elapsed = () => Date.now() - t0;
+    const unstable = (extra: Partial<Stability> = {}): Stability => {
+      const requests = this.activeRequests(since);
+      return { stable: false, ms: elapsed(), mutations, ...(error !== undefined ? { error } : {}), ...(requests > 0 ? { requests } : {}), ...extra };
+    };
     for (;;) {
-      const left = capMs - (Date.now() - t0);
-      if (left <= 0) return { stable: false, ms: Date.now() - t0, mutations, ...(error !== undefined ? { error } : {}) };
+      if (capMs - elapsed() <= 0) return unstable();
+      // Navigation de document en cours : on attend la fin du chargement (le nouveau document repart de zéro).
+      if (this.navigating()) { await this.settle(Math.max(0, capMs - elapsed())); continue; }
+      // Requêtes en vol : on attend qu'elles se terminent (leur réponse met souvent le DOM à jour).
+      if (this.activeRequests(since) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
+      const left = capMs - elapsed();
       let timer: NodeJS.Timeout | undefined;
+      let r: { stable: boolean; mutations: number };
       try {
-        const r = await Promise.race([
+        r = await Promise.race([
           this.evalIsolated<{ stable: boolean; mutations: number }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left})`, true),
           new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('le navigateur ne répond pas')), left + 3000); }),
         ]);
-        return { stable: r.stable, ms: Date.now() - t0, mutations: mutations + r.mutations };
       } catch (e) {
         // Navigation pendant l'attente (contexte détruit) : on attend la fin du chargement, puis on recommence.
         error = (e as Error).message;
         mutations++;
         this.isoCtx = undefined;
-        await this.settle(Math.max(0, capMs - (Date.now() - t0)));
+        await this.settle(Math.max(0, capMs - elapsed()));
+        continue;
       } finally { clearTimeout(timer); }
+      mutations += r.mutations;
+      if (!r.stable) return unstable();
+      // DOM calme : encore faut-il que le réseau l'ait été pendant la même fenêtre, et qu'aucune navigation
+      // n'ait démarré (redirection JS juste après le load) — sinon on recommence.
+      if (this.navigating() || this.activeRequests(since) > 0 || this.netActiveAfter(since, Date.now() - STABLE_QUIET_MS)) continue;
+      if (o.challenge === true && await this.evalIsolated<boolean>(`(${CHALLENGE_FN})()`).catch(() => false)) {
+        // Challenge anti-bot : il se remplace lui-même par la vraie page ; on guette cette navigation.
+        const m = this.mark();
+        while (!this.navigatedSince(m) && !this.navigating() && capMs - elapsed() > 0) await sleep(Math.min(50, Math.max(1, capMs - elapsed())));
+        if (this.navigatedSince(m) || this.navigating()) continue;
+        return unstable({ challenge: true });
+      }
+      return { stable: true, ms: elapsed(), mutations };
     }
   }
 
@@ -1216,6 +1389,7 @@ export class PageController {
     const t0 = Date.now();
     if (o.text === undefined && o.sel === undefined) {
       const cap = o.timeout ?? (this.limits.stableTimeoutMs > 0 ? this.limits.stableTimeoutMs : DEFAULT_LIMITS.stableTimeoutMs);
+      // Réseau ET DOM : requêtes en vol comprises (même parties avant l'appel), 400 ms de calme exigées.
       const st = await this.waitStable(cap);
       if (!st.stable) throw new GraspError(504, `${PageController.unstableNote(st).replace(/ : la page peut encore changer$/, '')} — --timeout <ms> pour attendre plus longtemps`);
       return { ok: true, waited: Date.now() - t0, condition: 'idle' };
@@ -1393,6 +1567,19 @@ export class PageController {
   }
 
   /**
+   * Onglet en arrière-plan (document.visibilityState = hidden : autre onglet actif, fenêtre réduite) : les
+   * entrées de CDP y sont bien livrées (la sonde les voit, la livraison vérifiée répond OK), mais la page ne
+   * rend plus (requestAnimationFrame suspendu, minuteries bridées) : sa réaction n'arriverait pas. On ramène
+   * l'onglet au premier plan AVANT l'action, et c'est dit.
+   */
+  private async ensureVisible(): Promise<void> {
+    if (await this.evalIsolated<string>('document.visibilityState').catch(() => 'visible') !== 'hidden') return;
+    await this.s('Page.bringToFront').catch(() => undefined);
+    await this.evalIsolated(`new Promise((r) => { if (document.visibilityState !== 'hidden') return r(true); const t = setTimeout(() => r(false), 1000); document.addEventListener('visibilitychange', () => { clearTimeout(t); r(true); }, { once: true }); })`, true).catch(() => undefined);
+    this.notes?.push('onglet en arrière-plan (document caché) : ramené au premier plan avant l\'action');
+  }
+
+  /**
    * `post` : après le diff, sur le DOM de fin d'action — peut annoter `res.diff` et renvoyer une note.
    * Un échec de `post` (navigation, élément parti) ne fait jamais échouer l'action, qui a eu lieu.
    */
@@ -1402,22 +1589,29 @@ export class PageController {
     const seq = this.consoleBuf.seq;
     const t0 = Date.now();
     const nav0 = this.navCount;
+    const loads0 = this.loadStarts;
     const actionNotes: string[] = [];
     this.notes = actionNotes;
     this.undelivered = false;
     try {
+      await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
+      const doc0 = this.docGen;
       let detail: string | void;
       try { detail = await fn(before); } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp' }).catch(() => undefined); }
+      const tEnd = Date.now();
       await this.settle();
-      // Le diff est calculé sur un DOM stable (sinon : état intermédiaire, refs aussitôt invalides) ;
-      // une action qui a navigué attend aussi le rendu, comme `nav`.
-      const stab = opts.snapDiff === true || this.navCount !== nav0 ? await this.waitStable() : undefined;
+      // Réaction de la page à l'action : navigation (document ou route SPA), requête réseau partie depuis t0.
+      const reacted = () => this.navCount !== nav0 || this.loadStarts !== loads0 || this.navigating() || this.netActiveAfter(t0, t0);
+      if (opts.snapDiff !== true && !reacted() && ACTION_GRACE_MS > Date.now() - tEnd) await sleep(ACTION_GRACE_MS - (Date.now() - tEnd));
+      // Le diff est calculé sur une page stable (sinon : état intermédiaire, refs aussitôt invalides) ; une action
+      // qui a navigué ou lancé des requêtes attend aussi leur fin et le rendu, comme `nav`.
+      const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, { since: t0 }) : undefined;
       const res: ActionResult = { ok: true };
       const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
-        res.diff = await this.diffAfter(before, opts);
+        res.diff = await this.diffAfter(before, opts, doc0);
         // « Aucun changement » après une entrée qui n'a pas atteint la page : ce n'est pas un OK ordinaire.
         if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
       }
@@ -1691,6 +1885,7 @@ export class PageController {
       const isField = (info.tag === 'INPUT' && !NON_TEXT_INPUTS.has(info.type)) || info.tag === 'TEXTAREA' || info.editable;
       if (!isField) throw badRequest(`fill attend un champ de saisie, reçu <${info.tag.toLowerCase()}${info.type ? ` type=${info.type}` : ''}> — utilisez click, check ou select`);
       if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
+      if (info.editable && info.tag !== 'INPUT' && info.tag !== 'TEXTAREA') { fieldId = id; await this.fillEditable(id, value); return undefined; }
       const prepare = async () => {
         await this.s('DOM.focus', { backendNodeId: id });
         await this.callOn(id, `function () { if (typeof this.select === 'function') this.select(); else { const r = document.createRange(); r.selectNodeContents(this); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }`);
@@ -1729,6 +1924,49 @@ export class PageController {
       if (max > 0 && value.length > max) return `valeur de ${value.length} caractères pour maxlength=${max} : un humain ne pourrait pas la saisir, la page la refusera probablement`;
       return undefined;
     }, () => this.invalidFieldNote(fieldId));
+  }
+
+  /**
+   * fill sur un éditeur riche (contenteditable : Quill, ProseMirror, TipTap, TinyMCE…) : tout le contenu de
+   * l'hôte d'édition est sélectionné puis supprimé (Suppr), le format de bloc ou de caractère resté sous le
+   * curseur (titre, liste, citation, gras…) est retiré, puis le texte est inséré BRUT (Input.insertText), une
+   * ligne à la fois, les retours ligne devenant de vrais paragraphes (Entrée). Livraison vérifiée comme une
+   * frappe ; texte final vérifié (lignes non vides comparées). Jamais de setter de <input> sur un élément
+   * qui n'en est pas un (« TypeError: Illegal invocation »).
+   */
+  private async fillEditable(id: number, value: string): Promise<void> {
+    const lines = value.replace(/\r\n?/g, '\n').split('\n');
+    // Comparaison au rendu : espaces consécutifs repliés (le contenteditable les affiche en un, ou en insécables), lignes vides ignorées.
+    const norm = (t: string) => t.split('\n').map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim()).filter((l) => l !== '').join('\n');
+    const want = norm(value);
+    const read = `function () { let h = this.nodeType === 1 ? this : this.parentElement; while (h.parentElement && h.parentElement.isContentEditable) h = h.parentElement; return h.innerText; }`;
+    const key = async (k: { key: string; code: string; keyCode: number; text?: string }) => {
+      const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode, nativeVirtualKeyCode: k.keyCode };
+      await this.s('Input.dispatchKeyEvent', k.text !== undefined ? { ...base, type: 'keyDown', text: k.text, unmodifiedText: k.text } : { ...base, type: 'rawKeyDown' });
+      await this.s('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+    };
+    const prepare = async () => {
+      await this.s('DOM.focus', { backendNodeId: id }).catch(() => undefined);
+      await this.callIsolated(id, SELECT_EDITABLE_FN);
+    };
+    const native = async () => {
+      await key({ key: 'Delete', code: 'Delete', keyCode: 46 });
+      await this.callIsolated(id, PLAIN_FORMAT_FN).catch(() => undefined);
+      for (const [i, line] of lines.entries()) {
+        if (i > 0) await key({ key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' });
+        if (line !== '') await this.s('Input.insertText', { text: line });
+      }
+    };
+    await prepare();
+    await this.deliver({
+      kind: 'saisie', types: KEY_EVENTS, prepare, native,
+      synthetic: async () => { await this.callIsolated(id, SYNTH_FILL_FN, value); },
+      effect: async () => norm(await this.callIsolated<string>(id, read)) === want,
+    });
+    // L'éditeur peut retoucher le texte après coup (normalisation asynchrone) : on laisse une frame passer.
+    await this.evalIsolated(FRAMES_FN, true).catch(() => undefined);
+    const actual = norm(await this.callIsolated<string>(id, read));
+    if (actual !== want) throw conflict(`le texte effectif de l'éditeur est « ${actual.replace(/\n/g, '⏎')} » et non « ${want.replace(/\n/g, '⏎')} » (l'éditeur a-t-il refusé ou transformé la saisie ?)`);
   }
 
   select(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {
