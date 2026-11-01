@@ -301,6 +301,45 @@ const FORM_ERRORS_FN = `function (root) {
   return { meta: JSON.stringify({ fields: metaFields, alerts: alerts.slice(0, 20) }), els };
 }`;
 
+/**
+ * Nœuds texte mis en forme par text-transform (au plus 400, sur 50 000 parcourus) et leur texte DOM :
+ * l'arbre d'accessibilité ne donne que le texte transformé. Retour : { meta (JSON des textes), els }.
+ */
+const SOURCE_TEXTS_FN = `function () {
+  const texts = [];
+  const els = [];
+  const style = new Map();
+  const root = document.body || document.documentElement;
+  if (!root) return { meta: '[]', els };
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  let seen = 0;
+  while ((n = tw.nextNode()) && els.length < 400 && seen++ < 50000) {
+    const p = n.parentElement;
+    if (!p || !n.data.trim()) continue;
+    let tt = style.get(p);
+    if (tt === undefined) { tt = getComputedStyle(p).textTransform || 'none'; style.set(p, tt); }
+    if (tt === 'none') continue;
+    texts.push(n.data);
+    els.push(n);
+  }
+  return { meta: JSON.stringify(texts), els };
+}`;
+
+/** Élément d'une ref absente du snapshot : '' retiré, 'modal' hors de la modale ouverte, 'hidden' sous aria-hidden/inert, 'present' sinon. */
+const MASKED_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el || !el.isConnected) return '';
+  const isModal = (m) => {
+    if (m.localName === 'dialog') { try { if (m.matches(':modal')) return true; } catch (e) {} }
+    return m.getAttribute('aria-modal') === 'true' && m.getClientRects().length > 0;
+  };
+  const modals = [...document.querySelectorAll('dialog[open], [aria-modal=true]')].filter(isModal);
+  if (modals.length > 0 && !modals.some((m) => m.contains(el))) return 'modal';
+  if (el.closest('[aria-hidden=true], [inert]')) return 'hidden';
+  return 'present';
+}`;
+
 /** Conteneur de formulaire d'un bouton cliqué (form, dialogue) ; null si l'élément n'est pas un bouton. */
 const BUTTON_FORM_FN = `function () {
   const el = this.nodeType === 1 ? this : this.parentElement;
@@ -1009,8 +1048,9 @@ export class PageController {
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     const { nodes } = await this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree');
     const formErrors = await this.formErrors(scopeBackendId);
+    const sourceTexts = await this.sourceTexts();
     const { url, title } = await this.location();
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, formErrors, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, formErrors, sourceTexts, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -1068,6 +1108,37 @@ export class PageController {
     } catch {
       this.isoCtx = undefined;
       return { fields: new Map(), alerts: [] };
+    } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
+  }
+
+  /**
+   * Texte DOM des nœuds texte sous text-transform (backendDOMNodeId → texte), dans le monde isolé de lecture.
+   * Enrichissement du snapshot : un échec donne un relevé vide, jamais une erreur.
+   */
+  private async sourceTexts(): Promise<Map<number, string>> {
+    const group = 'grasp-sources';
+    const out = new Map<number, string>();
+    try {
+      const ctx = await this.isolatedContext();
+      type Res = { result: { objectId?: string }; exceptionDetails?: unknown };
+      const res = await this.s<Res>('Runtime.evaluate', { contextId: ctx, expression: `(${SOURCE_TEXTS_FN})()`, objectGroup: group });
+      if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return out;
+      type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
+      const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
+      const texts = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '[]')) as string[];
+      const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
+      if (texts.length === 0 || elsId === undefined) return out;
+      const items = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
+      const nodes = items.result.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId !== undefined);
+      await Promise.all(nodes.map(async (p) => {
+        const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId: p.value!.objectId });
+        const t = texts[Number(p.name)];
+        if (t !== undefined) out.set(node.backendNodeId, t);
+      }));
+      return out;
+    } catch {
+      this.isoCtx = undefined;
+      return out;
     } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
   }
 
@@ -1288,7 +1359,9 @@ export class PageController {
     if (REF_RE.test(s)) {
       const sn = snap ?? await this.snapshot();
       const id = sn.refs.get(s);
-      return id !== undefined ? id : this.relocate(s, sn);
+      if (id !== undefined) return id;
+      await this.maskedRef(s, sn);
+      return this.relocate(s, sn);
     }
     if (s.startsWith('text:')) return this.resolveText(s.slice(5).trim(), snap ?? await this.snapshot());
     return this.resolveCss(s.startsWith('css:') ? s.slice(4) : s);
@@ -1302,6 +1375,29 @@ export class PageController {
       if (id !== undefined) all.push({ ref, role: m.role, name: m.name, id });
     }
     return all;
+  }
+
+  /**
+   * Ref absente du snapshot courant dont l'élément est toujours dans la page mais masqué : hors de la
+   * fenêtre modale ouverte (showModal, fond aria-hidden/inerte) ou sous aria-hidden/inert. 409 explicite au
+   * lieu de « n'est plus dans la page » (et jamais de clic sur un homonyme de la modale). Sinon : rien.
+   */
+  private async maskedRef(ref: string, snap: Snapshot): Promise<void> {
+    const prev = this.knownRefs.get(ref);
+    if (prev === undefined || prev.doc !== this.docGen || prev.id === undefined) return;
+    for (const id of snap.refs.values()) if (id === prev.id) return; // encore dans l'arbre : relocate
+    let where = '';
+    try {
+      const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: prev.id, objectGroup: 'grasp-masque' });
+      const r = await this.s<{ result: { value?: unknown } }>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: MASKED_FN, returnByValue: true });
+      where = typeof r.result.value === 'string' ? r.result.value : '';
+    } catch { return; } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp-masque' }).catch(() => undefined); }
+    const what = `${prev.role}${prev.name !== '' ? ` "${prev.name}"` : ''}`;
+    if (where === 'modal') {
+      const m = snap.modal !== undefined && snap.modal !== '' ? ` (« ${snap.modal} »)` : '';
+      throw new GraspError(409, `ref ${ref} (${what}) est toujours dans la page mais masquée par une fenêtre modale ouverte${m} : agissez dans la modale ou fermez-la d'abord`);
+    }
+    if (where === 'hidden') throw new GraspError(409, `ref ${ref} (${what}) est toujours dans la page mais masquée (aria-hidden ou inert) : elle n'est pas actionnable — refaites \`snap\``);
   }
 
   /**
@@ -1353,7 +1449,8 @@ export class PageController {
     if (textHits.length === 1) return textHits[0]!.backendNodeId;
     if (textHits.length > 1) throw conflict(`text:${t} est ambigu (${textHits.length} textes correspondent) — utilisez une ref`);
     const near = nearest({ name: t }, PageController.candidates(snap).filter((c) => c.name !== ''), 3).map((c): Candidate => ({ ref: c.ref, role: c.role, name: c.name }));
-    throw new GraspError(404, `aucun élément nommé « ${t} »${near.length > 0 ? ` — noms proches : ${near.map(fmtCandidate).join(', ')}` : ' — vérifiez avec `snap`'}`, { candidates: near });
+    const masked = snap.modal !== undefined ? ' (une fenêtre modale ouverte masque le reste de la page)' : '';
+    throw new GraspError(404, `aucun élément nommé « ${t} »${masked}${near.length > 0 ? ` — noms proches : ${near.map(fmtCandidate).join(', ')}` : ' — vérifiez avec `snap`'}`, { candidates: near });
   }
 
   private async resolveCss(selector: string): Promise<number> {

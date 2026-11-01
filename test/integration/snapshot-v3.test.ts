@@ -21,7 +21,7 @@ const refOf = (text: string, re: RegExp): string => {
   assert.ok(l, `aucune ligne ${re} dans :\n${text}`);
   return l.split(':')[0]!;
 };
-const etat = async () => String(await fx.page.evaluate("document.getElementById('etat').textContent"));
+const etat = async () => (await fx.page.text(undefined, '#etat')).trim();
 
 test('nœuds texte vides (espaces de largeur nulle) et puces de liste : aucune ligne ""', async () => {
   await fx.page.navigate(`${site.url}/snap-v3`);
@@ -77,7 +77,7 @@ test('boutons sans nom (croix de tags) : nommés par leur contexte ; refs stable
   assert.equal(refOf(apres, /button \(sans nom, près de "Laravel"\)$/), laravel);
   // L'ancienne ref de la croix PHP ne désigne pas la croix voisine.
   await assert.rejects(fx.page.click(php));
-  const tags = String(await fx.page.evaluate("[...document.querySelectorAll('#tags li span')].map((x) => x.textContent).join(',')"));
+  const tags = (await fx.page.text(undefined, '#tags')).split(/\s+/).filter(Boolean).join(',');
   assert.equal(tags, 'Symfony,Laravel');
 });
 
@@ -123,6 +123,7 @@ test('fenêtre modale (showModal) : refs du fond « masquées par une fenêtre m
   assert.notEqual(fermerModale, fermerFond, 'la ref du « Fermer » du fond ne glisse pas sur celui de la modale');
   await assert.rejects(fx.page.click(supprimer), /masqué.* par une fenêtre modale/);
   await assert.rejects(fx.page.click(fermerFond), /masqué.* par une fenêtre modale/);
+  await assert.rejects(fx.page.click('text:Supprimer'), /fenêtre modale ouverte masque le reste de la page/);
   assert.equal(await etat(), 'Rien');
   await fx.page.click(fermerModale);
   await fx.page.click(supprimer);
