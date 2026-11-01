@@ -7,7 +7,7 @@ import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot } from './snapshot.js';
 import { parseKey } from './keys.js';
-import { ACTION_GRACE_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
+import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
@@ -67,8 +67,19 @@ export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel
  * toujours affichée (aucune redirection dans le plafond).
  */
 interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean }
-/** Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent. */
-interface StableOptions { since?: number; challenge?: boolean }
+/**
+ * Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent ;
+ * `until` (action) = fin de la fenêtre d'attribution : une requête partie après ne compte que si elle
+ * s'enchaîne à une requête comptée (partie dans les CHAIN_MS après sa fin) — un polling de fond n'est pas
+ * une réaction de la page à l'action.
+ */
+interface StableOptions { since?: number; until?: number; challenge?: boolean }
+
+/** Requête suivie par l'attente de stabilité. `periodic` : répétition régulière d'une même requête (polling). */
+interface TrackedRequest { start: number; end?: number; periodic: boolean }
+
+/** Requête partie au plus tant de ms après la fin d'une requête comptée : sa suite (chaîne de requêtes). */
+const CHAIN_MS = 250;
 
 /**
  * Types de requêtes attendus par l'attente de stabilité : celles qui peuvent changer l'arbre d'accessibilité
@@ -78,17 +89,34 @@ interface StableOptions { since?: number; challenge?: boolean }
 const TRACKED_REQUESTS = new Set(['Document', 'XHR', 'Fetch', 'Script']);
 
 /**
- * Page de challenge anti-bot (Cloudflare, AWS WAF de Booking, DataDome…) : peu de texte, et un titre, un texte
- * ou des marqueurs typiques. Elle se remplace d'elle-même par la vraie page (location.replace) après quelques
- * secondes : l'attente de stabilité guette alors cette navigation, dans le plafond.
+ * Page de challenge anti-bot (Cloudflare, AWS WAF de Booking, DataDome…) : elle se remplace d'elle-même par la
+ * vraie page (location.replace) après quelques secondes ; l'attente de stabilité guette cette navigation.
+ * Renvoie 'strong' : marqueur propre à un service anti-bot (titre « Just a moment… », #challenge-running,
+ * _cf_chl_opt, challenge-platform, awswaf, captcha-delivery…) → attente jusqu'au plafond, et c'est dit ;
+ * 'weak' : page très courte SANS champ de saisie, aux mots ou classes évocateurs → attente courte
+ * (WEAK_CHALLENGE_MS), sans note ; '' sinon. Une page de connexion avec reCAPTCHA et « Veuillez patienter »
+ * n'est pas un challenge : elle a des champs. textContent (sans mise en page) est mesuré avant innerText.
  */
 const CHALLENGE_FN = `function () {
-  const t = (document.body ? document.body.innerText : '').trim();
-  if (t.length > 600) return false;
-  const words = /just a moment|un (instant|moment)\\b|attention required|checking (your|if)|v[ée]rification|verify(ing)? (you|that)|are you (a )?human|[êe]tes[- ]vous (un )?humain|captcha|security check|please wait|veuillez patienter|redirect/i;
-  if (words.test(document.title + ' ' + t.slice(0, 400))) return true;
-  return !!document.querySelector('[id*="challenge" i], [class*="challenge" i], script[src*="challenge" i], meta[http-equiv="refresh" i], iframe[src*="captcha" i]');
+  const body = document.body;
+  const raw = body ? body.textContent || '' : '';
+  if (raw.length > 20000) return '';
+  const title = (document.title || '').trim();
+  const strongTitle = /^(just a moment|un instant|un moment|einen moment|un momento|attention required|checking your browser|verifying you are human|pardon our interruption|ddos-guard)/i.test(title);
+  const strongMark = !!document.querySelector('#challenge-running, #challenge-stage, #challenge-form, #challenge-body-text, #cf-challenge-running, form[action*="__cf_chl"], script[src*="/cdn-cgi/challenge-platform/"], script[src*="awswaf"], script[src*="captcha-delivery"], iframe[src*="captcha-delivery"], script[src*="/_Incapsula_Resource"]')
+    || [...document.scripts].slice(0, 30).some((s) => !s.src && /_cf_chl_opt|AwsWafIntegration/.test(s.textContent.slice(0, 4000)));
+  const short = raw.replace(/\\s+/g, ' ').trim().length <= 2000;
+  if (short && (strongTitle || strongMark)) return 'strong';
+  if (raw.length > 3000) return '';
+  if (document.querySelector('input:not([type=hidden]), textarea, select, [contenteditable=""], [contenteditable="true"]')) return '';
+  const t = (body ? body.innerText : '').trim();
+  if (t.length > 600) return '';
+  const words = /just a moment|un (instant|moment)\\b|checking (your|if)|v[ée]rification|verify(ing)? (you|that)|are you (a )?human|[êe]tes[- ]vous (un )?humain|security check|please wait|veuillez patienter/i;
+  if (words.test(title + ' ' + t.slice(0, 400))) return 'weak';
+  return document.querySelector('[id*="challenge" i], [class*="challenge" i], meta[http-equiv="refresh" i], iframe[src*="captcha" i]') ? 'weak' : '';
 }`;
+/** Indice faible de challenge : attente de sa redirection bornée à ce délai, sans note. */
+const WEAK_CHALLENGE_MS = 1500;
 
 interface Box { x: number; y: number; width: number; height: number }
 interface CallFrame { functionName: string; url: string; lineNumber: number; columnNumber: number }
@@ -375,28 +403,36 @@ const FORM_ERRORS_FN = `function (root) {
 }`;
 
 /**
- * Nœuds texte mis en forme par text-transform (au plus 400, sur 50 000 parcourus) et leur texte DOM :
- * l'arbre d'accessibilité ne donne que le texte transformé. Retour : { meta (JSON des textes), els }.
+ * Textes DOM mis en forme par text-transform (au plus 2000, sur 50 000 nœuds texte parcourus) : JSON de
+ * [texte affiché, texte source]. Un seul appel, sans describeNode par nœud : le rapprochement avec l'arbre se
+ * fait par contenu (voir sourceTexts). Texte affiché ambigu (deux sources, ou présent tel quel ailleurs sans
+ * transformation) : écarté, jamais deviné.
  */
 const SOURCE_TEXTS_FN = `function () {
-  const texts = [];
-  const els = [];
+  const sp = (t) => t.replace(/\\s+/g, ' ').trim();
+  const apply = (t, tt) => tt === 'uppercase' ? t.toUpperCase() : tt === 'lowercase' ? t.toLowerCase() : t.replace(/(^|\\s)(\\p{L})/gu, (m, a, c) => a + c.toUpperCase());
+  const shown = new Map();
+  const plain = new Set();
   const style = new Map();
   const root = document.body || document.documentElement;
-  if (!root) return { meta: '[]', els };
+  if (!root) return '[]';
   const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let n;
   let seen = 0;
-  while ((n = tw.nextNode()) && els.length < 400 && seen++ < 50000) {
+  while ((n = tw.nextNode()) && shown.size < 2000 && seen++ < 50000) {
     const p = n.parentElement;
     if (!p || !n.data.trim()) continue;
     let tt = style.get(p);
     if (tt === undefined) { tt = getComputedStyle(p).textTransform || 'none'; style.set(p, tt); }
-    if (tt === 'none') continue;
-    texts.push(n.data);
-    els.push(n);
+    const src = sp(n.data);
+    if (tt !== 'uppercase' && tt !== 'lowercase' && tt !== 'capitalize') { if (src.length < 200) plain.add(src); continue; }
+    const t = sp(apply(src, tt));
+    const prev = shown.get(t);
+    shown.set(t, prev === undefined || prev === src ? src : null);
   }
-  return { meta: JSON.stringify(texts), els };
+  const out = [];
+  for (const [t, src] of shown) if (src !== null && src !== t && !plain.has(t)) out.push([t, src]);
+  return JSON.stringify(out);
 }`;
 
 /** Élément d'une ref absente du snapshot : '' retiré, 'modal' hors de la modale ouverte, 'hidden' sous aria-hidden/inert, 'present' sinon. */
@@ -524,21 +560,26 @@ export class PageController {
    * ref disparue. Le nœud dit si l'élément est encore là ; `doc` (compteur de documents du cadre principal)
    * empêche qu'une ref d'une page précédente désigne un élément du document courant.
    */
-  private readonly knownRefs = new Map<string, { role: string; name: string; id: number | undefined; doc: number }>();
+  private readonly knownRefs = new Map<string, { role: string; name: string; key: string; id: number | undefined; doc: number }>();
   /** Documents chargés dans le cadre principal (incrémenté à chaque Page.frameNavigated du cadre principal). */
   private docGen = 0;
   /** Monde isolé « grasp-lecture » du document courant (invalidé à chaque navigation du cadre principal). */
   private isoCtx: number | undefined;
+  /** Document (docGen) sur lequel Page.bringToFront a été tenté : une seule tentative par document. */
+  private frontTriedDoc = -1;
   /** Navigations du cadre principal : une action qui navigue attend aussi la stabilité. */
   private navCount = 0;
   /** Notes de l'action en cours (ex. ref retrouvée après re-rendu). */
   private notes: string[] | undefined;
   /** Chargements démarrés dans le cadre principal (une action qui navigue a été livrée). */
   private loadStarts = 0;
-  /** Requêtes réseau en vol de l'onglet (requestId → instant de départ), pour l'attente de stabilité. */
-  private readonly inflight = new Map<string, number>();
-  /** Dernières activités réseau (départ ou fin : `at`) et instant de départ de la requête concernée. */
-  private readonly netEvents: Array<{ at: number; start: number }> = [];
+  /**
+   * Requêtes réseau du document courant (cadre principal seulement), en vol ou terminées depuis peu, pour
+   * l'attente de stabilité : départ et fin horodatés (jamais évincées tant qu'elles sont récentes).
+   */
+  private readonly net = new Map<string, TrackedRequest>();
+  /** Derniers départs par requête (méthode, origine, chemin) : reconnaissance d'un polling périodique. */
+  private readonly netStarts = new Map<string, number[]>();
   /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
   private undelivered = false;
   private probeSeq = 0;
@@ -685,11 +726,7 @@ export class PageController {
    * Chrome 150 : clic reçu par l'iframe, invisible pour la sonde du document principal).
    */
   private async pwReady(loc: PwLocator, timeout: number): Promise<void> {
-    if (await this.evalIsolated<string>('document.visibilityState').catch(() => 'visible') === 'hidden') {
-      await this.s('Page.bringToFront').catch(() => undefined);
-      await this.evalIsolated(`new Promise((r) => { if (document.visibilityState !== 'hidden') return r(true); const t = setTimeout(() => r(false), 1000); document.addEventListener('visibilitychange', () => { clearTimeout(t); r(true); }, { once: true }); })`, true).catch(() => undefined);
-      this.notes?.push("onglet ramené au premier plan : Playwright n'agit au pointeur que sur un onglet rendu");
-    }
+    await this.ensureVisible(": Playwright n'agit au pointeur que sur un onglet rendu");
     await loc.scrollIntoViewIfNeeded({ timeout });
     await this.evalIsolated(FRAMES_FN, true).catch(() => undefined);
   }
@@ -744,9 +781,41 @@ export class PageController {
     });
   }
 
-  private netEvent(start: number): void {
-    this.netEvents.push({ at: Date.now(), start });
-    if (this.netEvents.length > 64) this.netEvents.shift();
+  /** Départ d'une requête suivie (cadre principal) ; une redirection garde son instant de départ. */
+  private netStart(requestId: string, method: string, url: string): void {
+    const now = Date.now();
+    if (this.net.has(requestId)) return;
+    let key = `${method} ${url}`;
+    try { const u = new URL(url); key = `${method} ${u.origin}${u.pathname}`; } catch { /* URL opaque */ }
+    let ts = this.netStarts.get(key);
+    if (ts === undefined) ts = [];
+    ts.push(now);
+    if (ts.length > 4) ts.shift();
+    this.netStarts.set(key, ts);
+    if (this.netStarts.size > 500) this.netStarts.delete(this.netStarts.keys().next().value as string);
+    this.net.set(requestId, { start: now, periodic: PageController.periodic(ts) });
+    // Purge : terminées depuis plus de 30 s (plus utiles à aucune attente), et au-delà de 1000 entrées.
+    for (const [id, r] of this.net) {
+      if (this.net.size <= 200) break;
+      if ((r.end !== undefined && now - r.end > 30_000) || this.net.size > 1000) this.net.delete(id);
+    }
+  }
+
+  /** Fin (ou échec) d'une requête suivie, quelle que soit la session qui la rapporte (OOPIF : session enfant). */
+  private netEnd(requestId: string): void {
+    const r = this.net.get(requestId);
+    if (r !== undefined && r.end === undefined) r.end = Date.now();
+  }
+
+  /**
+   * Polling : les 3 derniers départs d'une même requête, espacés d'au moins 150 ms et à intervalles
+   * réguliers (écart ≤ 30 % + 50 ms). Une rafale (GraphQL, autocomplétion) n'est pas régulière.
+   */
+  private static periodic(ts: number[]): boolean {
+    if (ts.length < 3) return false;
+    const d1 = ts[ts.length - 2]! - ts[ts.length - 3]!;
+    const d2 = ts[ts.length - 1]! - ts[ts.length - 2]!;
+    return d1 >= 150 && d2 >= 150 && Math.abs(d1 - d2) <= 0.3 * Math.max(d1, d2) + 50;
   }
 
   private s<T = any>(method: string, params: object = {}): Promise<T> {
@@ -967,6 +1036,9 @@ export class PageController {
       }
       if (e.sessionId !== undefined && this.children.has(e.sessionId)) {
         if (this.policy.allowConsole) this.onConsoleEvent(e);
+        // Document d'une iframe hors processus : son départ est rapporté par la session de l'onglet, sa fin
+        // par la session du cadre. Jamais de requête orpheline « en vol ».
+        if (e.method === 'Network.loadingFinished' || e.method === 'Network.loadingFailed') this.netEnd(e.params.requestId);
         return;
       }
       if (e.method === 'Target.attachedToTarget' && e.sessionId === undefined) {
@@ -989,27 +1061,27 @@ export class PageController {
         case 'Network.requestWillBeSent': {
           const url = String(e.params.request?.url ?? '');
           if (!TRACKED_REQUESTS.has(String(e.params.type)) || /^(data|blob):/.test(url)) break;
-          if (this.inflight.size > 500) this.inflight.delete(this.inflight.keys().next().value as string);
-          // Redirection : même requestId, la requête continue (instant de départ conservé).
-          const start = this.inflight.get(e.params.requestId) ?? Date.now();
-          this.inflight.set(e.params.requestId, start);
-          this.netEvent(start);
+          // Requêtes d'un autre cadre (document d'une iframe, ses XHR) : le contenu des cadres n'entre pas dans
+          // le snapshot, et la fin du document d'une iframe hors processus arrive sur une autre session.
+          if (typeof e.params.frameId === 'string' && e.params.frameId !== this.mainFrameId) break;
+          this.netStart(e.params.requestId, String(e.params.request?.method ?? 'GET'), url);
           break;
         }
-        case 'Network.loadingFinished': case 'Network.loadingFailed': {
-          const start = this.inflight.get(e.params.requestId);
-          if (start === undefined) break;
-          this.inflight.delete(e.params.requestId);
-          this.netEvent(start);
-          break;
-        }
+        case 'Network.loadingFinished': case 'Network.loadingFailed': this.netEnd(e.params.requestId); break;
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
         case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; this.loadStarts++; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
         // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
         case 'Page.navigatedWithinDocument': if (main) { this.pendingNavAt = 0; this.navCount++; } break;
         case 'Page.frameNavigated':
-          if (e.params.frame?.parentId === undefined) { this.navCount++; this.docGen++; this.isoCtx = undefined; }
+          if (e.params.frame?.parentId === undefined) {
+            this.navCount++; this.docGen++; this.isoCtx = undefined;
+            // Nouveau document : les requêtes de l'ancien sont mortes (leur fin n'est pas toujours rapportée),
+            // et son historique de polling ne vaut plus.
+            const now = Date.now();
+            for (const r of this.net.values()) if (r.end === undefined) r.end = now;
+            this.netStarts.clear();
+          }
           break;
         case 'Page.javascriptDialogOpening': {
           // Un dialogue bloque tout l'onglet : on le ferme et on le signale.
@@ -1175,11 +1247,24 @@ export class PageController {
   async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<Snapshot> {
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
-    const { nodes } = await this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree');
-    const formErrors = await this.formErrors(scopeBackendId);
-    const sourceTexts = await this.sourceTexts();
-    const { url, title } = await this.location();
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, formErrors, sourceTexts, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    // Arbre, historique (URL) et monde isolé en un aller-retour ; puis les deux relevés DOM en parallèle.
+    const [{ nodes }, hist] = await Promise.all([
+      this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree'),
+      this.s<{ currentIndex: number; entries: Array<{ url: string; title: string }> }>('Page.getNavigationHistory'),
+      this.isolatedContext().catch(() => undefined),
+    ]);
+    const [formErrors, sourceTexts] = await Promise.all([
+      this.formErrors(scopeBackendId),
+      PageController.mayBeTransformed(nodes) ? this.sourceTexts(nodes) : Promise.resolve(undefined),
+    ]);
+    const cur = hist.entries[hist.currentIndex];
+    const url = cur?.url ?? 'about:blank';
+    // Titre COURANT : nom de la racine de l'arbre (document.title, à jour après une route SPA), sans appel de plus.
+    const root = nodes.find((n) => n.parentId === undefined);
+    let title: string;
+    if (root !== undefined && root.role?.value === 'RootWebArea') title = typeof root.name?.value === 'string' ? root.name.value : '';
+    else title = (await this.location()).title;
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -1201,11 +1286,28 @@ export class PageController {
   }
 
   /**
+   * Texte que text-transform a pu changer : un nom de StaticText tout en majuscules (2 lettres au moins), ou
+   * de 2 mots au moins tous capitalisés. Sinon le relevé du texte source (coûteux) n'est pas lancé.
+   */
+  private static mayBeTransformed(nodes: AXNode[]): boolean {
+    for (const n of nodes) {
+      if (n.role?.value !== 'StaticText' || n.ignored === true) continue;
+      const t = typeof n.name?.value === 'string' ? n.name.value : '';
+      if (!/\p{L}.*\p{L}/su.test(t)) continue;
+      if (t === t.toUpperCase() && t !== t.toLowerCase()) return true;
+      const w = t.trim().split(/\s+/).filter((x) => /^\p{L}/u.test(x));
+      if (w.length >= 2 && w.every((x) => x[0] === x[0]!.toUpperCase() && x[0] !== x[0]!.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  /**
    * Erreurs de formulaire relevées dans le DOM sous `root` (défaut : le document), code fixe dans le monde
    * isolé de lecture. Enrichissement du snapshot : un échec (navigation en cours, contexte détruit) ne fait
-   * jamais échouer la lecture, il donne seulement un relevé vide.
+   * jamais échouer la lecture ; il donne `undefined` : le snapshot s'en tient alors à l'arbre d'accessibilité
+   * (un relevé vide effacerait tous les [invalide]).
    */
-  private async formErrors(root?: number): Promise<FormErrors> {
+  private async formErrors(root?: number): Promise<FormErrors | undefined> {
     const group = 'grasp-erreurs';
     try {
       const ctx = await this.isolatedContext();
@@ -1217,7 +1319,7 @@ export class PageController {
         const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: root, executionContextId: ctx, objectGroup: group });
         res = await this.s<Res>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function () { return (${FORM_ERRORS_FN})(this); }`, objectGroup: group });
       }
-      if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return { fields: new Map(), alerts: [] };
+      if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return undefined;
       type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
       const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
       const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { fields?: Array<{ i: number; t: string }>; alerts?: string[] };
@@ -1236,39 +1338,29 @@ export class PageController {
       return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [] };
     } catch {
       this.isoCtx = undefined;
-      return { fields: new Map(), alerts: [] };
+      return undefined;
     } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
   }
 
   /**
-   * Texte DOM des nœuds texte sous text-transform (backendDOMNodeId → texte), dans le monde isolé de lecture.
-   * Enrichissement du snapshot : un échec donne un relevé vide, jamais une erreur.
+   * Texte DOM des nœuds texte sous text-transform (backendDOMNodeId du StaticText → texte), dans le monde
+   * isolé de lecture. Un appel : les textes transformés du DOM sont rapprochés des StaticText de l'arbre par
+   * contenu (transformation appliquée au texte source = nom de l'arbre) ; deux sources différentes pour un
+   * même texte affiché : aucune n'est retenue. Enrichissement du snapshot : un échec donne un relevé vide,
+   * jamais une erreur ; les refs n'en dépendent pas (hash sur le nom brut de l'arbre), seul l'affichage change.
    */
-  private async sourceTexts(): Promise<Map<number, string>> {
-    const group = 'grasp-sources';
+  private async sourceTexts(nodes: AXNode[]): Promise<Map<number, string>> {
     const out = new Map<number, string>();
-    try {
-      const ctx = await this.isolatedContext();
-      type Res = { result: { objectId?: string }; exceptionDetails?: unknown };
-      const res = await this.s<Res>('Runtime.evaluate', { contextId: ctx, expression: `(${SOURCE_TEXTS_FN})()`, objectGroup: group });
-      if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return out;
-      type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
-      const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
-      const texts = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '[]')) as string[];
-      const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
-      if (texts.length === 0 || elsId === undefined) return out;
-      const items = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
-      const nodes = items.result.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId !== undefined);
-      await Promise.all(nodes.map(async (p) => {
-        const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId: p.value!.objectId });
-        const t = texts[Number(p.name)];
-        if (t !== undefined) out.set(node.backendNodeId, t);
-      }));
-      return out;
-    } catch {
-      this.isoCtx = undefined;
-      return out;
-    } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
+    let pairs: Array<[string, string]>;
+    try { pairs = JSON.parse(await this.evalIsolated<string>(`(${SOURCE_TEXTS_FN})()`)) as Array<[string, string]>; } catch { return out; }
+    const bySeen = new Map(pairs);
+    if (bySeen.size === 0) return out;
+    for (const n of nodes) {
+      if (n.role?.value !== 'StaticText' || n.backendDOMNodeId === undefined) continue;
+      const src = bySeen.get((typeof n.name?.value === 'string' ? n.name.value : '').replace(/\s+/g, ' ').trim());
+      if (src !== undefined) out.set(n.backendDOMNodeId, src);
+    }
+    return out;
   }
 
   /**
@@ -1285,14 +1377,14 @@ export class PageController {
       container = (await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId: r.result.objectId })).node.backendNodeId;
     } catch { return []; } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
     const around = await this.formErrors(container);
-    if (around.fields.size === 0) return [];
+    if (around === undefined || around.fields.size === 0) return [];
     const snap = await this.snapshot();
     return snap.invalid.filter((i) => i.backendId !== undefined && around.fields.has(i.backendId)).map((i) => i.line);
   }
 
   /** Mémorise (rôle, nom) de chaque ref remise à l'agent ; borné, les plus anciennes sortent d'abord. */
   private remember(snap: Snapshot): void {
-    for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, { role: m.role, name: m.name, id: snap.refs.get(ref), doc: this.docGen }); }
+    for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, { role: m.role, name: m.name, key: m.alt ?? m.name, id: snap.refs.get(ref), doc: this.docGen }); }
     for (const k of this.knownRefs.keys()) {
       if (this.knownRefs.size <= KNOWN_REFS_MAX) break;
       this.knownRefs.delete(k);
@@ -1373,17 +1465,39 @@ export class PageController {
     }
   }
 
-  /** Requêtes en vol parties depuis `since`, hors requêtes de longue durée (long-polling, flux). */
-  private activeRequests(since: number): number {
+  /**
+   * Requêtes qui comptent pour une attente : parties depuis `since` ; avec `until` (action), parties avant
+   * `until`, ou enchaînées à une requête comptée. Hors fenêtre d'action, un polling périodique ne compte pas.
+   */
+  private counted(o: StableOptions): TrackedRequest[] {
+    const since = o.since ?? 0;
+    const out: TrackedRequest[] = [];
+    for (const r of this.net.values()) {
+      if (r.start < since) continue;
+      if (o.until !== undefined && r.start <= o.until) { out.push(r); continue; }
+      if (r.periodic) continue;
+      if (o.until === undefined || out.some((c) => c.end !== undefined && r.start >= c.end && r.start - c.end <= CHAIN_MS)) out.push(r);
+    }
+    return out;
+  }
+
+  /**
+   * Requêtes en vol qui comptent, hors requêtes de longue durée (long-polling, flux) : LONG_REQUEST_MS, ou
+   * ACTION_REQUEST_MS pour une requête partie dans la fenêtre de l'action.
+   */
+  private activeRequests(o: StableOptions): number {
     const now = Date.now();
     let n = 0;
-    for (const start of this.inflight.values()) if (start >= since && now - start < LONG_REQUEST_MS) n++;
+    for (const r of this.counted(o)) {
+      const limit = o.until !== undefined && r.start <= o.until ? ACTION_REQUEST_MS : LONG_REQUEST_MS;
+      if (r.end === undefined && now - r.start < limit) n++;
+    }
     return n;
   }
 
-  /** Activité réseau (départ ou fin d'une requête partie depuis `since`) après l'instant `after`. */
-  private netActiveAfter(since: number, after: number): boolean {
-    return this.netEvents.some((ev) => ev.at > after && ev.start >= since);
+  /** Activité réseau (départ ou fin d'une requête qui compte) après l'instant `after`. */
+  private netActiveAfter(o: StableOptions, after: number): boolean {
+    return this.counted(o).some((r) => r.start > after || (r.end !== undefined && r.end > after));
   }
 
   /** Navigation de document en cours ou demandée (location.replace, lien, formulaire). */
@@ -1400,13 +1514,13 @@ export class PageController {
    */
   private async waitStable(capMs = this.limits.stableTimeoutMs, o: StableOptions = {}): Promise<Stability> {
     const t0 = Date.now();
-    const since = o.since ?? 0;
     let mutations = 0;
     let error: string | undefined;
+    let weakDone = false;
     if (capMs <= 0) return { stable: true, ms: 0, mutations: 0 };
     const elapsed = () => Date.now() - t0;
     const unstable = (extra: Partial<Stability> = {}): Stability => {
-      const requests = this.activeRequests(since);
+      const requests = this.activeRequests(o);
       return { stable: false, ms: elapsed(), mutations, ...(error !== undefined ? { error } : {}), ...(requests > 0 ? { requests } : {}), ...extra };
     };
     for (;;) {
@@ -1414,7 +1528,7 @@ export class PageController {
       // Navigation de document en cours : on attend la fin du chargement (le nouveau document repart de zéro).
       if (this.navigating()) { await this.settle(Math.max(0, capMs - elapsed())); continue; }
       // Requêtes en vol : on attend qu'elles se terminent (leur réponse met souvent le DOM à jour).
-      if (this.activeRequests(since) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
+      if (this.activeRequests(o) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
       const left = capMs - elapsed();
       let timer: NodeJS.Timeout | undefined;
       let r: { stable: boolean; mutations: number };
@@ -1435,13 +1549,17 @@ export class PageController {
       if (!r.stable) return unstable();
       // DOM calme : encore faut-il que le réseau l'ait été pendant la même fenêtre, et qu'aucune navigation
       // n'ait démarré (redirection JS juste après le load) — sinon on recommence.
-      if (this.navigating() || this.activeRequests(since) > 0 || this.netActiveAfter(since, Date.now() - STABLE_QUIET_MS)) continue;
-      if (o.challenge === true && await this.evalIsolated<boolean>(`(${CHALLENGE_FN})()`).catch(() => false)) {
-        // Challenge anti-bot : il se remplace lui-même par la vraie page ; on guette cette navigation.
+      if (this.navigating() || this.activeRequests(o) > 0 || this.netActiveAfter(o, Date.now() - STABLE_QUIET_MS)) continue;
+      const ch = o.challenge === true && !weakDone ? await this.evalIsolated<string>(`(${CHALLENGE_FN})()`).catch(() => '') : '';
+      if (ch === 'strong' || ch === 'weak') {
+        // Challenge anti-bot : il se remplace lui-même par la vraie page ; on guette cette navigation (indice
+        // faible : brièvement, et sans rien affirmer).
         const m = this.mark();
-        while (!this.navigatedSince(m) && !this.navigating() && capMs - elapsed() > 0) await sleep(Math.min(50, Math.max(1, capMs - elapsed())));
+        const end = ch === 'strong' ? t0 + capMs : Math.min(t0 + capMs, Date.now() + WEAK_CHALLENGE_MS);
+        while (!this.navigatedSince(m) && !this.navigating() && end - Date.now() > 0) await sleep(Math.min(50, Math.max(1, end - Date.now())));
         if (this.navigatedSince(m) || this.navigating()) continue;
-        return unstable({ challenge: true });
+        if (ch === 'strong') return unstable({ challenge: true });
+        weakDone = true;
       }
       return { stable: true, ms: elapsed(), mutations };
     }
@@ -1542,11 +1660,11 @@ export class PageController {
   }
 
   /** Candidats résolubles du snapshot (ref, rôle, nom, nœud). */
-  private static candidates(snap: Snapshot): Array<Candidate & { id: number }> {
-    const all: Array<Candidate & { id: number }> = [];
+  private static candidates(snap: Snapshot): Array<Candidate & { id: number; key: string }> {
+    const all: Array<Candidate & { id: number; key: string }> = [];
     for (const [ref, m] of snap.meta) {
       const id = snap.refs.get(ref);
-      if (id !== undefined) all.push({ ref, role: m.role, name: m.name, id });
+      if (id !== undefined) all.push({ ref, role: m.role, name: m.name, id, key: m.alt ?? m.name });
     }
     return all;
   }
@@ -1561,11 +1679,11 @@ export class PageController {
     if (prev === undefined || prev.doc !== this.docGen || prev.id === undefined) return;
     for (const id of snap.refs.values()) if (id === prev.id) return; // encore dans l'arbre : relocate
     let where = '';
+    // Monde isolé : la page ne peut ni voir ce diagnostic ni le fausser (prototypes redéfinis).
     try {
-      const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: prev.id, objectGroup: 'grasp-masque' });
-      const r = await this.s<{ result: { value?: unknown } }>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: MASKED_FN, returnByValue: true });
-      where = typeof r.result.value === 'string' ? r.result.value : '';
-    } catch { return; } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp-masque' }).catch(() => undefined); }
+      const r = await this.callIsolated<unknown>(prev.id, MASKED_FN);
+      where = typeof r === 'string' ? r : '';
+    } catch { return; }
     const what = `${prev.role}${prev.name !== '' ? ` "${prev.name}"` : ''}`;
     if (where === 'modal') {
       const m = snap.modal !== undefined && snap.modal !== '' ? ` (« ${snap.modal} »)` : '';
@@ -1590,11 +1708,12 @@ export class PageController {
     const all = PageController.candidates(snap);
     const strip = (c: Candidate): Candidate => ({ ref: c.ref, role: c.role, name: c.name });
     const self = prev.id !== undefined ? all.find((c) => c.id === prev.id) : undefined;
-    if (self !== undefined && self.role === prev.role && self.name === prev.name) {
+    // Identité comparée sur le nom brut de l'arbre (le nom rendu dépend du relevé du texte source).
+    if (self !== undefined && self.role === prev.role && self.key === prev.key) {
       this.notes?.push(`ref ${ref} retrouvée → ${self.ref} (${what}) : même élément, rang décalé parmi les homonymes`);
       return self.id;
     }
-    const same = all.filter((c) => c.role === prev.role && c.name === prev.name);
+    const same = all.filter((c) => c.role === prev.role && c.key === prev.key);
     if (same.length > 0) {
       const c = same.slice(0, 3).map(strip);
       const who = same.length === 1 ? 'un autre élément a' : `${same.length} autres éléments ont`;
@@ -1608,11 +1727,13 @@ export class PageController {
     if (!t) throw badRequest('text: attend un texte');
     const lower = t.toLowerCase();
     const all = [...snap.meta].map(([ref, m]) => ({ ref, ...m, id: snap.refs.get(ref) }));
+    // Nom rendu (texte source) ou nom brut de l'arbre (texte transformé par CSS, libellé répété).
+    const is = (c: { name: string; alt?: string | undefined }, f: (n: string) => boolean) => f(c.name) || (c.alt !== undefined && f(c.alt));
     const tiers = [
-      all.filter((c) => c.name === t && INTERACTIVE.has(c.role)),
-      all.filter((c) => c.name === t),
-      all.filter((c) => c.name.toLowerCase() === lower),
-      all.filter((c) => INTERACTIVE.has(c.role) && c.name.toLowerCase().includes(lower)),
+      all.filter((c) => is(c, (n) => n === t) && INTERACTIVE.has(c.role)),
+      all.filter((c) => is(c, (n) => n === t)),
+      all.filter((c) => is(c, (n) => n.toLowerCase() === lower)),
+      all.filter((c) => INTERACTIVE.has(c.role) && is(c, (n) => n.toLowerCase().includes(lower))),
     ];
     for (const tier of tiers) {
       const hits = tier.filter((c) => c.id !== undefined);
@@ -1669,11 +1790,27 @@ export class PageController {
    * rend plus (requestAnimationFrame suspendu, minuteries bridées) : sa réaction n'arriverait pas. On ramène
    * l'onglet au premier plan AVANT l'action, et c'est dit.
    */
-  private async ensureVisible(): Promise<void> {
-    if (await this.evalIsolated<string>('document.visibilityState').catch(() => 'visible') !== 'hidden') return;
+  private async ensureVisible(why = 'avant l\'action'): Promise<boolean> {
+    if (await this.evalIsolated<string>('document.visibilityState').catch(() => 'visible') !== 'hidden') return true;
+    // Mode attach : Chrome de l'utilisateur, on ne lui vole jamais le premier plan.
+    if (this.foreign) {
+      this.notes?.push("onglet en arrière-plan (document caché), laissé tel quel : mode attach, jamais de Page.bringToFront dans le Chrome de l'utilisateur — la page peut ne pas réagir (rendu suspendu)");
+      return false;
+    }
+    // Déjà tenté sur ce document sans effet (fenêtre réduite, écran verrouillé) : ni nouvel essai, ni attente.
+    if (this.frontTriedDoc === this.docGen) {
+      this.notes?.push('onglet toujours caché (Page.bringToFront déjà tenté sans effet sur ce document : fenêtre réduite, écran verrouillé ?) — la page peut ne pas réagir');
+      return false;
+    }
+    this.frontTriedDoc = this.docGen;
     await this.s('Page.bringToFront').catch(() => undefined);
-    await this.evalIsolated(`new Promise((r) => { if (document.visibilityState !== 'hidden') return r(true); const t = setTimeout(() => r(false), 1000); document.addEventListener('visibilitychange', () => { clearTimeout(t); r(true); }, { once: true }); })`, true).catch(() => undefined);
-    this.notes?.push('onglet en arrière-plan (document caché) : ramené au premier plan avant l\'action');
+    const shown = await this.evalIsolated<boolean>(`new Promise((r) => { if (document.visibilityState !== 'hidden') return r(true); const t = setTimeout(() => r(false), 1000); document.addEventListener('visibilitychange', () => { clearTimeout(t); r(true); }, { once: true }); })`, true).catch(() => false);
+    if (shown) {
+      this.notes?.push(`onglet en arrière-plan (document caché) : ramené au premier plan ${why}`);
+      return true;
+    }
+    this.notes?.push('onglet en arrière-plan : Page.bringToFront sans effet, document toujours caché (fenêtre réduite, écran verrouillé ?) — la page peut ne pas réagir ; pas de nouvel essai sur ce document');
+    return false;
   }
 
   /**
@@ -1698,12 +1835,15 @@ export class PageController {
       try { detail = await fn(before); } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp' }).catch(() => undefined); }
       const tEnd = Date.now();
       await this.settle();
-      // Réaction de la page à l'action : navigation (document ou route SPA), requête réseau partie depuis t0.
-      const reacted = () => this.navCount !== nav0 || this.loadStarts !== loads0 || this.navigating() || this.netActiveAfter(t0, t0);
-      if (opts.snapDiff !== true && !reacted() && ACTION_GRACE_MS > Date.now() - tEnd) await sleep(ACTION_GRACE_MS - (Date.now() - tEnd));
+      // Fenêtre d'attribution : requêtes parties pendant l'action ou juste après (un polling de fond n'en est pas).
+      const win: StableOptions = { since: t0, until: tEnd + ACTION_WINDOW_MS };
+      // Réaction de la page à l'action : navigation (document ou route SPA), requête (non périodique) partie depuis t0.
+      const reacted = () => this.navCount !== nav0 || this.loadStarts !== loads0 || this.navigating() || this.counted(win).some((r) => !r.periodic);
+      while (opts.snapDiff !== true && !reacted() && Date.now() - tEnd < ACTION_GRACE_MS) await sleep(Math.min(20, ACTION_GRACE_MS - (Date.now() - tEnd)));
       // Le diff est calculé sur une page stable (sinon : état intermédiaire, refs aussitôt invalides) ; une action
-      // qui a navigué ou lancé des requêtes attend aussi leur fin et le rendu, comme `nav`.
-      const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, { since: t0 }) : undefined;
+      // qui a navigué ou lancé des requêtes attend aussi leur fin et le rendu, comme `nav`. Nouveau document :
+      // toutes ses requêtes comptent (comme `nav`), pas seulement celles de la fenêtre de l'action.
+      const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, this.docGen !== doc0 ? { since: t0 } : win) : undefined;
       const res: ActionResult = { ok: true };
       const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
@@ -1904,7 +2044,7 @@ export class PageController {
   /** Après un fill : le champ est-il invalide (message de la page) ? */
   private async invalidFieldNote(id: number | undefined): Promise<string | undefined> {
     if (id === undefined) return undefined;
-    const msg = (await this.formErrors()).fields.get(id);
+    const msg = (await this.formErrors())?.fields.get(id);
     return msg === undefined ? undefined : `champ invalide après la saisie${msg ? ` : ${msg}` : ''}`;
   }
 

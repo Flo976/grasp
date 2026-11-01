@@ -8,7 +8,13 @@
 
 import { truncationLine } from '../core/limits.js';
 
-export interface AXValue { value?: unknown }
+/** Source d'un nom calculé (getFullAXTree) : libellés liés (label for, aria-labelledby) et leur texte. */
+export interface AXValueSource {
+  superseded?: boolean;
+  attributeValue?: { relatedNodes?: Array<{ text?: string }> };
+  nativeSourceValue?: { relatedNodes?: Array<{ text?: string }> };
+}
+export interface AXValue { value?: unknown; sources?: AXValueSource[] }
 export interface AXNode {
   nodeId: string;
   ignored?: boolean;
@@ -23,6 +29,9 @@ export interface AXNode {
   ignoredReasons?: Array<{ name: string }>;
 }
 
+/** Rôle et nom rendu d'une ref ; `alt` : nom brut de l'arbre quand il diffère (voir Snapshot.meta). */
+export interface RefMeta { role: string; name: string; alt?: string }
+
 export interface Snapshot {
   url: string;
   title: string;
@@ -34,8 +43,11 @@ export interface Snapshot {
   entries: Map<string, string>;
   /** Lignes de texte brut, sans ref (dans la zone s'il y en a une). */
   texts: string[];
-  /** ref → {rôle, nom}, pour la résolution `text:`. */
-  meta: Map<string, { role: string; name: string }>;
+  /**
+   * ref → {rôle, nom rendu}, pour la résolution `text:`. `alt` : nom brut de l'arbre d'accessibilité quand il
+   * diffère du nom rendu (texte transformé par CSS, libellé répété) — `text:` accepte les deux formes.
+   */
+  meta: Map<string, RefMeta>;
   /** Nœuds texte émis, pour la résolution `text:` de dernier recours. */
   textNodes: Array<{ text: string; backendNodeId: number }>;
   /** Avec `scopeBackendId` : la zone a-t-elle été trouvée dans l'arbre d'accessibilité ? */
@@ -110,16 +122,23 @@ const norm = (s: string) => s.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim()
 
 /**
  * Nom répété (« Heures Heures ») : champ à deux <label>, ou aria-labelledby qui cite deux fois le même
- * texte. Si le nom est exactement k fois la même suite de mots, on n'en garde qu'une.
+ * texte. Si le nom est exactement k fois la même suite de mots, on n'en garde qu'une — à condition que la
+ * répétition vienne de plusieurs libellés (sources du nom : au moins deux libellés liés, tous de ce texte),
+ * ou, sans sources, que la suite répétée compte au moins deux mots. Un nom propre « Bora Bora » reste entier.
  */
-function dedupeName(s: string): string {
+function dedupeName(s: string, name: AXValue | undefined): string {
   const w = s.split(' ');
   for (let k = 1; k <= w.length / 2; k++) {
     if (w.length % k !== 0) continue;
     const head = w.slice(0, k).join(' ');
     let same = true;
     for (let i = k; i < w.length && same; i += k) same = w.slice(i, i + k).join(' ') === head;
-    if (same) return head;
+    if (!same) continue;
+    const related = listOf(name?.sources).filter((x) => x.superseded !== true)
+      .map((x) => listOf(x.attributeValue?.relatedNodes ?? x.nativeSourceValue?.relatedNodes))
+      .find((r) => r.length > 0);
+    if (related !== undefined) return related.length >= 2 && related.every((r) => norm(r.text ?? '') === head) ? head : s;
+    return k >= 2 ? head : s;
   }
   return s;
 }
@@ -241,7 +260,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     if (cached !== undefined) return cached;
     const role = str(n.role);
     let name = norm(str(n.name));
-    if (FIELD_ROLES.has(role)) name = dedupeName(name);
+    if (FIELD_ROLES.has(role)) name = dedupeName(name, n.name);
     if (name !== '' && sources.size > 0) {
       const src = role === 'StaticText' ? sourceOf(n) : undefined;
       if (src !== undefined) name = norm(src);
@@ -290,7 +309,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
 
   const refs = new Map<string, number>();
   const entries = new Map<string, string>();
-  const meta = new Map<string, { role: string; name: string }>();
+  const meta = new Map<string, RefMeta>();
   const texts: string[] = [];
   const textNodes: Array<{ text: string; backendNodeId: number }> = [];
   const out: Array<{ depth: number; line: string }> = [];
@@ -320,6 +339,11 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     if (pruned || hiddenBg) modal = nameOf(modals[modals.length - 1]!);
   }
 
+  /**
+   * Nom BRUT de l'arbre d'accessibilité (sans texte source restauré ni déduplication) : base du hash des refs.
+   * Le relevé du texte source (text-transform) peut être partiel ou échouer : il ne change que l'affichage.
+   */
+  const rawOf = (n: AXNode): string => norm(str(n.name));
   const makeRef = (role: string, name: string, zone = ''): string => {
     const key = `${role}\u0000${name}${zone}`;
     const k = occurrences.get(key) ?? 0;
@@ -331,40 +355,57 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   };
   /** Ref résoluble mais non rendue (option au-delà du budget, select fermé). */
   const register = (n: AXNode, role: string, name: string, zone: string) => {
-    const ref = makeRef(role, name, zone);
+    const raw = rawOf(n);
+    const ref = makeRef(role, raw, zone);
     if (n.backendDOMNodeId !== undefined) refs.set(ref, n.backendDOMNodeId);
-    meta.set(ref, { role, name });
+    meta.set(ref, raw !== name ? { role, name, alt: raw } : { role, name });
   };
 
-  /** Texte visible d'un sous-arbre (StaticText non ignorés, à travers les nœuds ignorés), borné. */
-  const textOf = (n: AXNode, acc: string[] = []): string[] => {
-    if (str(n.role) === 'StaticText') { if (!n.ignored) { const t = nameOf(n); if (t) acc.push(t); } return acc; }
+  /**
+   * Texte visible d'un sous-arbre (StaticText non ignorés, à travers les nœuds ignorés) : rendu et brut,
+   * borné en longueur et en nœuds parcourus (`budget.n`, partagé par tout un contexte).
+   */
+  const textOf = (n: AXNode, budget: { n: number }, acc: { shown: string[]; raw: string[]; len: number } = { shown: [], raw: [], len: 0 }) => {
+    if (--budget.n < 0) return acc;
+    if (str(n.role) === 'StaticText') {
+      const t = n.ignored ? '' : nameOf(n);
+      if (t) { acc.shown.push(t); acc.raw.push(rawOf(n)); acc.len += t.length + 1; }
+      return acc;
+    }
     for (const id of listOf(n.childIds)) {
-      if (acc.join(' ').length > 60) break;
+      if (acc.len > 60 || budget.n <= 0) break;
       const c = byId.get(id);
-      if (c) textOf(c, acc);
+      if (c) textOf(c, budget, acc);
     }
     return acc;
   };
   /**
    * Contexte d'un élément sans nom : texte du frère le plus proche (avant, puis après), sinon de ceux du
-   * parent, jusqu'à 3 niveaux. Croix d'un tag « PHP » → « PHP » ; c'est aussi ce qui distingue sa ref.
+   * parent, jusqu'à 3 niveaux (300 nœuds parcourus au plus). Croix d'un tag « PHP » → « PHP ». `key` entre
+   * dans la ref : texte brut de l'arbre, SANS chiffres (compteur, horodatage voisins), pour qu'elle ne change
+   * pas quand un compteur bouge ; `label` est le texte rendu.
    */
-  const contextOf = (node: AXNode): string => {
+  const contextOf = (node: AXNode): { label: string; key: string } => {
+    const budget = { n: 300 };
     let cur = node;
-    for (let up = 0; up < 3 && cur.parentId !== undefined; up++) {
+    for (let up = 0; up < 3 && cur.parentId !== undefined && budget.n > 0; up++) {
       const parent = byId.get(cur.parentId);
       if (!parent) break;
       const sibs = listOf(parent.childIds);
       const i = sibs.indexOf(cur.nodeId);
       for (const id of [...sibs.slice(0, i).reverse(), ...sibs.slice(i + 1)]) {
+        if (budget.n <= 0) break;
         const c = byId.get(id);
-        const t = c ? norm(textOf(c).join(' ')) : '';
-        if (t) return t.length > 40 ? `${t.slice(0, 39)}…` : t;
+        if (!c) continue;
+        const acc = textOf(c, budget);
+        const t = norm(acc.shown.join(' '));
+        if (!t) continue;
+        const key = norm(acc.raw.join(' ').replace(/\p{N}+/gu, ' ')).slice(0, 40);
+        return { label: t.length > 40 ? `${t.slice(0, 39)}…` : t, key: key !== '' ? key : '#' };
       }
       cur = parent;
     }
-    return '';
+    return { label: '', key: '' };
   };
 
   /** Options d'une liste : rendues jusqu'à OPTIONS_MAX (les sélectionnées toujours), les autres comptées. */
@@ -417,8 +458,10 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         // Bouton sans nom (croix d'un tag…) : nommé par son contexte, qui entre dans sa ref pour qu'elle
         // ne glisse pas vers la croix voisine quand un tag est supprimé. Son nom (meta) reste vide : text:PHP
         // ne doit jamais désigner la croix du tag PHP.
-        const ctx = !name && CONTEXT_ROLES.has(role) ? contextOf(node) : '';
-        const ref = makeRef(role, ctx ? `\u0001${ctx}` : name, zone);
+        const raw = rawOf(node);
+        const cx = !name && CONTEXT_ROLES.has(role) ? contextOf(node) : { label: '', key: '' };
+        const ctx = cx.label;
+        const ref = makeRef(role, cx.key ? `\u0001${cx.key}` : raw, zone);
         const val = VALUE_ROLES.has(role) ? norm(str(node.value)) : '';
         const err = FIELD_ROLES.has(role) ? invalidMsg(node) : undefined;
         if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId, nameOf);
@@ -427,7 +470,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         const line = `${ref}:${role}${level(node)}${label}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
         if (err !== undefined) invalid.push({ ref, backendId: node.backendDOMNodeId, line, message: err });
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
-        meta.set(ref, { role, name });
+        meta.set(ref, raw !== name && raw !== '' ? { role, name, alt: raw } : { role, name });
         if (inScope) {
           entries.set(ref, line);
           out.push({ depth, line });
@@ -442,11 +485,13 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     if (role === 'combobox') {
       // <select> fermé : ses options sur une ligne compacte (sélection marquée), refs résolubles.
       if (!hasProp(node, 'expanded', true)) {
-        const opts: string[] = [];
+        const opts: Array<{ text: string; selected: boolean }> = [];
         collectOptions(node, zone, opts);
         if (emitted && inScope && opts.length > 0) {
-          const more = opts.length - OPTIONS_MAX;
-          out.push({ depth: nextDepth, line: `options : ${opts.slice(0, OPTIONS_MAX).join(' | ')}${more > 0 ? ` | … +${more}` : ''}` });
+          // Les OPTIONS_MAX premières, plus toute option choisie au-delà (marquée [x]) ; le reste compté.
+          const shownOpts = opts.filter((o, i) => i < OPTIONS_MAX || o.selected);
+          const more = opts.length - shownOpts.length;
+          out.push({ depth: nextDepth, line: `options : ${shownOpts.map((o) => o.text).join(' | ')}${more > 0 ? ` | … +${more}` : ''}` });
         }
         return;
       }
@@ -469,7 +514,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     if (own !== undefined && own.hidden > 0 && inScope) out.push({ depth: nextDepth, line: `… +${own.hidden} options` });
   };
 
-  const collectOptions = (node: AXNode, zone: string, acc: string[]) => {
+  const collectOptions = (node: AXNode, zone: string, acc: Array<{ text: string; selected: boolean }>) => {
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
       if (!c) continue;
@@ -477,7 +522,8 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       if (role === 'option' && !c.ignored) {
         const name = nameOf(c);
         register(c, role, name, zone);
-        acc.push(`${quote(name, 40)}${hasProp(c, 'selected', true) ? ' [x]' : ''}`);
+        const selected = hasProp(c, 'selected', true);
+        acc.push({ text: `${quote(name, 40)}${selected ? ' [x]' : ''}`, selected });
       }
       collectOptions(c, zone, acc);
     }

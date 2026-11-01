@@ -502,6 +502,9 @@ Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, 
                (ref, text:), page stable : DOM ET réseau calmes (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
                nav et --snap-diff attendent déjà le load puis 400 ms sans mutation du DOM ni activité réseau, en suivant
                une redirection JS (challenge anti-bot) ; une action qui navigue ou lance des requêtes aussi (plafond stableTimeoutMs, 5000)
+               réseau : requêtes du document principal seulement ; > 1,2 s en vol (2,5 s si lancée par l'action) =
+               long-polling, ignorée ; polling régulier ignoré ; allowConsole=false : AUCUNE attente réseau (Network
+               n'est pas activé), seulement le DOM et les navigations
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
