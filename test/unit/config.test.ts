@@ -71,6 +71,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   diffMax: { raw: '6000', value: 6000 },
   stableTimeoutMs: { raw: '0', value: 0 },
   inputDeliveryMs: { raw: '500', value: 500 },
+  fallbackEngine: { raw: 'playwright', value: 'playwright' },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {

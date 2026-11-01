@@ -39,6 +39,11 @@ export interface ResolvedConfig {
   stableTimeoutMs: number;
   /** Délai de livraison d'une entrée native avant reprise (premier plan, puis repli synthétique), en ms. */
   inputDeliveryMs: number;
+  /**
+   * Moteur de repli des clics : « playwright » rejoue via Playwright (playwright-core, optionnel) un clic natif
+   * non livré ou en erreur d'actionnabilité ; « none » (défaut) : jamais.
+   */
+  fallbackEngine: 'none' | 'playwright';
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -62,6 +67,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   diffMax: DEFAULT_LIMITS.diffMax,
   stableTimeoutMs: DEFAULT_LIMITS.stableTimeoutMs,
   inputDeliveryMs: DEFAULT_LIMITS.inputDeliveryMs,
+  fallbackEngine: 'none',
 });
 
 /** Limites de lecture transmises au bridge (elles ne relèvent pas de la politique de sécurité). */
@@ -153,6 +159,11 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   diffMax: int(100, 10_000_000, `caractères, limite par défaut de --snap-diff (${DEFAULT_LIMITS.diffMax}) ; --max la surcharge`),
   stableTimeoutMs: int(0, 60_000, `ms, plafond de l'attente de stabilité du DOM après nav et avant --snap-diff (${DEFAULT_LIMITS.stableTimeoutMs}) ; 0 = pas d'attente`),
   inputDeliveryMs: int(50, 10_000, `ms, délai de livraison d'une entrée (click, check, press, fill) avant reprise : premier plan, puis repli synthétique annoncé (${DEFAULT_LIMITS.inputDeliveryMs})`),
+  fallbackEngine: {
+    check: (v): v is 'none' | 'playwright' => v === 'none' || v === 'playwright',
+    parse(raw) { if (raw !== 'none' && raw !== 'playwright') throw new Error('none|playwright attendu'); return raw; },
+    help: 'none|playwright : rejeu via Playwright (npm i playwright-core) d\'un clic natif non livré ou non actionnable (défaut none)',
+  },
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -182,6 +193,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     diffMax: pick('diffMax'),
     stableTimeoutMs: pick('stableTimeoutMs'),
     inputDeliveryMs: pick('inputDeliveryMs'),
+    fallbackEngine: pick('fallbackEngine'),
   };
 }
 

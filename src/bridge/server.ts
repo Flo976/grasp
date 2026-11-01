@@ -33,7 +33,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine') };
       const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
@@ -41,11 +41,13 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /policy': return sendJson(res, 200, page.policy);
         case 'GET /location': return sendJson(res, 200, { ...(await page.location()), lastBlocked: page.lastBlocked() });
         case 'POST /navigate': return sendJson(res, 200, await page.nav(str(body, 'url'), opts));
-        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', (await page.snapshot({ maxBytes: optInt(q.get('max'), 'max'), scope })).text);
+        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope }));
         case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max'), scope));
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));
         case 'POST /click': return sendJson(res, 200, await page.click(str(body, 'target'), opts));
         case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts));
+        case 'POST /hover': return sendJson(res, 200, await page.hover(str(body, 'target'), opts));
+        case 'POST /type': return sendJson(res, 200, await page.type(str(body, 'target'), str(body, 'text'), { ...opts, delay: optInt(body.delay, 'delay') }));
         case 'POST /select': return sendJson(res, 200, await page.select(str(body, 'target'), str(body, 'value'), opts));
         case 'POST /check': {
           const checked = optBool(body, 'checked');
@@ -68,7 +70,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'POST /upload': {
           const files = body.files;
           if (!Array.isArray(files) || !files.every((f) => typeof f === 'string')) throw new GraspError(400, 'champ « files » (tableau de chemins) requis');
-          return sendJson(res, 200, await page.upload(str(body, 'target'), files as string[]));
+          return sendJson(res, 200, await page.upload(str(body, 'target'), files as string[], { engine: opts.engine }));
         }
         default: throw new GraspError(404, `route inconnue : ${route}`);
       }

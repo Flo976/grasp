@@ -86,7 +86,7 @@ test('CLI : text/snap/--snap-diff bornés par défaut, --max, --scope, wait, ref
     assert.match(lastLine((await ok(['snap'])).stdout), /^… élagué : 3 liens sans nom .*, 2 iframes non parcourues$/);
 
     const help = await ok(['help']);
-    for (const re of [/wait \[--text T \| --sel S \| --idle\] \[--timeout ms\]/, /text \[--max N\] \[--scope <ref\|css>\]/, /snap \[--max octets\] \[--scope <ref\|css>\]/]) assert.match(help.stdout, re);
+    for (const re of [/wait \[--text T \| --sel S \| --idle\] \[--timeout ms\]/, /text \[--max N\] \[--scope <ref\|css\|frame=…>\]/, /snap \[--max octets\] \[--scope <ref\|css\|frame=…>\]/]) assert.match(help.stdout, re);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });
 

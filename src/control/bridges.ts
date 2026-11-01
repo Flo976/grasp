@@ -22,6 +22,8 @@ export interface BridgeInit {
   capturesDir?: string;
   /** Limites de lecture (snap, text, --snap-diff) et plafond de stabilité, lus une fois au démarrage. */
   limits?: Limits;
+  /** Repli automatique des clics par le moteur Playwright (config fallbackEngine). */
+  fallbackEngine?: 'none' | 'playwright';
 }
 
 export interface BridgeHandle {

@@ -337,7 +337,7 @@ async function main(argv: string[]): Promise<number> {
       }
       throw new CliError('usage : grasp session create [--profile P] | list | close [id]');
     }
-    case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': await action(); return 0;
+    case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': case 'type': await action(); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
     case 'text': {
       const t = (await c.call('GET', `/text${readQuery(a)}`)).text();
@@ -487,10 +487,12 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
              profiles rm <nom>                       refusé si une session l'utilise
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
-Lecture      snap [--max octets] [--scope <ref|css>]   budget 12000 octets par défaut (config snapMax)
-             text [--max N] [--scope <ref|css>]        4000 caractères par défaut (config textMax)
+Lecture      snap [--max octets] [--scope <ref|css|frame=…>]   budget 12000 octets par défaut (config snapMax)
+             text [--max N] [--scope <ref|css|frame=…>]        4000 caractères par défaut (config textMax)
                --scope <iframe> : texte du cadre s'il est de même origine, sinon erreur explicite ; zone vide :
                rien sur stdout, « note: aucun texte visible » sur stderr
+               --scope 'frame=#editeur [>> sél]' : DANS une iframe, même d'une autre origine (moteur Playwright) ;
+               snap y donne l'arbre ARIA de Playwright, sans refs
                sortie coupée : dernière ligne « … tronqué : N caractères restants — affinez avec --max N / --scope <ref|css> »
                snap : dernière ligne « … élagué : … » si des nœuds sont masqués (liens sans nom, iframes non parcourues)
              pdf [-o f.pdf]
@@ -505,7 +507,8 @@ Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N 
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
-             check <sél> [--uncheck] | press <touche> [sél]
+             check <sél> [--uncheck] | press <touche> [sél] | hover <sél> | type <sél> <texte> [--delay ms]
+               type : touche par touche, AJOUTÉ au curseur (autocomplétions) ; --delay 0 à 1000 ms entre deux touches
              livraison vérifiée : click, check, press et fill au clavier attendent que la page reçoive l'entrée
                (événement de confiance, délai inputDeliveryMs = 300) ; sinon onglet au premier plan + focus émulé
                et 2e essai, puis repli synthétique ANNONCÉ (« note: clic synthétique : l'entrée native n'a pas
@@ -515,9 +518,15 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
              --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
                           lignes écartées signalées sur stderr avec la commande pour les relire
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
+             --engine playwright  (click fill select check press hover type upload) action par Playwright branché sur
+                          le Chrome de Grasp : attente d'actionnabilité (visible, stable, activé), widgets riches ;
+                          optionnel : npm i playwright-core ; absent → ERROR qui le dit. Le garde de navigation et la
+                          politique (upload) s'appliquent pareil ; clics et survols vérifiés par la sonde
+             config fallbackEngine playwright : un clic natif non livré ou non actionnable (invisible, désactivé)
+                          est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
 Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN aller-retour (stdin par défaut)
                une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
-               wait eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               hover type wait eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
                analysé en entier avant d'exécuter ; arrêt au premier échec (--continue pour poursuivre) ;
                stdout « [n] commande → OK|ERROR: raison » + sortie utile (snap, text, diff, console, chemin)
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
@@ -527,6 +536,8 @@ Sécurité     security            politique telle que le garde l'applique
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 
 Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
+             frame=<css de l'iframe> >> <css|text:…>   élément DANS une iframe (même d'une autre origine : TinyMCE,
+               CAPTCHA) ; imbriqué : frame=#a >> frame=#b >> … ; implique le moteur Playwright ; pas de ref dans un cadre
                ref disparue : retrouvée seulement si c'est le même élément (même nœud DOM, rang décalé) ; élément
                retiré ou remplacé → 409 avec les homonymes (jamais de clic sur l'un d'eux), sinon 404 avec les
                3 candidats les plus proches ; ref d'une page précédente → 404 ; text: introuvable : noms proches

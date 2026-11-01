@@ -24,7 +24,8 @@ Sur la page de test : **388 octets** de snapshot, contre 18,7 Ko pour une captur
 Sur une vraie page, chaque lecture est **bornée par défaut** (`text` et `--snap-diff` : 4000
 caractères, `snap` : 12 000 octets) et toute coupure le dit en dernière ligne ; `--scope` lit une zone.
 
-- TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Pas de Playwright/Puppeteer.
+- TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Cœur sans Playwright ni Puppeteer ;
+  un [moteur Playwright de repli](#moteur-playwright-de-repli) **optionnel** se branche sur le même Chrome.
 - Linux (desktop et conteneur), et Chrome Windows piloté depuis WSL2 (voir [Mode Windows](#mode-windows-chromeexe-depuis-wsl2)). macOS en best-effort.
 - Tests : `node:test` uniquement, contre un vrai Chrome et un site local. Aucun site externe.
 
@@ -293,23 +294,27 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | Commande | Effet |
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
-| `snap [--max octets] [--scope <ref\|css>]` | Snapshot d'accessibilité (12 000 octets par défaut). |
-| `text [--max N] [--scope <ref\|css>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (et donne son URL) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
+| `snap [--max octets] [--scope <ref\|css\|frame=…>]` | Snapshot d'accessibilité (12 000 octets par défaut). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
+| `text [--max N] [--scope <ref\|css\|frame=…>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
 | `check <sél> [--uncheck]` | Coche ou décoche, puis **vérifie l'état**. |
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |
+| `hover <sél>` | Survol (pointeur déplacé au centre de l'élément) : menus au survol, infobulles. Livraison vérifiée. |
+| `type <sél> <texte> [--delay ms]` | Frappe touche par touche, **ajoutée** à la position du curseur (autocomplétions qui réagissent à chaque touche) ; `--delay` de 0 à 1000 ms entre deux touches. `fill` reste le bon choix pour remplacer une valeur. |
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue]` | Plusieurs commandes en **un** aller-retour. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
-**Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`.
+**Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
+`frame=<css de l'iframe> >> <css|text:…>` pour un élément **dans** une iframe, même d'une autre origine
+(imbriquable : `frame=#a >> frame=#b >> button` ; moteur Playwright, voir plus bas).
 Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
-(`nav`, `click`, `fill`, `select`, `check`, `press`) accepte :
+(`nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`) accepte :
 
 - `--snap-diff` : diff du snapshot dans le même aller-retour, après stabilité du DOM, borné à 4000
   caractères (`--max N`), restreint à une zone avec `--scope <ref|css>` ;
@@ -317,7 +322,9 @@ Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire
   (les plus récentes) : les lignes écartées et les entrées perdues par le tampon sont signalées sur stderr
   (`AVERTISSEMENT : 50 ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action) — grasp console
   --since 812 --limit 1000`) et dans le JSON (`console.since`, `console.omitted`, `console.dropped`) ;
-- `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur.
+- `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur ;
+- `--engine playwright` (`click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`) : l'action
+  passe par le [moteur Playwright de repli](#moteur-playwright-de-repli).
 
 ```
 grasp click '#envoyer' --console --snap-diff
@@ -407,6 +414,84 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
   (`eval` interdit reste interdit, allowlist, console…) et mêmes refs — celles d'un `snap` du script servent aux
   étapes suivantes. `profile <nom>` bascule la session au milieu du script (le bridge est relu à chaque étape).
+
+## Moteur Playwright de repli
+
+Le cœur de Grasp reste en CDP direct. Pour les cas où il bute, un moteur **optionnel** s'appuie sur
+[playwright-core](https://www.npmjs.com/package/playwright-core) : il n'est chargé (`import()` dynamique)
+qu'au premier usage, ne télécharge **aucun navigateur** et se branche (`chromium.connectOverCDP`) sur le Chrome
+que le bridge a déjà lancé — Chrome Linux, chrome.exe via `127.0.0.1:<port>` en mode Windows, ou le navigateur
+du mode attach — puis y retrouve l'onglet de la session par son `targetId`.
+
+```bash
+npm i playwright-core            # dans le dossier de Grasp (1.64+, dépendance pair optionnelle) ; sans lui, tout le reste fonctionne
+grasp click '#payer' --engine playwright
+grasp text --scope 'frame=#mce_0_ifr'                  # texte d'une iframe, même d'une autre origine
+grasp snap --scope 'frame=iframe[title="reCAPTCHA"]'   # arbre ARIA du cadre (sans refs)
+grasp fill 'frame=#mce_0_ifr >> body' 'Bonjour'        # éditeur riche (TinyMCE) dans une iframe
+grasp click 'frame=#paiement >> text:Valider'
+grasp config set fallbackEngine playwright             # rejeu automatique des clics (au redémarrage)
+```
+
+**Quand l'utiliser.** (1) **Iframes**, surtout d'une autre origine (éditeurs riches, widgets de paiement,
+CAPTCHA à *constater*) : le snapshot et `text` natifs ne les traversent pas. `frame=<css> >> <css|text:…>`
+fonctionne pour `click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`, `wait --sel`, et en
+lecture pour `text --scope` et `snap --scope` ; il implique le moteur Playwright. (2) **Éléments pas encore
+actionnables** : Playwright attend qu'ils soient visibles, stables, activés et non recouverts (10 s au plus),
+là où le clic natif répond aussitôt 409. (3) Widgets qui réagissent mal aux événements natifs de Grasp.
+Ce n'est **pas** un remède à la non-livraison des entrées sur un écran Windows verrouillé : Playwright passe par
+le même canal `Input` de CDP (voir plus bas).
+
+**Repli automatique** (`fallbackEngine: "playwright"`, défaut `none`) : un clic natif dont l'entrée n'a pas
+atteint la page (après l'étage « premier plan ») est rejoué via Playwright **avant** le repli synthétique, et
+un clic natif en erreur d'actionnabilité (409 : pas de zone cliquable, désactivé) est rejoué via Playwright qui
+attend jusqu'à 5 s. Toujours annoncé : `note: rejoué via Playwright : …`. Si Playwright n'y change rien,
+l'étage synthétique suit (`note: repli Playwright sans effet (…)`) ; si playwright-core manque, le repli est
+sauté et c'est dit (`note: repli Playwright impossible : … npm i playwright-core`), avec un avertissement au
+démarrage du serveur et dans `grasp doctor`.
+
+**Ce qui ne change pas.** Usage **borné** : un ensemble fixe d'actions, aucune exécution de code venu de
+l'agent côté Node (pas d'`evaluate` exposé ; `eval` reste soumis à `allowEval`). La **politique** s'applique
+avant tout : `upload` exige `allowUpload` (403 avant même de se connecter) ; la navigation reste gardée par
+le garde `Fetch` de Grasp, que Playwright ne contourne pas (un clic Playwright vers un domaine hors allowlist
+est bloqué, testé) ; connexion en `noDefaults` : Playwright ne touche ni au comportement de téléchargement de
+Grasp (sans cette option, il redirigeait les téléchargements vers son dossier temporaire : testé), ni au focus,
+ni à l'émulation. Les refs sont traduites par Grasp (même résolution qu'en natif, ref disparue comprise) puis
+marquées le temps de l'action par un attribut `data-grasp-pw`, retiré ensuite ; CSS est confié à Playwright
+(il attend que l'élément apparaisse) ; `text:` dans le document principal est résolu par Grasp. Les clics et
+survols Playwright du document principal sont **vérifiés par la sonde** de Grasp, comme les entrées natives.
+
+**Cycle de vie.** Une connexion par bridge, ouverte au premier usage, **fermée après 60 s d'inactivité**, à
+la fermeture de session et à la bascule de profil (arrêt du bridge). La déconnexion ne ferme que le WebSocket
+de Playwright : jamais le navigateur ni l'onglet (testé : Chrome vivant, onglet présent, connexion CDP de
+Grasp intacte). Aucun processus supplémentaire (Playwright tourne dans le bridge). Upload : par chemin avec
+Chrome Linux ; par contenu (≤ 50 Mo) avec chrome.exe et en mode attach, où le navigateur ne voit pas les
+chemins Linux.
+
+**Coût mesuré** (Chrome 150 headless, Linux, WSL2, page de test ; 5 processus pour le chargement, 21 clics
+par moteur, médianes) : chargement de playwright-core ≈ 220 ms, connexion et recherche de l'onglet ≈ 35 ms
+(15 ms pour une reconnexion), soit **≈ 250 ms de plus sur la première action** (`note: moteur Playwright
+connecté en … ms`) ; ensuite un clic Playwright coûte 83 ms contre 69 ms en natif (tous deux vérifiés par la
+sonde) ; mémoire du bridge : ≈ +90 Mo (RSS) une fois Playwright chargé et connecté. playwright-core pèse 14 Mo sur disque.
+
+**Limites.**
+- Pendant qu'il est connecté, Playwright active `Runtime`, `Network`, `Page`… sur l'onglet (détectable par
+  certains anti-robots, y compris avec `allowConsole=false`) ; en mode attach, il s'attache aussi aux
+  **autres onglets** du navigateur de l'utilisateur (sans y agir). D'où la déconnexion après inactivité.
+- Pas de refs dans un cadre : on agit avec `frame=… >> css|text:` ; le `snap` d'un cadre est l'arbre ARIA de
+  Playwright (format YAML), borné par `snapMax` compté en caractères ; `--snap-diff` ne voit pas l'intérieur des
+  cadres ; `text:` dans un cadre suit `getByText` de Playwright (texte exact, puis sous-chaîne), pas les noms
+  accessibles du snapshot.
+- Une action **dans un cadre** n'est pas vérifiable par la sonde (note `livraison non vérifiable`) : seule
+  l'actionnabilité de Playwright la garantit.
+- Constaté sur Chrome 150 : le **premier clic Playwright juste après un défilement**, sur une page qui contient
+  une iframe hors processus, n'atteint pas la page alors que Playwright répond OK. La sonde le détecte et Grasp
+  rejoue une fois (`note: clic Playwright livré au 2e essai`) ; deux pertes → erreur 502.
+- Le marqueur `data-grasp-pw` est une vraie mutation du DOM, visible par la page pendant l'action ; un élément
+  dans un shadow root **fermé** est introuvable pour Playwright.
+- Écran Windows verrouillé : si Chrome jette les entrées de CDP, il jette aussi celles de Playwright (même
+  canal) ; Playwright attend en plus une frame rendue pour cliquer, d'où jusqu'à 5 s perdues avant le repli
+  synthétique. Non reproduit sur la machine réelle.
 
 ## Captures d'écran
 
@@ -511,13 +596,14 @@ GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
 GET  /console?level=&since=&limit=&clear=1    POST /console {level?, since?, limit?, clear?}
 POST /click  {target, snapDiff?, max?, scope?, console?, shotOnError?}   POST /fill   {target, value, …}
 POST /select {target, value, …}               POST /check  {target, checked?, …}
-POST /press  {key, target?, …}
-POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
+POST /press  {key, target?, …}               POST /hover  {target, …}
+POST /type   {target, text, delay?, …}        (toute action : engine? = native | playwright)
+POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 POST /run {script, continue?}   → {ok, total, executed, steps[]} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
-incohérent ou pas de session · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
+incohérent ou pas de session · 501 moteur Playwright indisponible (playwright-core absent) · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
 `screenshot` (chemin, avec `shotOnError`), `console`/`consoleSeq`/`consoleSince`/`consoleOmitted`/`consoleDropped`
 (avec `console`) et `candidates`
 (ref disparue ou `text:` introuvable). Pour les actions, `max` est la limite du diff en caractères.
@@ -633,6 +719,8 @@ pas partie) : `snapMax` (octets, 12000), `textMax` (caractères, 4000), `diffMax
 `stableTimeoutMs` (ms, 5000 ; 0 = pas d'attente de stabilité). `--max` les surcharge à chaque appel.
 `inputDeliveryMs` (ms, 300, de 50 à 10 000) : délai de livraison d'une entrée avant chaque étage de reprise
 (voir [Livraison vérifiée](#livraison-vérifiée-des-entrées)).
+`fallbackEngine` (`none` par défaut, ou `playwright`) : rejeu automatique des clics par le
+[moteur Playwright de repli](#moteur-playwright-de-repli).
 
 ## Tests
 
@@ -643,12 +731,15 @@ GRASP_TEST_WINDOWS=1 npm test   # ajoute le test réel chrome.exe (WSL2 mirrored
 ```
 
 L'intégration démarre un `node:http` local qui sert la page de test (`test/helpers/testsite.ts`).
+playwright-core est une devDependency : sans lui, les tests du moteur Playwright sont **sautés** (et ceux du
+chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pas.
 
 ## Limites connues
 
 - Le snapshot couvre le cadre principal ; le contenu des iframes (même origine ou non) n'y figure
   pas, même si la garde de navigation s'y applique. C'est désormais annoncé (`… élagué : N iframes non
-  parcourues`). L'attente de stabilité et `wait` n'observent aussi que le cadre principal.
+  parcourues`). L'attente de stabilité et `wait` n'observent aussi que le cadre principal. Pour lire et agir
+  **dans** une iframe : `--scope 'frame=…'` et `frame=… >> sél` (moteur Playwright, optionnel), sans refs.
 - Attente de stabilité : une page qui mute sans arrêt sa structure ou son texte (compteur, flux en direct
   toutes les < 400 ms) coûte `stableTimeoutMs` à chaque `nav` (note sur stderr) ; une animation qui ne
   touche que `style`/`class` n'est pas vue, de même qu'un contenu qui n'apparaît qu'après plus de 400 ms de

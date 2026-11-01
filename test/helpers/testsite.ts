@@ -217,6 +217,40 @@ export const CADRES_PAGE = `<!doctype html>
 <script>document.getElementById('autre').src = 'http://localhost:' + location.port + '/cadre-texte';</script>
 </body></html>`;
 
+/**
+ * Moteur Playwright : iframe d'une AUTRE origine (localhost, hors processus) façon TinyMCE / CAPTCHA, lien
+ * hors allowlist ([::1]), bouton qui n'apparaît qu'après 600 ms, survol, champ fichier, téléchargement.
+ */
+export const PW_CADRES_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Cadres Playwright</title></head><body>
+<h1>Cadres Playwright</h1>
+<iframe id="editeur" title="Éditeur riche" style="width:700px;height:420px"></iframe>
+<p><a id="sortir">Sortir</a></p>
+<button id="reveler" onclick="setTimeout(() => { document.getElementById('tardif').hidden = false; }, 600)">Révéler</button>
+<button id="tardif" hidden onclick="document.getElementById('compte').textContent = 'Compte : ' + (++n)">Tardif</button>
+<p id="compte">Compte : 0</p>
+<button id="bas" onclick="document.getElementById('compte').textContent = 'Compte : ' + (++n)">Compter en bas</button>
+<div id="survol" onmouseover="this.textContent = 'Survolé'" style="padding:10px">Zone à survoler</div>
+<label for="ville">Ville</label> <input id="ville">
+<button id="dl" onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['contenu grasp'])); a.download = 'grasp-dl.txt'; document.body.append(a); a.click();">Télécharger</button>
+<script>let n = 0;
+document.getElementById('editeur').src = 'http://localhost:' + location.port + '/pw-editeur';
+document.getElementById('sortir').href = 'http://[::1]:' + location.port + '/';</script>
+</body></html>`;
+
+export const PW_EDITEUR_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Éditeur</title></head><body>
+<div id="zone" contenteditable="true" role="textbox" aria-label="Zone d'édition"><p>Texte initial</p></div>
+<label for="titre">Titre</label> <input id="titre">
+<label for="taille">Taille</label> <select id="taille"><option value="p">Petit</option><option value="g">Grand</option></select>
+<label><input type="checkbox" id="gras"> Gras</label>
+<button id="appliquer" onclick="document.getElementById('etat').textContent = 'Appliqué : ' + document.getElementById('titre').value">Appliquer</button>
+<p id="etat">Rien</p>
+<input type="file" id="piece" aria-label="Pièce jointe">
+<p id="fichier">Aucun fichier</p>
+<script>document.getElementById('piece').onchange = (e) => { document.getElementById('fichier').textContent = 'Fichier : ' + e.target.files[0].name; };</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -251,6 +285,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/sonde') { res.end(SONDE_PAGE); return; }
     if (u.pathname === '/flottant') { res.end(FLOTTANT_PAGE); return; }
     if (u.pathname === '/cadres') { res.end(CADRES_PAGE); return; }
+    if (u.pathname === '/pw-cadres') { res.end(PW_CADRES_PAGE); return; }
+    if (u.pathname === '/pw-editeur') { res.end(PW_EDITEUR_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

@@ -36,7 +36,7 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
   const site = await startTestSite();
   const paths = resolvePaths(t.env, t.env.HOME);
   mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
-  writeFileSync(paths.configFile, JSON.stringify({ chromePath: EXE, headless: true, allowEval: true, allowDownload: true, allowedDomains: ['127.0.0.1'], windowsProfilesDir: root }), { mode: 0o600 });
+  writeFileSync(paths.configFile, JSON.stringify({ chromePath: EXE, headless: true, allowEval: true, allowDownload: true, allowUpload: true, allowedDomains: ['127.0.0.1', 'localhost'], windowsProfilesDir: root }), { mode: 0o600 });
   const srv = await startServer(t.env);
   try {
     assert.match(srv.stderr(), /windows/);
@@ -87,6 +87,25 @@ screenshot --el #compter
     assert.match(ran.stdout, /\[6\] text --scope #compte → OK\nCompte : 2\n/);
     assert.match(ran.stdout, /\[7\] screenshot --el #compter → OK\n\/\S+\.png\n/);
     assert.match(ran.stderr, /7 commandes, 7 OK/);
+    // Moteur Playwright branché sur chrome.exe (127.0.0.1:<port>) : clic vérifié, iframe d'une autre origine
+    // (localhost), upload par CONTENU (chrome.exe ne voit pas les chemins Linux).
+    await runCli(env, ['nav', `${site.url}/pw-cadres`]);
+    const pc = await runCli(env, ['click', '#bas', '--engine', 'playwright']);
+    assert.equal(pc.code, 0, pc.stderr);
+    assert.match(pc.stderr, /moteur Playwright connecté en \d+ ms/);
+    assert.equal((await runCli(env, ['text', '--scope', '#compte'])).stdout, 'Compte : 1\n');
+    assert.match((await runCli(env, ['text', '--scope', 'frame=#editeur'])).stdout, /Texte initial/);
+    const piece = join(t.root, 'piece.txt');
+    writeFileSync(piece, 'pièce jointe');
+    const pr = await runCli(env, ['run'], `fill 'frame=#editeur >> #titre' Fosa
+click 'frame=#editeur >> text:Appliquer'
+text --scope 'frame=#editeur >> #etat'
+upload 'frame=#editeur >> #piece' ${piece}
+text --scope 'frame=#editeur >> #fichier'
+`);
+    assert.equal(pr.code, 0, `${pr.stdout}\n${pr.stderr}`);
+    assert.match(pr.stdout, /\[3\] .* → OK\nAppliqué : Fosa\n/);
+    assert.match(pr.stdout, /\[5\] .* → OK\nFichier : piece\.txt\n/);
     await runCli(env, ['nav', `${site.url}/flottant`]);
     const info = decodePng(readFileSync((await runCli(env, ['screenshot', '--el', '#info'])).stdout.trim()));
     assert.ok([0, 1].some((x) => info.at(x, Math.floor(info.height / 2)).every((v) => v < 60)), `bord gauche de #info rogné : ${info.at(0, Math.floor(info.height / 2))}`);

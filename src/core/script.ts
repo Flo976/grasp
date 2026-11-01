@@ -8,7 +8,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -112,7 +112,14 @@ function actionBody(a: Args, extra: Record<string, unknown>): Record<string, unk
     // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
     ...(max !== undefined ? { max } : {}), ...(scope !== undefined ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
+    ...engineOf(a),
   };
+}
+
+/** --engine native|playwright : transmis tel quel, le bridge valide. */
+function engineOf(a: Args): { engine?: string } {
+  const e = value(a, 'engine');
+  return e !== undefined ? { engine: e } : {};
 }
 
 /** --max et --scope de snap / text → paramètres de requête. */
@@ -170,7 +177,7 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'wait', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 /** Ligne de commande → requête du bridge, exactement comme la CLI la construit pour une commande isolée. */
@@ -188,6 +195,12 @@ export function buildRequest(a: Args): StepRequest {
       const [key, target] = need(a, 1, 'press <touche> [sélecteur]');
       return { cmd, method: 'POST', path: '/press', body: actionBody(a, target !== undefined ? { key, target } : { key }) };
     }
+    case 'hover': { const [target] = need(a, 1, 'hover <sélecteur>'); return { cmd, method: 'POST', path: '/hover', body: actionBody(a, { target }) }; }
+    case 'type': {
+      const [target, text] = need(a, 2, 'type <sélecteur> <texte> [--delay ms]');
+      const delay = value(a, 'delay');
+      return { cmd, method: 'POST', path: '/type', body: actionBody(a, { target, text, ...(delay !== undefined ? { delay } : {}) }) };
+    }
     case 'wait': { const w = waitRequest(a); return { cmd, method: 'POST', path: '/wait', body: w.body, timeoutMs: w.timeoutMs }; }
     case 'eval': { const [expression] = need(a, 1, 'eval <expression>'); return { cmd, method: 'POST', path: '/eval', body: { expression } }; }
     case 'console': return { cmd, method: 'POST', path: '/console', body: consoleBody(a) };
@@ -198,7 +211,7 @@ export function buildRequest(a: Args): StepRequest {
       return { cmd, method: 'GET', path: `/screenshot?${q}` };
     }
     case 'cookies': return { cmd, method: 'GET', path: '/cookies' };
-    case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files } }; }
+    case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     default:
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);

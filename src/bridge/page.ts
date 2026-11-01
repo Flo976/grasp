@@ -9,6 +9,7 @@ import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type Snapshot }
 import { parseKey } from './keys.js';
 import { DEFAULT_LIMITS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
+import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
   snapDiff?: boolean | undefined;
@@ -20,6 +21,21 @@ export interface ActionOptions {
   console?: boolean | undefined;
   /** En cas d'échec, capture du viewport ; son chemin est ajouté au message d'erreur. */
   shotOnError?: boolean | undefined;
+  /** Moteur de l'action : « native » (CDP direct, défaut) ou « playwright » (repli optionnel). frame= impose Playwright. */
+  engine?: string | undefined;
+}
+
+/** Moteur Playwright du bridge (voir playwright.ts). */
+export interface EngineConfig {
+  /** URL WebSocket DevTools du navigateur ; absente : moteur Playwright indisponible. */
+  devtoolsUrl?: string | undefined;
+  /** fallbackEngine de la config : rejeu automatique des clics natifs non livrés ou non actionnables. */
+  fallback?: 'none' | 'playwright' | undefined;
+  /** Module chargé (défaut : playwright-core, ou GRASP_PLAYWRIGHT_MODULE). */
+  module?: string | undefined;
+  idleMs?: number | undefined;
+  /** Navigateur sur le même système de fichiers (upload par chemin) ; false : chrome.exe, mode attach. */
+  isLocal?: boolean | undefined;
 }
 /**
  * Console d'une action (--console) : `since` = seq de départ, `omitted` = lignes plus anciennes écartées
@@ -178,6 +194,16 @@ const SYNTH_KEY_FN = `function (key, code, keyCode, text, mods) {
   el.dispatchEvent(new KeyboardEvent('keyup', o));
   return true;
 }`;
+/** Repli d'un survol : pointerover/mouseover/mouseenter/mousemove sur l'élément, depuis le monde isolé (isTrusted=false). */
+const SYNTH_HOVER_FN = `function (x, y) {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
+  el.dispatchEvent(new PointerEvent('pointerover', { ...o, pointerId: 1, isPrimary: true, pointerType: 'mouse' }));
+  el.dispatchEvent(new MouseEvent('mouseover', o));
+  el.dispatchEvent(new MouseEvent('mouseenter', { ...o, bubbles: false }));
+  el.dispatchEvent(new MouseEvent('mousemove', o));
+  return true;
+}`;
 /** Repli d'une saisie : setter natif de value + input (contenteditable : texte remplacé). */
 const SYNTH_FILL_FN = `function (v) {
   if (this.isContentEditable) { this.textContent = v; this.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v })); return true; }
@@ -204,6 +230,7 @@ const SCOPE_TEXT_FN = `function () {
 }`;
 
 const CLICK_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+const HOVER_EVENTS = ['pointerover', 'pointermove', 'mouseover', 'mousemove'];
 const KEY_EVENTS = ['keydown', 'keyup', 'keypress', 'beforeinput', 'input'];
 /** Champs que la frappe ne remplit pas : valeur posée par le setter natif, sans vérification de livraison. */
 const SETTER_ONLY_INPUTS = new Set(['date', 'time', 'datetime-local', 'month', 'week']);
@@ -211,9 +238,10 @@ const SETTER_ONLY_INPUTS = new Set(['date', 'time', 'datetime-local', 'month', '
 const FRAME_TAGS = new Set(['IFRAME', 'FRAME', 'OBJECT', 'EMBED', 'FENCEDFRAME', 'PORTAL']);
 const NO_CHANGE = '(aucun changement)';
 
-type DeliveryKind = 'clic' | 'touche' | 'saisie';
+type DeliveryKind = 'clic' | 'touche' | 'saisie' | 'survol';
 const KIND: Record<DeliveryKind, { failed: string; synth: string; note: string }> = {
   clic: { failed: 'clic non livré', synth: 'le clic synthétique', note: 'clic synthétique' },
+  survol: { failed: 'survol non livré', synth: 'le survol synthétique', note: 'survol synthétique' },
   touche: { failed: 'touche non livrée', synth: 'la touche synthétique', note: 'touche synthétique' },
   saisie: { failed: 'saisie non livrée', synth: 'la saisie synthétique', note: 'saisie synthétique' },
 };
@@ -231,9 +259,11 @@ interface DeliverOptions {
   synthetic: (at: { x: number; y: number } | undefined) => Promise<void>;
   /** Effet observable du repli ; défaut : mutation du DOM ou navigation. */
   effect?: () => Promise<boolean>;
+  /** Rejeu par le moteur Playwright (fallbackEngine=playwright), entre l'étage (a) et le repli synthétique. */
+  replay?: () => Promise<void>;
 }
 /** Crochets de test : simulent une reprise de la livraison pendant un étage. */
-export interface TestHooks { recovering?(stage: 'front' | 'synthetic'): void | Promise<void> }
+export interface TestHooks { recovering?(stage: 'front' | 'playwright' | 'synthetic'): void | Promise<void> }
 
 interface ElementInfo { tag: string; type: string; disabled: boolean; readOnly: boolean; editable: boolean; checkable: boolean; checked: boolean | null }
 
@@ -285,6 +315,9 @@ export class PageController {
   /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
   private undelivered = false;
   private probeSeq = 0;
+  /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
+  private pw: PlaywrightEngine | undefined;
+  private fallback: 'none' | 'playwright' = 'none';
   /** Crochets de test (jamais utilisés en production). */
   testHooks: TestHooks | undefined;
 
@@ -295,7 +328,7 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
     // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
@@ -305,8 +338,144 @@ export class PageController {
     pc.foreign = opts.newTab === true;
     pc.capturesDir = opts.capturesDir;
     if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
+    const en = opts.engine ?? {};
+    pc.fallback = en.fallback ?? 'none';
+    pc.pw = new PlaywrightEngine({ endpoint: en.devtoolsUrl, targetId, module: en.module, idleMs: en.idleMs ?? PW_IDLE_MS, isLocal: en.isLocal === true });
     await pc.init(opts.downloadDir);
     return pc;
+  }
+
+  // ---------- Moteur Playwright de repli (optionnel, connexion paresseuse) ----------
+
+  /** Ferme la connexion Playwright (jamais le navigateur ni l'onglet) : arrêt du bridge, tests. */
+  async closeEngine(): Promise<void> { await this.pw?.disconnect(); }
+
+  get playwrightConnected(): boolean { return this.pw?.connected === true; }
+
+  /** Moteur d'une action : --engine (validé), et frame= impose Playwright. */
+  private engineFor(opts: { engine?: string | undefined }, sel?: string): 'native' | 'playwright' {
+    const e = opts.engine;
+    if (e !== undefined && e !== 'native' && e !== 'playwright') throw badRequest(`moteur inconnu « ${e} » (native, playwright)`);
+    const framed = sel !== undefined && parseFrameTarget(sel) !== null;
+    if (framed && e === 'native') throw badRequest('frame= exige le moteur Playwright (retirez --engine native)');
+    return framed || e === 'playwright' ? 'playwright' : 'native';
+  }
+
+  /** Page Playwright de l'onglet ; la première connexion est notée (coût visible). */
+  private async pwPage(): Promise<PwPage> {
+    if (this.pw === undefined) throw new GraspError(501, 'moteur Playwright non configuré pour ce bridge');
+    const r = await this.pw.page();
+    if (r.connectedMs !== undefined) this.notes?.push(`moteur Playwright connecté en ${r.connectedMs} ms`);
+    return r.page;
+  }
+
+  /**
+   * Élément Grasp (backendNodeId) → locator Playwright : marqueur temporaire data-grasp-pw posé depuis le
+   * monde isolé, retiré après l'action (seule trace visible par la page, le temps de l'action).
+   */
+  private async tagged(page: PwPage, id: number): Promise<{ loc: PwLocator; untag: () => Promise<void> }> {
+    const tok = `g${process.pid}-${++this.probeSeq}`;
+    await this.callIsolated(id, `function (t) { const el = this.nodeType === 1 ? this : this.parentElement; el.setAttribute('data-grasp-pw', t); return true; }`, tok);
+    return {
+      loc: page.locator(`[data-grasp-pw="${tok}"]`),
+      untag: async () => { await this.callIsolated(id, `function () { const el = this.nodeType === 1 ? this : this.parentElement; if (el) el.removeAttribute('data-grasp-pw'); return true; }`).catch(() => undefined); },
+    };
+  }
+
+  /**
+   * Sélecteur Grasp → locator Playwright. Document principal : ref et text: résolus par Grasp (mêmes règles
+   * qu'en natif), CSS laissé à Playwright (il attend que l'élément apparaisse). Cadre (frame=… >> …) : CSS ou
+   * text: dans le cadre, même d'une autre origine ; `whole` : cadre entier si aucun élément n'est précisé (lectures).
+   */
+  private async pwLocator(page: PwPage, sel: string, snap: Snapshot | undefined, whole?: string): Promise<{ loc: PwLocator; untag?: () => Promise<void> }> {
+    const s = sel.trim();
+    if (s === '') throw badRequest('sélecteur vide');
+    const ft = parseFrameTarget(s);
+    if (ft !== null) {
+      let fl = page.frameLocator(ft.frames[0]!);
+      for (const f of ft.frames.slice(1)) fl = fl.frameLocator(f);
+      const t = ft.target;
+      if (t === '') {
+        if (whole === undefined) throw badRequest(`frame=… >> <sélecteur> : précisez l'élément du cadre (ex. ${s} >> button, ${s} >> text:Valider)`);
+        return { loc: fl.locator(whole) };
+      }
+      if (REF_RE.test(t)) throw badRequest('les refs ne désignent que des éléments du document principal : dans un cadre, utilisez un sélecteur CSS ou text: (frame=… >> #id, frame=… >> text:Valider)');
+      if (t.startsWith('text:')) {
+        const txt = t.slice(5).trim();
+        if (txt === '') throw badRequest('text: attend un texte');
+        const exact = fl.getByText(txt, { exact: true });
+        return { loc: (await exact.count()) > 0 ? exact : fl.getByText(txt) };
+      }
+      return { loc: fl.locator(`css=${t.startsWith('css:') ? t.slice(4) : t}`) };
+    }
+    if (REF_RE.test(s) || s.startsWith('text:')) return this.tagged(page, await this.resolve(s, snap));
+    return { loc: page.locator(`css=${s.startsWith('css:') ? s.slice(4) : s}`) };
+  }
+
+  /**
+   * Action par le moteur Playwright, dans le même cadre qu'une action native (--snap-diff, --console, notes,
+   * garde). `pointer` : action au pointeur (clic, survol, case) dont la livraison est vérifiée par la sonde.
+   */
+  private pwAct(opts: ActionOptions, sel: string, what: string, fn: (loc: PwLocator, page: PwPage) => Promise<string | void>, pointer?: { types: string[]; soft?: boolean }): Promise<ActionResult> {
+    return this.act(opts, async (snap) => {
+      const page = await this.pwPage();
+      const { loc, untag } = await this.pwLocator(page, sel, snap);
+      try {
+        if (pointer === undefined) return await fn(loc, page);
+        if (parseFrameTarget(sel) !== null) {
+          const r = await fn(loc, page);
+          this.notes?.push('action dans un cadre : livraison non vérifiable depuis la page (actionnabilité vérifiée par Playwright)');
+          return r;
+        }
+        let out: string | void = undefined;
+        await this.pwVerified(pointer.types, what, async () => { out = await fn(loc, page); }, pointer.soft === true);
+        return out;
+      } catch (e) { throw pwError(e, what); } finally { await untag?.(); }
+    });
+  }
+
+  /**
+   * Action Playwright au pointeur, VÉRIFIÉE comme une entrée native : Playwright peut répondre OK alors que la
+   * page n'a rien reçu (constaté : 1er clic juste après un défilement, sur une page qui contient une iframe hors
+   * processus). Aucun événement de confiance → un second essai (élément déjà défilé), puis erreur (ou note si
+   * `soft` : un survol sur un pointeur déjà en place peut ne produire aucun événement).
+   */
+  private async pwVerified(types: string[], what: string, run: () => Promise<void>, soft = false): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      let probe: { token: string; hit: string | null };
+      try { probe = await this.armProbe(types, undefined); } catch (e) {
+        await run();
+        this.notes?.push(`livraison de l'entrée non vérifiée (sonde impossible : ${(e as Error).message})`);
+        return;
+      }
+      try {
+        const m = this.mark();
+        let err: unknown;
+        try { await run(); } catch (e) { err = e; }
+        const seen = await this.awaitProbe(probe.token, m, (p) => p.trusted > 0);
+        if (seen !== 'no') {
+          if (err !== undefined) throw err;
+          if (attempt > 1) this.notes?.push(`${what} Playwright livré au 2e essai (le 1er n'a pas atteint la page)`);
+          return;
+        }
+        // Échec réel (élément invisible, délai…) : remonté tel quel. « État inchangé » sans événement : entrée perdue.
+        if (err !== undefined && !/did not change its state/.test(err instanceof Error ? err.message : String(err))) throw err;
+        if (attempt >= 2) {
+          if (soft) { this.notes?.push(`${what} Playwright : aucun événement reçu par la page (pointeur déjà sur l'élément ?)`); return; }
+          throw new GraspError(502, `${what} non livré (moteur Playwright) : Playwright a répondu sans erreur mais la page n'a reçu aucun événement, en deux essais — écran Windows verrouillé, fenêtre sans rendu ?`);
+        }
+      } finally { this.stopProbe(probe.token); }
+    }
+  }
+
+  /** Clic Playwright sur un élément résolu par Grasp (rejeu automatique) ; `verify` : sonde propre (hors de deliver). */
+  private async pwClickNode(id: number, timeout: number, verify: boolean): Promise<void> {
+    const page = await this.pwPage();
+    const { loc, untag } = await this.tagged(page, id);
+    try {
+      if (verify) await this.pwVerified(CLICK_EVENTS, 'clic', () => loc.click({ timeout }));
+      else await loc.click({ timeout });
+    } catch (e) { throw pwError(e, 'click'); } finally { await untag(); }
   }
 
   private s<T = any>(method: string, params: object = {}): Promise<T> {
@@ -696,6 +865,20 @@ export class PageController {
     return snap;
   }
 
+  /**
+   * Texte de `snap`. Zone frame=… : arbre ARIA du cadre par le moteur Playwright (même d'une autre origine),
+   * sans refs (elles ne désignent que le document principal) ; on agit dans le cadre avec frame=… >> css|text:.
+   */
+  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<string> {
+    if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
+    const scope = opts.scope.trim();
+    const { loc } = await this.pwLocator(await this.pwPage(), scope, undefined, 'body');
+    let aria: string;
+    try { aria = await loc.ariaSnapshot({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'snap'); }
+    const frames = scope.split(/\s*>>\s*/).filter((x) => x.startsWith('frame=')).join(' >> ');
+    return truncateText(`cadre ${scope} (arbre ARIA de Playwright, sans refs : agissez avec « ${frames} >> <css|text:…> »)\n${aria}`, opts.maxBytes ?? this.limits.snapMax, { wholeLines: true });
+  }
+
   /** Mémorise (rôle, nom) de chaque ref remise à l'agent ; borné, les plus anciennes sortent d'abord. */
   private remember(snap: Snapshot): void {
     for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, { role: m.role, name: m.name, id: snap.refs.get(ref), doc: this.docGen }); }
@@ -708,13 +891,17 @@ export class PageController {
   /** innerText de la page (ou de la zone `scope`), coupé à `max` caractères (défaut `textMax`) avec une ligne explicite. */
   async text(max?: number, scope?: string): Promise<string> {
     let t: string;
-    if (scope !== undefined && scope.trim() !== '') {
+    if (scope !== undefined && parseFrameTarget(scope) !== null) {
+      // Cadre (même d'une autre origine) : lu par le moteur Playwright.
+      const { loc } = await this.pwLocator(await this.pwPage(), scope, undefined, 'body');
+      try { t = await loc.innerText({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'text'); }
+    } else if (scope !== undefined && scope.trim() !== '') {
       const id = await this.resolve(scope.trim());
       const r = await this.callIsolated<{ text?: string; frame?: boolean; src?: string }>(id, SCOPE_TEXT_FN);
       if (r.text === undefined) {
         // Cadre d'une autre origine (ou hors processus) : son document n'est pas accessible depuis la page.
         const src = r.src !== undefined && r.src !== '' ? redactUrl(r.src, 300) : '(sans src)';
-        throw conflict(`la zone ${scope.trim()} est une iframe d'une autre origine (${src}) : son contenu n'est pas lisible depuis la page — pour le lire : grasp nav <URL du cadre> (si l'allowlist l'autorise)`);
+        throw conflict(`la zone ${scope.trim()} est une iframe d'une autre origine (${src}) : son contenu n'est pas lisible depuis la page — pour le lire : grasp text --scope 'frame=${scope.trim()}' (moteur Playwright, npm i playwright-core), ou grasp nav <URL du cadre> (si l'allowlist l'autorise)`);
       }
       t = r.text;
     } else {
@@ -821,6 +1008,15 @@ export class PageController {
       return { ok: true, waited: Date.now() - t0, condition: 'idle' };
     }
     const timeout = o.timeout ?? WAIT_DEFAULT_MS;
+    if (o.sel !== undefined && parseFrameTarget(o.sel) !== null) {
+      // Élément visible dans un cadre (même d'une autre origine) : attente du moteur Playwright.
+      const { loc } = await this.pwLocator(await this.pwPage(), o.sel, undefined, 'body');
+      try { await loc.waitFor({ state: 'visible', timeout }); } catch (e) {
+        const ge = pwError(e, 'wait');
+        throw ge.status === 504 ? new GraspError(504, `${o.sel} absent ou invisible après ${timeout} ms`) : ge;
+      }
+      return { ok: true, waited: Date.now() - t0, condition: 'sel' };
+    }
     const end = t0 + timeout;
     let state: 'absent' | 'hidden' = 'absent';
     let lastErr: string | undefined;
@@ -1020,7 +1216,10 @@ export class PageController {
     return { x: (q[0]! + q[2]! + q[4]! + q[6]!) / 4, y: (q[1]! + q[3]! + q[5]! + q[7]!) / 4 };
   }
 
-  /** Clic natif vérifié (voir `deliver`). `effect` : effet attendu du repli synthétique (ex. case cochée). */
+  /**
+   * Clic natif vérifié (voir `deliver`). `effect` : effet attendu du repli synthétique (ex. case cochée).
+   * fallbackEngine=playwright : rejeu Playwright entre l'étage (a) et le repli synthétique.
+   */
   private async clickNode(id: number, effect?: () => Promise<boolean>): Promise<void> {
     const info = await this.describe(id);
     if (info.disabled) throw conflict('élément désactivé');
@@ -1035,6 +1234,7 @@ export class PageController {
       },
       synthetic: async (at) => { await this.callIsolated(id, SYNTH_CLICK_FN, at?.x ?? 0, at?.y ?? 0); },
       ...(effect !== undefined ? { effect } : {}),
+      ...(this.fallback === 'playwright' ? { replay: () => this.pwClickNode(id, PW_FALLBACK_TIMEOUT_MS, false) } : {}),
     });
   }
 
@@ -1086,7 +1286,7 @@ export class PageController {
    * annoncé par une note ; (c) si même le repli ne produit rien d'observable : ERREUR, jamais de faux OK.
    * Une entrée qui part vers un cadre (iframe) n'est pas vérifiable depuis cette fenêtre : c'est dit.
    */
-  private async deliver(o: DeliverOptions): Promise<'native' | 'retry' | 'synthetic' | 'unverified'> {
+  private async deliver(o: DeliverOptions): Promise<'native' | 'retry' | 'playwright' | 'synthetic' | 'unverified'> {
     const k = KIND[o.kind];
     let at = o.point !== undefined ? await o.point() : undefined;
     let probe: { token: string; hit: string | null };
@@ -1120,6 +1320,22 @@ export class PageController {
         return 'retry';
       }
 
+      // (a') fallbackEngine=playwright : rejeu par Playwright (événements de confiance, actionnabilité vérifiée).
+      // Il passe par le même canal Input de CDP : il n'aide que si la perte tenait à l'envoi natif de Grasp.
+      if (o.replay !== undefined) {
+        await this.testHooks?.recovering?.('playwright');
+        this.stopProbe(probe.token);
+        probe = await this.armProbe(o.types, at);
+        m = this.mark();
+        let failed: GraspError | undefined;
+        try { await o.replay(); } catch (e) { failed = e instanceof GraspError ? e : new GraspError(502, (e as Error).message); }
+        if (failed === undefined && await this.awaitProbe(probe.token, m, (p) => p.trusted > 0) !== 'no') {
+          this.notes?.push(`rejoué via Playwright : l'entrée native n'a pas atteint la page (ni au 1er essai, ni après Page.bringToFront et focus émulé)`);
+          return 'playwright';
+        }
+        this.notes?.push(failed !== undefined && failed.status === 501 ? `repli Playwright impossible : ${failed.message}` : `repli Playwright sans effet (${failed !== undefined ? failed.message : 'aucun événement de confiance reçu par la page'})`);
+      }
+
       // (b) Repli DOM synthétique (isTrusted=false), depuis le monde isolé.
       await this.testHooks?.recovering?.('synthetic');
       this.stopProbe(probe.token);
@@ -1139,10 +1355,88 @@ export class PageController {
   }
 
   click(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
-    return this.act(opts, async (snap) => { await this.clickNode(await this.resolve(sel, snap)); });
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'clic', (l) => l.click({ timeout: PW_ACTION_TIMEOUT_MS }), { types: CLICK_EVENTS });
+    return this.act(opts, async (snap) => {
+      const id = await this.resolve(sel, snap);
+      try { await this.clickNode(id); } catch (e) {
+        // Erreur d'actionnabilité (pas de zone cliquable, désactivé) : Playwright attend que l'élément le devienne.
+        if (this.fallback !== 'playwright' || !(e instanceof GraspError) || e.status !== 409) throw e;
+        try { await this.pwClickNode(id, PW_FALLBACK_TIMEOUT_MS, true); } catch (e2) {
+          throw new GraspError(409, `${e.message} ; rejeu via Playwright sans succès : ${(e2 as Error).message}`);
+        }
+        this.notes?.push(`rejoué via Playwright : ${e.message}`);
+      }
+    });
+  }
+
+  /** Survol : pointeur déplacé sur l'élément (menus au survol, infobulles), livraison vérifiée. */
+  hover(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'survol', (l) => l.hover({ timeout: PW_ACTION_TIMEOUT_MS }), { types: HOVER_EVENTS, soft: true });
+    return this.act(opts, async (snap) => {
+      const id = await this.resolve(sel, snap);
+      await this.deliver({
+        kind: 'survol', types: HOVER_EVENTS,
+        point: () => this.clickPoint(id),
+        native: async (at) => { await this.s('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at!.x, y: at!.y }); },
+        synthetic: async (at) => { await this.callIsolated(id, SYNTH_HOVER_FN, at?.x ?? 0, at?.y ?? 0); },
+      });
+    });
+  }
+
+  /**
+   * Frappe touche par touche (autocomplétions, champs qui réagissent à chaque touche), `delay` ms entre deux
+   * touches (0 à 1000). Contrairement à fill, le texte s'AJOUTE à la position du curseur.
+   */
+  type(sel: string, text: string, opts: ActionOptions & { delay?: number | undefined } = {}): Promise<ActionResult> {
+    const delay = opts.delay ?? 0;
+    if (!Number.isInteger(delay) || delay < 0 || delay > 1000) return Promise.reject(badRequest('delay : entier de 0 à 1000 ms attendu'));
+    if (text === '') return Promise.reject(badRequest('type attend un texte non vide'));
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') return this.pwAct(opts, sel, 'type', (l) => l.pressSequentially(text, { delay, timeout: PW_ACTION_TIMEOUT_MS }));
+    return this.act(opts, async (snap) => {
+      const id = await this.resolve(sel, snap);
+      const info = await this.describe(id);
+      if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
+      const focus = async () => { await this.s('DOM.focus', { backendNodeId: id }); };
+      await focus();
+      const read = `function () { return this.isContentEditable ? this.innerText : (this.value ?? ''); }`;
+      const before = await this.callOn<string>(id, read);
+      const keys = [...text].map((ch) => (ch === '\n' ? parseKey('Enter') : parseKey(ch === '+' ? '+' : ch)));
+      await this.deliver({
+        kind: 'saisie', types: KEY_EVENTS, prepare: focus,
+        native: async () => {
+          for (const [i, { def }] of keys.entries()) {
+            if (i > 0 && delay > 0) await sleep(delay);
+            const base = { key: def.key, code: def.code, windowsVirtualKeyCode: def.keyCode, nativeVirtualKeyCode: def.keyCode };
+            await this.s('Input.dispatchKeyEvent', def.text !== undefined ? { ...base, type: 'keyDown', text: def.text, unmodifiedText: def.text } : { ...base, type: 'rawKeyDown' });
+            await this.s('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+          }
+        },
+        synthetic: async () => {
+          for (const { def } of keys) await this.evalIsolated(`(${SYNTH_KEY_FN})(${JSON.stringify(def.key)}, ${JSON.stringify(def.code)}, ${Number(def.keyCode)}, ${JSON.stringify(def.text ?? '')}, 0)`);
+        },
+        effect: async () => (await this.callOn<string>(id, read)) !== before,
+      });
+    });
   }
 
   fill(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') {
+      return this.pwAct(opts, sel, 'fill', async (l) => {
+        await l.fill(value, { timeout: PW_ACTION_TIMEOUT_MS });
+        // On vérifie l'effet, pas l'émission (maxlength, masque de saisie) ; contenteditable : texte affiché.
+        let actual: string;
+        try { actual = await l.inputValue({ timeout: 2000 }); } catch { actual = (await l.innerText({ timeout: 2000 })).trim(); value = value.trim(); }
+        if (actual !== value) throw conflict(`la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
+      });
+    }
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);
@@ -1185,6 +1479,11 @@ export class PageController {
   }
 
   select(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') {
+      return this.pwAct(opts, sel, 'select', async (l) => `sélectionné : ${(await l.selectOption(value, { timeout: PW_ACTION_TIMEOUT_MS })).join(', ')}`);
+    }
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);
@@ -1206,6 +1505,12 @@ export class PageController {
   }
 
   check(sel: string, desired = true, opts: ActionOptions = {}): Promise<ActionResult> {
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') {
+      // Playwright vérifie lui-même que l'état a changé (« did not change its state » → 409).
+      return this.pwAct(opts, sel, desired ? 'check' : 'uncheck', (l) => (desired ? l.check({ timeout: PW_ACTION_TIMEOUT_MS }) : l.uncheck({ timeout: PW_ACTION_TIMEOUT_MS })), { types: CLICK_EVENTS });
+    }
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);
@@ -1226,6 +1531,18 @@ export class PageController {
   press(key: string, sel?: string, opts: ActionOptions = {}): Promise<ActionResult> {
     let parsed: ReturnType<typeof parseKey>;
     try { parsed = parseKey(key); } catch (e) { return Promise.reject(badRequest((e as Error).message)); }
+    let engine: 'native' | 'playwright';
+    try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
+    if (engine === 'playwright') {
+      const k = playwrightKey(parsed);
+      if (sel === undefined || sel === '') {
+        return this.act(opts, async () => {
+          const page = await this.pwPage();
+          try { await page.keyboard.press(k); } catch (e) { throw pwError(e, 'press'); }
+        });
+      }
+      return this.pwAct(opts, sel, 'press', (l) => l.press(k, { timeout: PW_ACTION_TIMEOUT_MS }));
+    }
     return this.act(opts, async (snap) => {
       const target = sel !== undefined && sel !== '' ? await this.resolve(sel, snap) : undefined;
       const focus = async () => { if (target !== undefined) await this.s('DOM.focus', { backendNodeId: target }); };
@@ -1450,12 +1767,14 @@ export class PageController {
     return cookies;
   }
 
-  async upload(sel: string, files: string[]): Promise<ActionResult> {
+  async upload(sel: string, files: string[], opts: { engine?: string | undefined } = {}): Promise<ActionResult> {
+    // La politique d'abord, quel que soit le moteur : aucune connexion Playwright pour une action interdite.
     if (!this.policy.allowUpload) throw forbidden('l\'upload est désactivé (grasp config set allowUpload true)');
     for (const f of files) {
       if (!f.startsWith('/')) throw badRequest(`chemin absolu attendu : ${f}`);
       try { if (!statSync(f).isFile()) throw new Error(); } catch { throw badRequest(`fichier introuvable : ${f}`); }
     }
+    if (this.engineFor(opts, sel) === 'playwright') return this.pwAct({}, sel, 'upload', (l) => l.setInputFiles(files, { timeout: PW_ACTION_TIMEOUT_MS }));
     return this.act({}, async (snap) => {
       const id = await this.resolve(sel, snap);
       const info = await this.describe(id);

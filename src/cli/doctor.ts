@@ -9,6 +9,7 @@ import { CdpClient } from '../browser/cdp.js';
 import { loadEffective, permissionTargets, resolveProfileRoots } from '../control/server.js';
 import type { ResolvedConfig } from '../core/config.js';
 import { systemdStatus } from './daemon.js';
+import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
 
 export type Level = 'ok' | 'warn' | 'fail';
 export interface Check { name: string; level: Level; detail: string }
@@ -69,6 +70,11 @@ export async function runDoctor(paths: GraspPaths, env: NodeJS.ProcessEnv, home:
   if (browser?.kind === 'windows') add('setpriv', 'warn', 'non applicable à chrome.exe (pas de PDEATHSIG ni de groupe au-delà de WSL) : arrêt par CDP Browser.close, puis PowerShell ciblé sur le --user-data-dir ; si le control plane ET le bridge sont tués par SIGKILL, chrome.exe survit');
   else add('setpriv', realProbe.which('setpriv') ? 'ok' : 'warn', realProbe.which('setpriv') ? 'PR_SET_PDEATHSIG actif : Chrome meurt avec son bridge' : 'absent (util-linux) : Chrome ne mourra avec le bridge que via le control plane');
   add('XDG_RUNTIME_DIR', env.XDG_RUNTIME_DIR ? 'ok' : 'warn', env.XDG_RUNTIME_DIR ? paths.socketPath : `non défini : socket dans ${paths.socketPath}`);
+  // Moteur Playwright de repli : optionnel, jamais requis.
+  const pwv = playwrightVersion(env.GRASP_PLAYWRIGHT_MODULE || 'playwright-core');
+  const fb = cfg?.fallbackEngine ?? 'none';
+  if (pwv !== null) add('playwright', 'ok', `playwright-core ${pwv} : --engine playwright et frame= disponibles ; repli automatique des clics : ${fb}`);
+  else add('playwright', fb === 'playwright' ? 'warn' : 'ok', `playwright-core absent (optionnel)${fb === 'playwright' ? ' alors que fallbackEngine=playwright : le repli est sauté' : ''} — pour --engine playwright et frame= : ${PLAYWRIGHT_HINT}`);
   const sd = systemdStatus(env);
   add('systemd', sd.ok ? 'ok' : 'warn', sd.ok ? '`grasp daemon install` disponible' : `${sd.reason} — utilisez \`grasp serve\` au premier plan`);
 

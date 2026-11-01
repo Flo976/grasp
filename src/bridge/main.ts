@@ -30,6 +30,8 @@ async function shutdown(code: number, why: string): Promise<never> {
   setTimeout(() => process.exit(code === 0 ? 1 : code), 15_000).unref();
   server?.close();
   server?.closeAllConnections();
+  // Connexion Playwright d'abord : simple déconnexion de son WebSocket, jamais une fermeture du navigateur.
+  await page?.closeEngine().catch((e: Error) => log(`moteur Playwright : ${e.message}`));
   if (attached) await page?.closeTab();
   cdp?.close();
   let exit = code;
@@ -78,11 +80,13 @@ async function main(): Promise<void> {
   socketPath = init.socketPath;
   const warnings: string[] = [];
   let info: { pid: number; pgid: number; version: string; windowsUserDataDir?: string };
+  let devtoolsUrl: string;
   if (init.attach !== undefined) {
     // Mode attach : navigateur existant. On ne le lance pas, on ne le tuera pas.
     attached = true;
     const { wsUrl, version } = await resolveDevtools(init.attach);
     assertSupportedVersion(version);
+    devtoolsUrl = wsUrl;
     cdp = await CdpClient.connect(wsUrl);
     info = { pid: 0, pgid: 0, version };
   } else {
@@ -93,13 +97,20 @@ async function main(): Promise<void> {
     const launchOpts = { browser: init.browser, userDataDir: init.userDataDir, headless: init.headless, onWarning: (w: string) => { warnings.push(w); log(w); } };
     chrome = await launchChrome(init.stderrLog !== undefined ? { ...launchOpts, stderrLog: init.stderrLog } : launchOpts);
     chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Chrome s'est arrêté (code=${c} signal=${s})`); });
+    devtoolsUrl = chrome.wsUrl;
     cdp = await CdpClient.connect(chrome.wsUrl);
     info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version, ...(chrome.windowsUserDataDir !== undefined ? { windowsUserDataDir: chrome.windowsUserDataDir } : {}) };
   }
   cdp.once('close', () => { if (!stopping) void shutdown(1, 'connexion CDP perdue'); });
   const downloadDir = init.downloadDir ?? join(init.userDataDir, 'downloads');
   if (init.browser?.kind === 'windows') mkdirSync(downloadDir, { recursive: true });
-  page = await PageController.attach(cdp, policy, { downloadDir: await chromeDownloadPath(downloadDir, init.browser?.kind ?? 'attach'), newTab: attached, capturesDir: init.capturesDir, ...(init.limits !== undefined ? { limits: init.limits } : {}) });
+  page = await PageController.attach(cdp, policy, {
+    downloadDir: await chromeDownloadPath(downloadDir, init.browser?.kind ?? 'attach'), newTab: attached, capturesDir: init.capturesDir,
+    ...(init.limits !== undefined ? { limits: init.limits } : {}),
+    // Moteur Playwright (optionnel) : il se branche sur CE navigateur (chrome.exe : 127.0.0.1:<port>). Upload par
+    // chemin seulement si le navigateur voit nos fichiers (Chrome Linux) ; sinon par contenu (≤ 50 Mo).
+    engine: { devtoolsUrl, fallback: init.fallbackEngine ?? 'none', isLocal: !attached && init.browser?.kind !== 'windows' },
+  });
 
   const c = info;
   server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached })));

@@ -20,6 +20,7 @@ import { reapStaleInstances } from './stale.js';
 import { compileScript, runScript } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
+import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
 
 export interface Session {
   id: string;
@@ -47,7 +48,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -147,6 +148,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     for (const d of [roots.profiles, roots.tmp]) mkdirSync(d, { recursive: true });
     log(`mode windows : chrome.exe piloté depuis WSL2, profils côté Windows dans ${roots.profiles} (droits POSIX non applicables sur NTFS)`);
   }
+  // Moteur Playwright de repli : optionnel ; son absence n'empêche rien, mais elle est dite au démarrage.
+  const pwVersion = playwrightVersion(o.env.GRASP_PLAYWRIGHT_MODULE || 'playwright-core');
+  if (config.fallbackEngine === 'playwright') {
+    log(pwVersion !== null ? `repli des clics par Playwright activé (playwright-core ${pwVersion})` : `AVERTISSEMENT : fallbackEngine=playwright mais playwright-core est absent — ${PLAYWRIGHT_HINT} ; en attendant, le repli est sauté (et signalé à chaque clic non livré)`);
+  }
   if (process.getuid?.() === 0 && o.env.GRASP_ALLOW_NO_SANDBOX !== '1') {
     throw new Error("Grasp tourne en root : le sandbox Chrome ne peut pas fonctionner. Utilisez un utilisateur non-root ou --cap-add=SYS_ADMIN ; sinon GRASP_ALLOW_NO_SANDBOX=1 en connaissance de cause.");
   }
@@ -188,6 +194,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
       capturesDir: paths.capturesDir,
       limits: limitsOf(config),
+      fallbackEngine: config.fallbackEngine,
     }, {
       log,
       onExit: (code) => {
