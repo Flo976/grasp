@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { classify, discoverChrome, profileRootsFor, type FsProbe } from '../../src/browser/discover.js';
 import {
   buildWindowsChromeArgs, toWindowsPath, toWslPath, windowsLocalAppData, windowsChromeVersion,
-  windowsKillScript, encodePowerShell, isWindowsDrivePath, type Runner,
+  windowsKillScript, encodePowerShell, isWindowsDrivePath, parseExcludedPortRanges, windowsExcludedPorts, type Runner,
 } from '../../src/browser/windows.js';
 
 const EXE = '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe';
@@ -36,17 +36,29 @@ test('windows : un *.exe sous /mnt/ est classé « windows »', () => {
 
 test('windows : arguments de chrome.exe (chemin Windows avec espaces, un seul argv, sans guillemets)', () => {
   const dir = `${WIN_LOCAL}\\grasp\\profiles\\prof_1a2b3c4d`;
-  assert.deepEqual(buildWindowsChromeArgs({ userDataDirWin: dir, headless: false }), [
-    `--user-data-dir=${dir}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
+  assert.deepEqual(buildWindowsChromeArgs({ userDataDirWin: dir, headless: false, port: 45679 }), [
+    `--user-data-dir=${dir}`, '--remote-debugging-port=45679', '--no-first-run', '--no-default-browser-check',
     '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
     '--disable-features=CalculateNativeWinOcclusion', 'about:blank',
   ]);
-  const h = buildWindowsChromeArgs({ userDataDirWin: dir, headless: true });
+  const h = buildWindowsChromeArgs({ userDataDirWin: dir, headless: true, port: 45679 });
   assert.ok(h.includes('--headless=new'));
   assert.ok(!h.some((a) => a.includes('"')), 'pas de guillemets manuels : l\'interop WSL cite elle-même');
   assert.ok(!h.includes('--no-sandbox'));
   assert.equal(h.filter((a) => a.startsWith('--disable-features=')).length, 1);
   assert.equal(h.at(-1), 'about:blank', 'URL de départ en dernier');
+});
+
+test('windows : plages de ports exclues (netsh int ipv4 show excludedportrange tcp), lues en français comme en anglais', async () => {
+  const fr = 'Protocole tcp Plages d\u2019exclusion de ports\r\n\r\nPort de début    Port de fin      \r\n-------------    -----------      \r\n      5357        5357      \r\n     50000       50059     *\r\n\r\n* - Exclusions de ports administrés.\r\n';
+  assert.deepEqual(parseExcludedPortRanges(fr), [[5357, 5357], [50000, 50059]]);
+  assert.deepEqual(parseExcludedPortRanges('Protocol tcp Port Exclusion Ranges\n\nStart Port    End Port\n----------    --------\n      1080        1179\n'), [[1080, 1179]]);
+  assert.deepEqual(parseExcludedPortRanges(''), []);
+  const f = fakeRunner({ 'netsh.exe': { stdout: fr } });
+  assert.deepEqual(await windowsExcludedPorts(f.run), [[5357, 5357], [50000, 50059]]);
+  assert.deepEqual(f.calls[0], { cmd: 'netsh.exe', args: ['int', 'ipv4', 'show', 'excludedportrange', 'tcp'] });
+  // netsh indisponible : on ne bloque pas le lancement (Chrome signale lui-même un port inutilisable).
+  assert.deepEqual(await windowsExcludedPorts(fakeRunner({}).run), []);
 });
 
 test('windows : conversion de chemins via wslpath (espaces conservés, un seul argument)', async () => {

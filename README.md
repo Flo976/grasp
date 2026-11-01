@@ -176,14 +176,14 @@ grasp doctor                           # signale le mode windows, démarre chrom
   Sessions éphémères dans `<racine>\.tmp\<id>`, téléchargements dans `<racine>\.downloads\<id>`
   (chemin Windows remis à chrome.exe). Les droits Unix ne s'appliquent pas sur NTFS :
   Grasp démarre quand même et `doctor` le signale.
-- **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=0
+- **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=<port>
   --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows
   --disable-renderer-backgrounding --disable-background-timer-throttling
   --disable-features=CalculateNativeWinOcclusion [--headless=new]` (une fenêtre recouverte ou minimisée, un
   écran éteint ne mettent ni le rendu ni les minuteries en veille ; mêmes drapeaux sous Linux, fusionnés dans
-  l'unique `--disable-features`), lecture de `DevToolsActivePort` via
-  `/mnt/c`, connexion à `127.0.0.1:<port>`. **WSL doit être en `networkingMode=mirrored`** ; sinon
-  erreur explicite qui le dit.
+  l'unique `--disable-features`), connexion à `127.0.0.1:<port>` (voir « Port DevTools » ci-dessous :
+  port tiré par Grasp hors de la plage éphémère de Linux et des plages exclues de Windows).
+  **WSL doit être en `networkingMode=mirrored`** ; sinon erreur explicite qui le dit.
 - **Cycle de vie** : pas de groupe de processus ni de `PDEATHSIG` au-delà de la frontière WSL. Arrêt
   par CDP `Browser.close` ; à défaut, PowerShell (`Get-CimInstance Win32_Process`) retrouve les
   `chrome.exe` dont la ligne de commande porte **exactement ce `--user-data-dir`** et les tue. Le
@@ -195,6 +195,38 @@ grasp doctor                           # signale le mode windows, démarre chrom
   et un nouveau `grasp serve` (redémarrage systemd compris) relit `instances.json` avant de
   l'écraser : navigateurs orphelins tués, profils éphémères supprimés.
 
+## Port DevTools et `navigator.webdriver`
+
+Grasp choisit lui-même le port DevTools et ne lance **jamais** Chrome avec `--remote-debugging-port=0`.
+Mesuré (Chrome 150, Linux et chrome.exe Windows, fenêtré comme `--headless=new`, onglet neuf sans aucun
+domaine CDP activé) : avec le port 0, `navigator.webdriver === true` sur toutes les pages ; avec un port
+fixe et les mêmes arguments, `false`. Les détections anti-bot s'en servent (Malt affichait un faux « tous
+les cookies ont été désactivés » au lieu de sa page de connexion). Le test d'intégration vérifie `false`
+en headless, en fenêtré (si `DISPLAY`) et, avec `GRASP_TEST_WINDOWS=1`, sur chrome.exe.
+
+- **Choix du port** : Linux, port éphémère libre sur `127.0.0.1` (serveur ouvert sur le port 0, lu, fermé).
+  chrome.exe : port tiré entre 20000 et 49151, hors de la plage éphémère de Linux
+  (`/proc/sys/net/ipv4/ip_local_port_range` : en mode mirrored, WSL la réserve côté Windows et chrome.exe
+  ne peut pas y écouter) et hors des plages de `netsh int ipv4 show excludedportrange tcp`. Aucun test de
+  bind côté Linux pour chrome.exe : mesuré, un bind puis close sur `127.0.0.1:<port>` depuis WSL laisse ce
+  port réservé côté Windows pendant des dizaines de secondes.
+- **Découverte** : avec un port fixe, Chrome n'écrit pas `DevToolsActivePort`. Grasp lit le stderr de SON
+  processus (`DevTools listening on ws://127.0.0.1:<port>/devtools/browser/<uuid>`, recopié dans le journal
+  du bridge) et interroge `http://127.0.0.1:<port>/json/version` jusqu'au délai (20 s, 30 s pour chrome.exe).
+- **Identité** : Grasp ne se connecte que si l'endpoint servi par `/json/version` est **celui que son
+  processus a annoncé** (même UUID) : un autre navigateur qui répondrait sur ce port n'est jamais piloté.
+  (`Browser.getBrowserCommandLine` ne sert pas : Chrome le refuse sans `--enable-automation`, qui remet
+  `navigator.webdriver` à true.) Repli si le stderr est entièrement muet (enveloppe qui le détourne) : une
+  réponse du port, libre au lancement, alors que notre processus vit.
+- **Course** (port pris entre son choix et l'écoute de Chrome, plage réservée, autre navigateur sur le
+  port) : mesuré, Chrome ne s'arrête pas — sous Linux il se replie sur `[::1]:<port>`, sous Windows il
+  écrit `Cannot start http server for devtools.` Grasp le détecte, arrête ce lancement et relance sur un
+  autre port, **3 essais au plus** (un Chrome muet a la moitié du temps restant par essai), puis échoue
+  avec la liste des ports essayés et la raison de chaque échec. Un Chrome qui **s'arrête** au démarrage
+  n'est pas relancé (ce n'est pas le port, c'est le profil) : erreur immédiate. Port annoncé mais
+  injoignable (chrome.exe sans mode mirrored) : erreur immédiate qui le dit.
+- Le mode attach (`cdpUrl`) n'est pas concerné : Grasp ne lance rien.
+
 ## Snapshot
 
 `GET /snap` (CLI : `grasp snap [--max octets]`), une ligne par nœud :
@@ -204,7 +236,11 @@ grasp doctor                           # signale le mode windows, démarre chrom
 ```
 
 - **États** : `[x]` `[ ]` `[~]` coché, non coché, mixte · `[+]` `[-]` déplié, replié · `[disabled]`
-  `[readonly]` `[required]` `[invalid]` `[selected]` `[focus]`.
+  `[readonly]` `[required]` `[selected]` `[focus]` · `[invalide]` ou `[invalide: <message>]` (en dernier,
+  message coupé à 120 caractères ; voir « Erreurs de formulaire »).
+- **Régions annoncées** (`alert`, `status`, `log`) sans nom : leur texte est rendu sur leur ligne
+  (`e3k1z:alert "5 erreur(s) dans le formulaire"`), sans être répété dessous ; la ref reste celle du rôle,
+  si bien qu'un `--snap-diff` montre le texte changer (`~`).
 - **Élagage** : conteneurs `generic`, `none`, `paragraph`, `LabelText`… traversés sans être émis ;
   groupes et cellules sans nom omis ; texte brut répété dans un nom accessible supprimé ; valeur
   interne d'un champ jamais répétée en texte.
@@ -254,6 +290,33 @@ snapshot de la nouvelle page. La sortie est bornée à **4000 caractères** (cl�
 appel), coupée en fin de ligne avec la même dernière ligne `… tronqué : N caractères restants — affinez
 avec --max N / --scope <ref|css>` ; `--scope <ref|css>` restreint le diff à une zone (si la zone a disparu
 après l'action, le diff le dit au lieu d'échouer : l'action, elle, a eu lieu).
+
+### Erreurs de formulaire
+
+Un message d'erreur doit être vu de l'agent, sinon un « Enregistrer » sans effet passe pour un échec
+silencieux. Relevé sur Malt (formulaire Vue « joy ») : après 56 caractères dans un champ `maxlength=50`, le
+champ ne porte **aucun** `aria-*` (seulement la classe `joy-input--field-invalid`), et le message
+`Doit compter au maximum 50 caractères` est dans un `<div role="alert" aria-hidden="true">` : absent de
+l'arbre d'accessibilité, donc de tout snapshot, alors qu'il est affiché. À chaque snapshot, Grasp relève
+donc aussi les erreurs dans le DOM (monde isolé, code fixe, aucune modification de la page) :
+
+- **Champ invalide** : `aria-invalid`, validité native constatée par l'utilisateur (`:user-invalid`), ou
+  propriété `invalid` de l'arbre. **Message** : `aria-errormessage`, sinon `aria-describedby` (les
+  éléments d'allure « erreur » en priorité, sinon toute la description), sinon `validationMessage`, sinon
+  un message d'erreur visible **non relié** (classe ou id `error`/`err`/`invalid`/`erreur`, `role=alert`,
+  `aria-live=assertive`, même `aria-hidden`) trouvé en remontant au plus 4 ancêtres depuis le message.
+  Rendu : `e12pl:textbox "Intitulé du poste"="…" [focus] [invalide: Doit compter au maximum 50 caractères]`,
+  le message n'étant plus répété en texte brut. Un champ marqué seulement par une classe `invalid`, sans
+  message visible, n'est pas signalé (Angular met `ng-invalid` sur un champ encore vierge).
+- **Message hors arbre rattaché à aucun champ** (toast `aria-hidden`…) : ligne `alerte "<texte>"` en fin
+  de snapshot (de la zone, avec `--scope`).
+- **`--snap-diff`** : l'apparition ou la disparition d'une erreur change la ligne du champ (`~ … [invalide: …]`,
+  puis `~ …` sans), et les lignes `alerte` et `alert "<texte>"` apparaissent (`+`) ou disparaissent (`-`).
+- **Notes** : après un `fill`, `note: champ invalide après la saisie : <message>` ; une valeur plus longue
+  que `maxlength` (la saisie programmatique passe outre, un humain ne le pourrait pas) est signalée.
+  Après un `click` sur un bouton dont le formulaire (`form`, dialogue, sinon la page) a des champs
+  invalides : `note: formulaire invalide : <lignes des champs>` ; avec `--snap-diff`, un clic sans effet
+  donne `(aucun changement — formulaire invalide : e12pl:textbox "Intitulé du poste"=… [invalide: …])`.
 
 ## Attente de stabilité
 
@@ -689,6 +752,17 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
   bascule, les deux profils sont réservés (création de session ou suppression → 409) ; une session
   fermée pendant la bascule l'interrompt (409) sans laisser de navigateur.
 - macOS : non testé (pas de `/proc`, pas de `setpriv` ; le control plane tue alors les groupes Chrome).
+- **Erreurs de formulaire** : relevé heuristique. Un message non relié est rattaché au champ voisin par la
+  structure du DOM (4 ancêtres au plus) et repéré par son allure (classe/id `error`, `invalid`, `erreur`,
+  `err`, `role=alert`) : un balisage sans aucun de ces indices n'est pas vu, et un texte d'aide qui porte une
+  telle classe près d'un champ serait pris pour une erreur. La note « formulaire invalide » d'un `click` est
+  calculée juste après le clic (sans attendre la stabilité si `--snap-diff` n'est pas demandé) : une
+  validation asynchrone (serveur) peut arriver après. Le contenu des iframes n'est pas relevé.
+- **`navigator.webdriver`** : seul l'effet du port 0 est corrigé. D'autres signaux d'automatisation
+  restent (CDP attaché, `Runtime.enable` si la console est active — voir `allowConsole`).
+- **Port DevTools** : la preuve d'identité repose sur l'annonce `DevTools listening on …` du stderr de
+  Chrome ; si une enveloppe détourne entièrement ce stderr, Grasp accepte la réponse du port (libre au
+  lancement) tant que son processus vit.
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
   par Grasp…]`) lorsqu'il échoue, sans le bloquer.

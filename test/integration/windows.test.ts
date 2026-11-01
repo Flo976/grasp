@@ -50,6 +50,8 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
     const nav = await runCli(env, ['nav', `${site.url}/`]);
     assert.equal(nav.stdout, 'OK\n', nav.stderr);
     assert.match((await runCli(env, ['snap'])).stdout, /textbox "Nom"/);
+    // Port DevTools choisi par Grasp (jamais 0) : chrome.exe ne se déclare pas automatisé.
+    assert.equal(JSON.parse((await runCli(env, ['eval', 'navigator.webdriver'])).stdout), false, 'navigator.webdriver doit valoir false');
     await runCli(env, ['eval', "document.cookie = 'qui=florent; max-age=3600'"]);
     assert.equal(JSON.parse((await runCli(env, ['eval', 'document.cookie'])).stdout), 'qui=florent');
     // Téléchargement : chrome.exe reçoit un chemin Windows, le fichier arrive côté Windows sous la racine des profils.

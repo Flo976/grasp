@@ -15,6 +15,7 @@ export interface AXNode {
   role?: AXValue;
   name?: AXValue;
   value?: AXValue;
+  description?: AXValue;
   properties?: Array<{ name: string; value: AXValue }>;
   childIds?: string[];
   parentId?: string;
@@ -38,7 +39,17 @@ export interface Snapshot {
   textNodes: Array<{ text: string; backendNodeId: number }>;
   /** Avec `scopeBackendId` : la zone a-t-elle été trouvée dans l'arbre d'accessibilité ? */
   scopeFound?: boolean;
+  /** Champs invalides de toute la page (même hors zone), dans l'ordre du document ; message '' s'il n'y en a pas. */
+  invalid: Array<{ ref: string; backendId: number | undefined; line: string; message: string }>;
 }
+
+/**
+ * Erreurs de formulaire relevées dans le DOM (bridge) : ce que l'arbre d'accessibilité ne dit pas.
+ * `fields` : backendDOMNodeId du champ → message (aria-errormessage, aria-describedby, validationMessage,
+ * ou message visible non relié à côté du champ ; '' si invalide sans message). `alerts` : messages
+ * d'erreur visibles absents de l'arbre (aria-hidden) et rattachés à aucun champ.
+ */
+export interface FormErrors { fields: Map<number, string>; alerts: string[] }
 
 export interface SnapshotOptions {
   url: string;
@@ -50,6 +61,7 @@ export interface SnapshotOptions {
    * mais seules les lignes du sous-arbre sont émises.
    */
   scopeBackendId?: number;
+  formErrors?: FormErrors;
 }
 
 /** Budget par défaut (octets) ; le bridge applique `snapMax` de la config (12 000 par défaut). */
@@ -61,6 +73,12 @@ const PASS_THROUGH = new Set(['generic', 'none', 'presentation', 'InlineTextBox'
 const NAMED_ONLY = new Set(['group', 'region', 'listitem', 'article', 'figure', 'cell', 'row', 'rowgroup', 'blockquote', 'contentinfo', 'banner', 'term', 'definition', 'Iframe', 'image']);
 export const INTERACTIVE = new Set(['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'switch', 'slider', 'spinbutton', 'treeitem']);
 const VALUE_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider']);
+/** Champs dont la validité est rendue (`[invalide: message]`). */
+const FIELD_ROLES = new Set([...VALUE_ROLES, 'checkbox', 'radio', 'switch', 'listbox', 'radiogroup']);
+/** Régions annoncées : leur texte est rendu sur leur ligne, pour qu'un --snap-diff le montre changer. */
+const LIVE_ROLES = new Set(['alert', 'status', 'log', 'alertdialog']);
+/** Longueur maximale d'un message d'erreur rendu. */
+const ERROR_MAX = 120;
 
 const listOf = <T>(xs: T[] | undefined): T[] => (xs === undefined ? [] : xs);
 const str = (v: AXValue | undefined): string => (v?.value === undefined || v.value === null ? '' : String(v.value));
@@ -83,7 +101,7 @@ function fnv1a(s: string): number {
 
 const REF_SPACE = 36 ** 4;
 
-function flags(node: AXNode, role: string): string {
+function flags(node: AXNode, role: string, invalidMsg: string | undefined): string {
   const p = new Map<string, unknown>();
   for (const pr of listOf(node.properties)) p.set(pr.name, pr.value.value);
   const out: string[] = [];
@@ -99,10 +117,27 @@ function flags(node: AXNode, role: string): string {
   if (p.get('disabled') === true) out.push('[disabled]');
   if (p.get('readonly') === true) out.push('[readonly]');
   if (p.get('required') === true) out.push('[required]');
-  const invalid = p.get('invalid');
-  if (invalid !== undefined && invalid !== 'false' && invalid !== false) out.push('[invalid]');
   if (p.get('focused') === true) out.push('[focus]');
+  if (invalidMsg !== undefined) out.push(invalidMsg ? `[invalide: ${norm(invalidMsg).length > ERROR_MAX ? `${norm(invalidMsg).slice(0, ERROR_MAX - 1)}…` : norm(invalidMsg)}]` : '[invalide]');
   return out.length ? ` ${out.join(' ')}` : '';
+}
+
+/** Le champ est-il invalide pour l'arbre d'accessibilité (aria-invalid, validité native) ? */
+function axInvalid(node: AXNode): boolean {
+  const v = node.properties?.find((p) => p.name === 'invalid')?.value.value;
+  return v !== undefined && v !== null && v !== 'false' && v !== false;
+}
+
+/** Texte des descendants StaticText (régions annoncées sans nom). */
+function liveText(node: AXNode, byId: Map<string, AXNode>): string {
+  const parts: string[] = [];
+  const walk = (n: AXNode) => {
+    if (n.ignored) return;
+    if (str(n.role) === 'StaticText') { parts.push(str(n.name)); return; }
+    for (const id of listOf(n.childIds)) { const c = byId.get(id); if (c) walk(c); }
+  };
+  walk(node);
+  return norm(parts.join(' '));
 }
 
 function level(node: AXNode): string {
@@ -123,6 +158,21 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     const name = norm(str(n.name));
     if (name) namedTexts.add(name);
   }
+
+  // Message d'erreur d'un champ : rendu sur la ligne du champ, pas répété en texte brut.
+  const fieldErrors = opts.formErrors?.fields ?? new Map<number, string>();
+  const invalidMsg = (n: AXNode): string | undefined => {
+    const dom = n.backendDOMNodeId !== undefined ? fieldErrors.get(n.backendDOMNodeId) : undefined;
+    if (dom !== undefined) return dom || (axInvalid(n) ? norm(str(n.description)) : '');
+    return axInvalid(n) ? norm(str(n.description)) : undefined;
+  };
+  for (const n of nodes) {
+    const role = str(n.role);
+    if (n.ignored || !FIELD_ROLES.has(role)) continue;
+    const m = invalidMsg(n);
+    if (m) namedTexts.add(m);
+  }
+  const invalid: Snapshot['invalid'] = [];
 
   const refs = new Map<string, number>();
   const entries = new Map<string, string>();
@@ -151,6 +201,8 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     const role = str(node.role);
     const name = norm(str(node.name));
     let emitted = false;
+    // Région annoncée sans nom : son texte sur sa ligne (la ref reste celle du rôle seul).
+    let live = '';
     // Racine de la zone : les profondeurs repartent de 0 sous elle.
     const isScopeRoot = scoped && !inScopeAbove && node.backendDOMNodeId === opts.scopeBackendId;
     if (isScopeRoot) { scopeFound = true; depth = 0; }
@@ -181,7 +233,11 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       if (!skip && role) {
         const ref = makeRef(role, name);
         const val = VALUE_ROLES.has(role) ? norm(str(node.value)) : '';
-        const line = `${ref}:${role}${level(node)}${name ? ` ${quote(name, 80)}` : ''}${val ? `=${quote(val, 60)}` : ''}${flags(node, role)}`;
+        const err = FIELD_ROLES.has(role) ? invalidMsg(node) : undefined;
+        if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId);
+        const shown = name || live;
+        const line = `${ref}:${role}${level(node)}${shown ? ` ${quote(shown, live ? 100 : 80)}` : ''}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
+        if (err !== undefined) invalid.push({ ref, backendId: node.backendDOMNodeId, line, message: err });
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
         meta.set(ref, { role, name });
         if (inScope) {
@@ -199,7 +255,8 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     }
     // Le texte interne d'un champ (sa valeur) est déjà rendu par `=valeur` : on ne descend pas.
     if (emitted && VALUE_ROLES.has(role)) return;
-    const nextNames = emitted && name ? [...ancestorNames, name] : ancestorNames;
+    const ownName = name || live;
+    const nextNames = emitted && ownName ? [...ancestorNames, ownName] : ancestorNames;
     // Hors zone, la profondeur n'a pas d'importance : rien n'est émis.
     const nextDepth = emitted && inScope ? depth + 1 : depth;
     for (const id of listOf(node.childIds)) {
@@ -224,6 +281,15 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   };
 
   if (root) walk(root, 0, [], false);
+  // Messages d'erreur hors de l'arbre d'accessibilité (aria-hidden), rattachés à aucun champ.
+  const alertSeen = new Map<string, number>();
+  for (const a of listOf(opts.formErrors?.alerts)) {
+    const line = `alerte ${quote(a, ERROR_MAX)}`;
+    const k = alertSeen.get(line) ?? 0;
+    alertSeen.set(line, k + 1);
+    entries.set(`\u0000${line}\u0000${k}`, line);
+    out.push({ depth: 0, line });
+  }
 
   const header = `page ${quote(opts.title, 80)} ${opts.url}`;
   const pruned = [
@@ -246,7 +312,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   }
   if (summary !== undefined) lines.push(summary);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, ...(scoped ? { scopeFound } : {}) };
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */

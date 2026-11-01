@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit, type Server } from '../helpers/server.js';
@@ -147,8 +147,8 @@ test('sessions : deux POST /sessions simultanés sur le même profil → un seul
 test('bascule : le nouveau profil ne démarre pas → repli sur l\'ancien, session toujours pilotable', async () => {
   const { t, srv, id } = await setup();
   try {
-    // DevToolsActivePort transformé en dossier : le lancement sur b échoue à coup sûr.
-    mkdirSync(join(dirOf(srv, 'b'), 'DevToolsActivePort', 'x'), { recursive: true });
+    // Profil b verrouillé par un Chrome « d'une autre machine » : Chrome s'arrête au démarrage (code 21).
+    symlinkSync('autremachine-4242', join(dirOf(srv, 'b'), 'SingletonLock'));
     const before = (await srv.api('GET', '/sessions')).json()[0];
     const r = await srv.api('POST', `/sessions/${id}/profile`, { name: 'b' });
     assert.equal(r.status, 502, r.text());

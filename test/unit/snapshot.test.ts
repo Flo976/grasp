@@ -131,3 +131,58 @@ test('diff : une navigation renvoie le nouveau snapshot complet', () => {
   assert.match(d, /^navigation → http:\/\/h\/ok/);
   assert.match(d, /heading "Reçu"/);
 });
+
+// ---------- Erreurs de formulaire ----------
+
+/** Tiroir : champ invalide (aria-invalid + description), champ valide décrit, bandeau role=alert. */
+function errorTree(opts: { alertText?: string; invalid?: boolean } = {}): AXNode[] {
+  return flatten(ax('RootWebArea', 'Erreurs', [
+    ax('dialog', 'Modifier', [
+      ax('textbox', 'Code postal', [], { value: { value: '75' }, description: { value: 'Code postal à 5 chiffres' }, properties: opts.invalid === false ? [] : [prop('invalid', 'true')] }),
+      ...(opts.invalid === false ? [] : [ax('StaticText', 'Code postal à 5 chiffres')]),
+      ax('textbox', 'Ville', [], { description: { value: 'Votre ville de résidence' }, properties: [prop('invalid', 'false')] }),
+      ax('textbox', 'Nom', [], { properties: opts.invalid === false ? [] : [prop('invalid', 'true')] }),
+      ax('textbox', 'Intitulé du poste', [], { value: { value: 'x'.repeat(56) }, properties: [prop('invalid', 'false')] }),
+      ax('alert', '', opts.alertText !== undefined ? [ax('StaticText', opts.alertText)] : []),
+      ax('button', 'Enregistrer'),
+    ]),
+  ]));
+}
+const lineOf = (text: string, re: RegExp) => text.split('\n').map((l) => l.trim()).find((l) => re.test(l));
+const refFor = (s: { meta: Map<string, { role: string; name: string }> }, name: string) => [...s.meta].find(([, m]) => m.name === name)![0];
+
+test('erreurs : champ invalide avec son message (description AX), compact ; champ valide : rien', () => {
+  const s = buildSnapshot(errorTree(), { url: 'http://h/', title: 'Erreurs' });
+  assert.match(lineOf(s.text, /textbox "Code postal"/) ?? '', /^e[0-9a-z]+:textbox "Code postal"="75" \[invalide: Code postal à 5 chiffres\]$/, s.text);
+  assert.ok(!s.text.split('\n').some((l) => l.trim() === '"Code postal à 5 chiffres"'), 'message non répété en texte brut');
+  assert.match(lineOf(s.text, /textbox "Nom"/) ?? '', /"Nom" \[invalide\]$/);
+  assert.doesNotMatch(lineOf(s.text, /textbox "Ville"/) ?? '', /invalide|résidence/, 'la description d\'un champ valide n\'est pas affichée');
+  assert.deepEqual(s.invalid.map((i) => [i.ref, i.message]), [[refFor(s, 'Code postal'), 'Code postal à 5 chiffres'], [refFor(s, 'Nom'), '']]);
+});
+
+test('erreurs du DOM (message hors arbre d\'accessibilité, balisage Malt) : rattachées au champ, ou en ligne « alerte »', () => {
+  const nodes = errorTree();
+  const poste = nodes.find((n) => n.name?.value === 'Intitulé du poste')!;
+  const s = buildSnapshot(nodes, { url: 'http://h/', title: 'Erreurs', formErrors: { fields: new Map([[poste.backendDOMNodeId!, 'Doit compter au maximum 50 caractères']]), alerts: ['Session expirée'] } });
+  assert.match(lineOf(s.text, /Intitulé du poste/) ?? '', /\[invalide: Doit compter au maximum 50 caractères\]$/, s.text);
+  assert.ok(s.text.split('\n').some((l) => l.trim() === 'alerte "Session expirée"'), s.text);
+  // Message très long : coupé.
+  const long = buildSnapshot(nodes, { url: 'http://h/', title: 'Erreurs', formErrors: { fields: new Map([[poste.backendDOMNodeId!, 'm'.repeat(300)]]), alerts: [] } });
+  assert.ok((lineOf(long.text, /Intitulé du poste/) ?? '').length < 260);
+});
+
+test('diff : apparition et disparition des erreurs (champ, alerte hors arbre, bandeau role=alert)', () => {
+  const before = buildSnapshot(errorTree({ invalid: false }), { url: 'http://h/', title: 'T' });
+  const bad = errorTree({ alertText: '2 erreur(s) dans le formulaire' });
+  const poste = bad.find((n) => n.name?.value === 'Intitulé du poste')!;
+  const after = buildSnapshot(bad, { url: 'http://h/', title: 'T', formErrors: { fields: new Map([[poste.backendDOMNodeId!, 'Doit compter au maximum 50 caractères']]), alerts: ['Session expirée'] } });
+  const d = diffSnapshots(before, after);
+  assert.match(d, /^~ e[0-9a-z]+:textbox "Code postal"="75" \[invalide: Code postal à 5 chiffres\]$/m, d);
+  assert.match(d, /^~ e[0-9a-z]+:textbox "Intitulé du poste"=.* \[invalide: Doit compter au maximum 50 caractères\]$/m, d);
+  assert.match(d, /^~ e[0-9a-z]+:alert "2 erreur\(s\) dans le formulaire"$/m, d);
+  assert.match(d, /^\+ alerte "Session expirée"$/m, d);
+  assert.doesNotMatch(d, /^\+ "2 erreur/m, 'texte du bandeau non répété');
+  const back = diffSnapshots(after, before);
+  assert.match(back, /^- alerte "Session expirée"$/m, back);
+  assert.match(back, /^~ e[0-9a-z]+:textbox "Code postal"="75"$/m, back);
+});
