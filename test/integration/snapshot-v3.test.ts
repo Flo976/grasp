@@ -26,7 +26,7 @@ const etat = async () => (await fx.page.text(undefined, '#etat')).trim();
 test('nœuds texte vides (espaces de largeur nulle) et puces de liste : aucune ligne ""', async () => {
   await fx.page.navigate(`${site.url}/snap-v3`);
   const s = (await fx.page.snapshot()).text;
-  const vides = lines(s).filter((l) => /^"[\s​-‍⁠﻿­]*"$/.test(l));
+  const vides = lines(s).filter((l) => /^"[\s\u200b-\u200d\u2060\ufeff\u00ad]*"$/.test(l));
   assert.deepEqual(vides, [], s);
   assert.doesNotMatch(s, /^\s*"•"$/m, 'puces de liste');
   assert.match(s, /"Avant le vide"\n"Après le vide"/, s);

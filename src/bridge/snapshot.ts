@@ -105,7 +105,7 @@ const MASKED_REASONS = new Set(['activeModalDialog', 'ariaHiddenElement', 'ariaH
 const listOf = <T>(xs: T[] | undefined): T[] => (xs === undefined ? [] : xs);
 const str = (v: AXValue | undefined): string => (v?.value === undefined || v.value === null ? '' : String(v.value));
 /** Caractères invisibles (espaces de largeur nulle, BOM, césure conditionnelle) : jamais rendus. */
-const INVISIBLE = /[​-‍⁠﻿­]/g;
+const INVISIBLE = /[\u200b-\u200d\u2060\ufeff\u00ad]/g;
 const norm = (s: string) => s.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
 
 /**

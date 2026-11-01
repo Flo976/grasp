@@ -344,7 +344,7 @@ export const SNAP_V3_PAGE = `<!doctype html>
 .chip button{width:16px;height:16px} .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}</style></head>
 <body>
 <h1>Profil</h1>
-<p>Avant le vide</p><span>​</span><div>&#8203;</div><span>&#xFEFF;</span><div>​ ‌</div>
+<p>Avant le vide</p><span>\u200b</span><div>&#8203;</div><span>&#xFEFF;</span><div>\u200b \u200c</div>
 <p>Après le vide</p>
 <div><label for="heures">Heures</label><label for="heures" class="sr">Heures</label><input id="heures" type="number" value="35"></div>
 <div><span id="dispo-l">Disponibilité</span><input id="dispo" aria-labelledby="dispo-l dispo-l"></div>
