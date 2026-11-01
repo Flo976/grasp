@@ -1,7 +1,7 @@
 import { accessSync, constants, openSync, readSync, closeSync, statSync } from 'node:fs';
 import { delimiter, join, resolve, sep } from 'node:path';
 
-export type BrowserKind = 'elf' | 'script' | 'snap' | 'flatpak';
+export type BrowserKind = 'elf' | 'script' | 'snap' | 'flatpak' | 'windows';
 export type DiscoverySource = 'env' | 'config' | 'which' | 'fixed';
 
 export interface DiscoveredBrowser {
@@ -63,6 +63,8 @@ export const realProbe: FsProbe = {
  * confinement change les règles (profil, signaux), donc on le détecte explicitement.
  */
 export function classify(path: string, probe: FsProbe): BrowserKind {
+  // WSL2 : chrome.exe sur un disque Windows monté. Profils côté Windows, cycle de vie sans groupe de processus.
+  if (/^\/mnt\/[A-Za-z]\//.test(path) && /\.exe$/i.test(path)) return 'windows';
   if (path.startsWith('/snap/')) return 'snap';
   if (path.includes(`${sep}flatpak${sep}exports${sep}bin${sep}`)) return 'flatpak';
   const head = probe.readHead(path, 1024);
@@ -101,38 +103,46 @@ export function discoverChrome(env: NodeJS.ProcessEnv, probe: FsProbe, home: str
   throw new Error(`Aucun navigateur Chrome/Chromium trouvé. ${HELP}`);
 }
 
-function isInside(child: string, parent: string): boolean {
-  const c = resolve(child);
-  const p = resolve(parent);
-  return c === p || c.startsWith(p + sep);
+export interface ProfileRoots {
+  /** Magasin des profils nommés (un sous-dossier <id> par profil). */
+  profiles: string;
+  /** Profils éphémères des sessions sans --profile. */
+  tmp: string;
+  /** Droits POSIX applicables (faux sur NTFS via /mnt/c). */
+  posix: boolean;
 }
 
 /**
- * Répertoire de profil adapté au mode d'installation.
- * Snap : l'interface `home` n'autorise ni le hors-$HOME ni les dotdirs de premier niveau
- * (~/.local/share est donc illisible). On utilise ~/snap/chromium/common, ou on refuse.
+ * Où vivent les profils, selon le mode d'installation du navigateur.
+ * - snap : l'interface `home` n'autorise ni le hors-$HOME ni les dotdirs de premier niveau
+ *   (~/.local/share est illisible) → ~/snap/chromium/common.
+ * - flatpak : ~/.var/app/<id>.
+ * - windows (chrome.exe depuis WSL2) : côté Windows, %LOCALAPPDATA%\grasp\profiles (ou windowsProfilesDir) ;
+ *   DPAPI exige que chrome.exe lise lui-même ses profils.
+ * - sinon, et en mode attach : le répertoire de données XDG.
  */
-export function profileDirFor(browser: DiscoveredBrowser, name: string, profilesDir: string, home: string, override?: string): string {
-  if (browser.kind === 'snap') {
-    const snapRoot = join(home, 'snap', 'chromium', 'common');
-    if (override !== undefined) {
-      const rel = resolve(override).slice(resolve(home).length + 1);
-      const ok = isInside(override, snapRoot) || (isInside(override, home) && !rel.startsWith('.'));
-      if (!ok) {
-        throw new Error(`Chromium snap ne peut pas lire le profil ${override} : le confinement snap n'autorise que $HOME hors dossiers cachés. Utilisez un chemin sous ${snapRoot}, ou installez Chrome en .deb.`);
-      }
-      return resolve(override);
-    }
-    return join(snapRoot, 'grasp-profiles', name);
+export function profileRootsFor(
+  browser: DiscoveredBrowser | undefined,
+  paths: { profilesDir: string; tmpProfilesDir: string },
+  home: string,
+  win: { localAppData?: string | undefined; windowsProfilesDir?: string | undefined },
+): ProfileRoots {
+  if (browser?.kind === 'snap') {
+    const root = join(home, 'snap', 'chromium', 'common');
+    return { profiles: join(root, 'grasp-profiles'), tmp: join(root, 'grasp-tmp-profiles'), posix: true };
   }
-  if (browser.kind === 'flatpak') {
+  if (browser?.kind === 'flatpak') {
     const appId = browser.path.split('/').pop() ?? 'org.chromium.Chromium';
     const root = join(home, '.var', 'app', appId);
-    if (override !== undefined) {
-      if (!isInside(override, root)) throw new Error(`Le Chromium Flatpak est confiné : placez le profil sous ${root} (reçu : ${override}).`);
-      return resolve(override);
-    }
-    return join(root, 'grasp-profiles', name);
+    return { profiles: join(root, 'grasp-profiles'), tmp: join(root, 'grasp-tmp-profiles'), posix: true };
   }
-  return override !== undefined ? resolve(override) : join(profilesDir, name);
+  if (browser?.kind === 'windows') {
+    let profiles = win.windowsProfilesDir;
+    if (profiles === undefined) {
+      if (win.localAppData === undefined) throw new Error('chrome.exe : %LOCALAPPDATA% inconnu, impossible de placer les profils côté Windows — définissez windowsProfilesDir');
+      profiles = join(win.localAppData, 'grasp', 'profiles');
+    }
+    return { profiles, tmp: join(profiles, '.tmp'), posix: false };
+  }
+  return { profiles: paths.profilesDir, tmp: paths.tmpProfilesDir, posix: true };
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, statSync, chmodSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
 import { startTestSite } from '../helpers/testsite.js';
@@ -169,5 +170,22 @@ test('control plane : SIGKILL du serveur → les bridges et Chrome meurent avec 
     srv.proc.kill('SIGKILL');
     const gone = await waitUntil(() => tree.every((p) => !isAlive(p)), 10_000);
     assert.ok(gone, `survivants : ${tree.filter(isAlive).join(', ')} (${listProcs().length} procs)`);
+  } finally { t.cleanup(); }
+});
+
+test('control plane : XDG_RUNTIME_DIR trop long → refus explicite au démarrage, pas « listen EADDRINUSE »', async () => {
+  const t = makeTestEnv();
+  try {
+    const long = join(t.root, 'r'.repeat(110));
+    const r = await runCli({ ...t.env, XDG_RUNTIME_DIR: long }, ['serve']);
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /^ERROR: serve: .*107 octets/m);
+    assert.match(r.stderr, /XDG_RUNTIME_DIR/);
+    assert.doesNotMatch(r.stderr, /EADDRINUSE/);
+    // Socket du control plane assez court, mais ceux des bridges non : refus aussi, avant toute session.
+    const mid = join(t.root, 'm'.repeat(Math.max(1, 85 - t.root.length)));
+    const r2 = await runCli({ ...t.env, XDG_RUNTIME_DIR: mid }, ['serve']);
+    assert.notEqual(r2.code, 0, r2.stderr);
+    assert.match(r2.stderr, /bridge.*107 octets|107 octets.*bridge/s);
   } finally { t.cleanup(); }
 });

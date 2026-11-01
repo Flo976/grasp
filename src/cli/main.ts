@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
+import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePaths, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
@@ -10,6 +11,7 @@ import { startControlPlane } from '../control/server.js';
 import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
+import { killWindowsChrome } from '../browser/windows.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -20,7 +22,7 @@ class CliError extends Error {}
 
 interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port']);
+const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 function parseArgs(argv: string[]): Args {
@@ -54,7 +56,7 @@ function endpointOf(paths: GraspPaths): Endpoint {
 class Client {
   constructor(private readonly paths: GraspPaths, private readonly session: string | undefined) {}
 
-  async call(method: string, path: string, body?: unknown): Promise<HttpResult> {
+  async call(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<HttpResult> {
     let token: string;
     try { token = readFileSync(this.paths.tokenFile, 'utf8').trim(); } catch {
       throw new CliError(`token introuvable (${this.paths.tokenFile}) : le serveur n'a jamais démarré — \`grasp serve\``);
@@ -62,7 +64,7 @@ class Client {
     const headers: Record<string, string> = { authorization: `Bearer ${token}` };
     if (this.session) headers['x-grasp-session'] = this.session;
     let r: HttpResult;
-    try { r = await request(endpointOf(this.paths), method, path, body, headers); } catch (e) {
+    try { r = await request(endpointOf(this.paths), method, path, body, headers, timeoutMs); } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ECONNREFUSED') throw new CliError('serveur injoignable — lancez `grasp serve` (ou `grasp daemon install`)');
       throw e;
@@ -82,6 +84,30 @@ function renderAction(r: HttpResult, a: Args): void {
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   if (j.detail) hint(`note: ${j.detail}`);
   out(j.diff !== undefined ? j.diff : 'OK');
+}
+
+/** Session visée : --session / GRASP_SESSION, sinon l'unique session ouverte (comme le fait le serveur). */
+async function targetSession(c: Client, session: string | undefined): Promise<string> {
+  if (session) return session;
+  const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string }>;
+  if (list.length === 1) return list[0]!.id;
+  if (list.length === 0) throw new CliError('aucune session — `grasp session create`');
+  throw new CliError(`${list.length} sessions ouvertes : précisez l'id, --session ou GRASP_SESSION`);
+}
+
+interface ProfileRow { id: string; name: string; accountEmail: string | null; useWhen?: string; running: boolean; session: string | null; source: string }
+
+function renderProfiles(r: { current: string | null; profiles: ProfileRow[]; root: string }): string {
+  if (r.profiles.length === 0) return '';
+  const w = Math.max(...r.profiles.map((p) => p.name.length));
+  return r.profiles.map((p) => [
+    `${p.name === r.current ? '*' : ' '} ${p.name.padEnd(w)}`,
+    p.id,
+    p.accountEmail ?? '-',
+    p.running ? `session ${p.session}` : '',
+    p.source === 'imported' ? 'importé' : '',
+    p.useWhen !== undefined ? `(${p.useWhen})` : '',
+  ].filter((x) => x !== '').join('  ')).join('\n');
 }
 
 function need(a: Args, n: number, usage: string): string[] {
@@ -135,10 +161,12 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
   while (isProcessAlive(pid) && Date.now() < killEnd) await new Promise((r) => setTimeout(r, 50));
   let groups = 0;
   try {
-    const inst = JSON.parse(readFileSync(paths.instancesFile, 'utf8')) as Array<{ bridgePid: number; chromePgid: number }>;
+    const inst = JSON.parse(readFileSync(paths.instancesFile, 'utf8')) as Array<{ bridgePid: number; chromePgid: number; windowsUserDataDir?: string }>;
     for (const i of inst) {
       try { process.kill(i.bridgePid, 'SIGKILL'); } catch { /* déjà mort */ }
       if (i.chromePgid > 1) { try { process.kill(-i.chromePgid, 'SIGKILL'); groups++; } catch { /* déjà mort */ } }
+      // chrome.exe ne meurt pas avec son groupe Linux : on le vise par son --user-data-dir.
+      if (i.windowsUserDataDir !== undefined) await killWindowsChrome(i.windowsUserDataDir).catch((e: Error) => hint(`ERREUR : chrome.exe ${i.windowsUserDataDir} : ${e.message}`));
     }
   } catch { /* pas d'instances */ }
   if (ep.transport === 'unix') rmSync(ep.socketPath, { force: true });
@@ -206,10 +234,12 @@ async function main(argv: string[]): Promise<number> {
       const sub = a.pos[0];
       if (sub === 'create') {
         const prof = a.flags.get('profile');
+        if (prof === true) throw new CliError('usage : grasp session create [--profile <nom>]');
         const r = await c.call('POST', '/sessions', typeof prof === 'string' ? { profile: prof } : {});
-        const id = r.json().id as string;
-        out(json ? r.text() : id);
-        hint(`astuce : export GRASP_SESSION=${id}`); // stderr : `export S=$(grasp session create)` reste propre
+        const j = r.json() as { id: string; profileCreated?: boolean };
+        out(json ? r.text() : j.id);
+        if (j.profileCreated === true) hint(`profil « ${prof as string} » créé (vide) : connectez-vous une fois dans ce profil (headless=false) pour que l'agent réutilise la session — \`grasp profiles\` pour la liste`);
+        hint(`astuce : export GRASP_SESSION=${j.id}`); // stderr : `export S=$(grasp session create)` reste propre
         return 0;
       }
       if (sub === 'list') {
@@ -219,10 +249,11 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       if (sub === 'close') {
-        const id = a.pos[1] ?? session;
-        if (!id) throw new CliError('usage : grasp session close <id> (ou GRASP_SESSION)');
+        const explicit = a.pos[1] ?? session;
+        const id = await targetSession(c, explicit);
         await c.call('DELETE', `/sessions/${encodeURIComponent(id)}`);
         out('OK');
+        if (explicit === undefined) hint(`session ${id} fermée`);
         return 0;
       }
       throw new CliError('usage : grasp session create [--profile P] | list | close [id]');
@@ -241,6 +272,55 @@ async function main(argv: string[]): Promise<number> {
     case 'press': {
       const [key, target] = need(a, 1, 'press <touche> [sélecteur]');
       renderAction(await c.call('POST', '/press', actionBody(target !== undefined ? { key, target } : { key })), a);
+      return 0;
+    }
+    case 'profiles': {
+      const sub = a.pos[0];
+      if (sub === undefined || sub === 'list') {
+        const r = (await c.call('GET', '/profiles')).json() as { current: string | null; profiles: ProfileRow[]; root: string };
+        if (json) out(JSON.stringify(r));
+        else { const t = renderProfiles(r); if (t) out(t); else hint(`aucun profil (${r.root}) — \`grasp profiles create <nom>\``); }
+        return 0;
+      }
+      if (sub === 'create') {
+        const name = a.pos[1];
+        if (name === undefined) throw new CliError('usage : grasp profiles create <nom> [--use-when "quand l\'utiliser"]');
+        const useWhen = a.flags.get('use-when');
+        const r = await c.call('POST', '/profiles', { name, ...(typeof useWhen === 'string' ? { useWhen } : {}) });
+        out(json ? r.text() : 'OK');
+        if (!json) hint(`profil « ${name} » : ${r.json().path}`);
+        return 0;
+      }
+      if (sub === 'import') {
+        const [, name, src] = a.pos;
+        if (name === undefined || src === undefined) throw new CliError('usage : grasp profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]');
+        const pd = a.flags.get('profile-directory');
+        const body = { name, sourcePath: resolvePath(src), ...(typeof pd === 'string' ? { profileDirectory: pd } : {}), ...(a.flags.has('skip-locked') ? { skipLocked: true } : {}) };
+        const r = await c.call('POST', '/profiles/import', body, 30 * 60_000);
+        const j = r.json() as { profile: { name: string; path: string; accountEmail: string | null }; skipped: string[] };
+        out(json ? r.text() : 'OK');
+        if (j.skipped.length) hint(`AVERTISSEMENT : ${j.skipped.length} fichier(s) verrouillé(s) non importé(s) : ${j.skipped.join(', ')}`);
+        if (!json) hint(`profil « ${j.profile.name} » importé dans ${j.profile.path}${j.profile.accountEmail ? ` (compte ${j.profile.accountEmail})` : ''}`);
+        return 0;
+      }
+      if (sub === 'rm') {
+        const name = a.pos[1];
+        if (name === undefined) throw new CliError('usage : grasp profiles rm <nom>');
+        await c.call('DELETE', `/profiles/${encodeURIComponent(name)}`);
+        out('OK');
+        return 0;
+      }
+      throw new CliError('usage : grasp profiles [list] | create <nom> [--use-when …] | import <nom> <chemin> [--profile-directory "Profile 9"] [--skip-locked] | rm <nom>');
+    }
+    case 'profile': {
+      const [name] = need(a, 1, 'profile <nom>   (bascule la session courante sur ce profil)');
+      const id = await targetSession(c, session);
+      const r = await c.call('POST', `/sessions/${encodeURIComponent(id)}/profile`, { name }, 180_000);
+      const j = r.json() as { unchanged: boolean; profile: string; previous: string | null };
+      if (json) { out(r.text()); return 0; }
+      out('OK');
+      if (j.unchanged) hint(`la session ${id} est déjà sur le profil « ${name} »`);
+      else hint(`session ${id} : profil ${j.previous ?? '(éphémère)'} → ${j.profile} ; navigateur relancé, la page repart de about:blank`);
       return 0;
     }
     case 'screenshot': await binary(c, a, '/screenshot', 'png'); return 0;
@@ -320,7 +400,12 @@ async function main(argv: string[]): Promise<number> {
 const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessibilité, CDP direct)
 
 Serveur      serve [--tcp [--port N]] | stop | status | doctor | daemon install|uninstall|status
-Sessions     session create [--profile P] | session list | session close [id]
+Sessions     session create [--profile <nom>] | session list | session close [id]
+Profils      profiles [--json]                       liste (* = profil de la session courante)
+             profiles create <nom> [--use-when "…"]  profil vide (un --user-data-dir possédé par Grasp)
+             profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
+             profiles rm <nom>                       refusé si une session l'utilise
+             profile <nom>                           bascule la session courante (Chrome relancé, même id)
 Lecture      snap [--max octets] | text | screenshot [-o f.png] | pdf [-o f.pdf]
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél]

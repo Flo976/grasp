@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const policy = Object.freeze({ ...init.policy, allowedDomains: Object.freeze([...init.policy.allowedDomains]) });
   socketPath = init.socketPath;
   const warnings: string[] = [];
-  let info: { pid: number; pgid: number; version: string };
+  let info: { pid: number; pgid: number; version: string; windowsUserDataDir?: string };
   if (init.attach !== undefined) {
     // Mode attach : navigateur existant. On ne le lance pas, on ne le tuera pas.
     attached = true;
@@ -87,12 +87,13 @@ async function main(): Promise<void> {
   } else {
     if (init.browser === undefined) throw new Error('bridge : ni navigateur ni URL attach');
     mkdirSync(init.userDataDir, { recursive: true, mode: 0o700 });
-    chmodSync(init.userDataDir, 0o700);
+    // chrome.exe : profil sur NTFS (/mnt/c), droits POSIX non applicables.
+    if (init.browser.kind !== 'windows') chmodSync(init.userDataDir, 0o700);
     const launchOpts = { browser: init.browser, userDataDir: init.userDataDir, headless: init.headless, onWarning: (w: string) => { warnings.push(w); log(w); } };
     chrome = await launchChrome(init.stderrLog !== undefined ? { ...launchOpts, stderrLog: init.stderrLog } : launchOpts);
     chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Chrome s'est arrêté (code=${c} signal=${s})`); });
     cdp = await CdpClient.connect(chrome.wsUrl);
-    info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version };
+    info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version, ...(chrome.windowsUserDataDir !== undefined ? { windowsUserDataDir: chrome.windowsUserDataDir } : {}) };
   }
   cdp.once('close', () => { if (!stopping) void shutdown(1, 'connexion CDP perdue'); });
   page = await PageController.attach(cdp, policy, { downloadDir: init.downloadDir ?? join(init.userDataDir, 'downloads'), newTab: attached });
@@ -106,7 +107,7 @@ async function main(): Promise<void> {
   process.umask(prev);
   chmodSync(socketPath, 0o600);
 
-  const ready = { type: 'ready', pid: process.pid, chromePid: c.pid, chromePgid: c.pgid, version: c.version, warnings };
+  const ready = { type: 'ready', pid: process.pid, chromePid: c.pid, chromePgid: c.pgid, version: c.version, warnings, ...(c.windowsUserDataDir !== undefined ? { windowsUserDataDir: c.windowsUserDataDir } : {}) };
   if (process.send) process.send(ready); else process.stdout.write(`${JSON.stringify(ready)}\n`);
 }
 

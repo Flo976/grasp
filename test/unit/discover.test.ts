@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverChrome, profileDirFor, type FsProbe } from '../../src/browser/discover.js';
+import { discoverChrome, profileRootsFor, type FsProbe } from '../../src/browser/discover.js';
 
 const ELF = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
 function probe(files: Record<string, Buffer | string>, which: Record<string, string> = {}): FsProbe {
@@ -54,16 +54,20 @@ test('rien trouvé : message qui indique quoi faire', () => {
   assert.throws(() => discoverChrome({}, probe({}), '/home/u'), /GRASP_CHROME/);
 });
 
-test('snap : profil dans ~/snap/chromium/common (le confinement interdit les dotdirs et le hors-$HOME)', () => {
-  const d = profileDirFor({ kind: 'snap', path: '/snap/bin/chromium', source: 'fixed' }, 'p1', '/home/u/.local/share/grasp/profiles', '/home/u');
-  assert.equal(d, '/home/u/snap/chromium/common/grasp-profiles/p1');
+const P = { profilesDir: '/home/u/.local/share/grasp/profiles', tmpProfilesDir: '/home/u/.local/share/grasp/tmp-profiles' };
+
+test('snap : profils dans ~/snap/chromium/common (le confinement interdit les dotdirs et le hors-$HOME)', () => {
+  const r = profileRootsFor({ kind: 'snap', path: '/snap/bin/chromium', source: 'fixed' }, P, '/home/u', {});
+  assert.deepEqual(r, { profiles: '/home/u/snap/chromium/common/grasp-profiles', tmp: '/home/u/snap/chromium/common/grasp-tmp-profiles', posix: true });
 });
 
-test('snap : profil imposé hors $HOME → refus clair', () => {
-  assert.throws(() => profileDirFor({ kind: 'snap', path: '/snap/bin/chromium', source: 'fixed' }, 'p1', '/home/u/.local/share/grasp/profiles', '/home/u', '/srv/profiles/p1'), /snap.*\$HOME/s);
+test('flatpak : profils sous ~/.var/app/<id>', () => {
+  const r = profileRootsFor({ kind: 'flatpak', path: '/var/lib/flatpak/exports/bin/org.chromium.Chromium', source: 'fixed' }, P, '/home/u', {});
+  assert.equal(r.profiles, '/home/u/.var/app/org.chromium.Chromium/grasp-profiles');
+  assert.equal(r.tmp, '/home/u/.var/app/org.chromium.Chromium/grasp-tmp-profiles');
 });
 
-test('elf : profil sous le répertoire de données XDG', () => {
-  const d = profileDirFor({ kind: 'elf', path: '/usr/bin/google-chrome', source: 'which' }, 'p1', '/home/u/.local/share/grasp/profiles', '/home/u');
-  assert.equal(d, '/home/u/.local/share/grasp/profiles/p1');
+test('elf : profils sous le répertoire de données XDG', () => {
+  const r = profileRootsFor({ kind: 'elf', path: '/usr/bin/google-chrome', source: 'which' }, P, '/home/u', {});
+  assert.deepEqual(r, { profiles: P.profilesDir, tmp: P.tmpProfilesDir, posix: true });
 });

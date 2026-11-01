@@ -21,6 +21,8 @@ export interface ResolvedConfig {
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
   cdpUrl: string | null;
+  /** Chrome Windows (chromePath = …/chrome.exe sous /mnt/) : répertoire des profils côté Windows. Défaut : %LOCALAPPDATA%\\grasp\\profiles. */
+  windowsProfilesDir: string | null;
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -37,9 +39,12 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
+  windowsProfilesDir: null,
 });
 
 export const PUBLIC_KEYS: readonly ConfigKey[] = Object.freeze(Object.keys(DEFAULTS) as ConfigKey[]);
+
+const WIN_DIR_RE = /^(\/mnt\/[A-Za-z]\/|[A-Za-z]:\\)/;
 
 interface KeySpec<T> { check(v: unknown): v is T; parse(raw: string): T; help: string }
 
@@ -97,6 +102,11 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
     parse(raw) { if (!/^(https?|wss?):\/\/[^\s/]+/.test(raw)) throw new Error('URL http(s):// ou ws(s):// attendue, ex. http://127.0.0.1:9222'); return raw; },
     help: 'http://hôte:port du navigateur à piloter (mode attach)',
   },
+  windowsProfilesDir: {
+    check: (v): v is string | null => v === null || (typeof v === 'string' && WIN_DIR_RE.test(v)),
+    parse(raw) { if (!WIN_DIR_RE.test(raw)) throw new Error('chemin sur un disque Windows attendu : /mnt/c/… ou C:\\…'); return raw; },
+    help: 'répertoire des profils de chrome.exe (WSL2) : /mnt/c/… ou C:\\… ; défaut %LOCALAPPDATA%\\grasp\\profiles',
+  },
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -119,6 +129,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),
+    windowsProfilesDir: pick('windowsProfilesDir'),
   };
 }
 

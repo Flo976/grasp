@@ -64,6 +64,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
+  windowsProfilesDir: { raw: '/mnt/c/Users/Florent Didelot/grasp-profiles', value: '/mnt/c/Users/Florent Didelot/grasp-profiles' },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {
@@ -112,4 +113,10 @@ test('config set : valeur invalide ou clé inconnue → erreur, fichier inchang�
     assert.throws(() => setConfigKey(file, 'cdpUrl', 'pas-une-url'), /cdpUrl/);
     assert.equal(readFileSync(file, 'utf8'), '{"headless":true}');
   } finally { t.cleanup(); }
+});
+
+test('windowsProfilesDir : chemin /mnt/<lecteur>/… ou C:\\…, sinon refus', () => {
+  assert.throws(() => parseConfigFile('{"windowsProfilesDir": "/home/u/p"}', 'c.json'), /windowsProfilesDir/);
+  assert.throws(() => parseConfigFile('{"windowsProfilesDir": "relatif"}', 'c.json'), /windowsProfilesDir/);
+  assert.deepEqual(parseConfigFile(JSON.stringify({ windowsProfilesDir: 'D:\\grasp\\profiles' }), 'c.json'), { windowsProfilesDir: 'D:\\grasp\\profiles' });
 });

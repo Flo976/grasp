@@ -2,6 +2,8 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { readFileSync, rmSync, statfsSync, existsSync, openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { realProbe, type DiscoveredBrowser } from './discover.js';
+import { CdpClient } from './cdp.js';
+import { buildWindowsChromeArgs, killWindowsChrome, toWindowsPath, windowsChromeAlive, windowsChromeVersion } from './windows.js';
 
 export const MIN_CHROME_MAJOR = 112;
 export const MIN_SHM_BYTES = 256 * 1024 * 1024;
@@ -76,6 +78,11 @@ export function chromeVersion(path: string): Promise<string> {
   });
 }
 
+/** Version du navigateur. chrome.exe : lue dans son dossier (`chrome.exe --version` ouvrirait le Chrome de l'utilisateur). */
+export async function browserVersion(browser: DiscoveredBrowser): Promise<string> {
+  return browser.kind === 'windows' ? windowsChromeVersion(browser.path) : chromeVersion(browser.path);
+}
+
 export interface LaunchOptions {
   browser: DiscoveredBrowser;
   userDataDir: string;
@@ -94,6 +101,8 @@ export interface ChromeProcess {
   port: number;
   version: string;
   child: ChildProcess;
+  /** chrome.exe (WSL2) : --user-data-dir en chemin Windows, seule prise pour le retrouver côté Windows. */
+  windowsUserDataDir?: string;
   kill(timeoutMs?: number): Promise<void>;
 }
 
@@ -133,6 +142,7 @@ function setpriv(): string | null {
  * PR_SET_PDEATHSIG=SIGKILL : il meurt avec le bridge, même tué par SIGKILL.
  */
 export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> {
+  if (opts.browser.kind === 'windows') return launchWindowsChrome(opts);
   const env = opts.env ?? process.env;
   const version = await chromeVersion(opts.browser.path);
   assertSupportedVersion(version);
@@ -179,13 +189,103 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
     throw new Error(`Chrome n'a pas exposé de port DevTools en temps voulu (profil ${opts.userDataDir}).`);
   }
   const port = Number(portLine);
+  const wsUrl = `ws://127.0.0.1:${port}${path.trim()}`;
   return {
     pid,
     pgid: pid,
     port,
-    wsUrl: `ws://127.0.0.1:${port}${path.trim()}`,
+    wsUrl,
     version,
     child,
-    kill: (timeoutMs = 5000) => killGroup(pid, timeoutMs).then(() => undefined),
+    // Browser.close d'abord : un SIGTERM simultané à tout le groupe tue le service réseau avant qu'il
+    // n'écrive les cookies sur disque (un profil perdrait ses connexions). Puis le groupe, s'il reste.
+    kill: async (timeoutMs = 5000) => {
+      if (exited === null) await closeViaCdp(wsUrl, () => exited !== null, timeoutMs);
+      await killGroup(pid, timeoutMs);
+    },
+  };
+}
+
+/** Fermeture propre par CDP (Browser.close), attend la sortie du processus navigateur. */
+async function closeViaCdp(wsUrl: string, gone: () => boolean, timeoutMs: number): Promise<boolean> {
+  try {
+    const c = await CdpClient.connect(wsUrl);
+    await c.send('Browser.close').catch(() => undefined);
+    c.close();
+  } catch { return gone(); }
+  const end = Date.now() + timeoutMs;
+  while (!gone() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+  return gone();
+}
+
+async function waitPortFile(portFile: string, deadline: number, exited: () => string | null, userDataDir: string): Promise<{ port: number; path: string } | null> {
+  let content = '';
+  while (Date.now() < deadline) {
+    const why = exited();
+    if (why !== null) throw new Error(`Chrome s'est arrêté au démarrage (${why}). Le profil ${userDataDir} est peut-être déjà utilisé par un autre Chrome. \`grasp doctor\` pour diagnostiquer.`);
+    if (existsSync(portFile)) {
+      content = readFileSync(portFile, 'utf8');
+      if (content.includes('\n')) break;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const [portLine, path] = content.split('\n');
+  if (!portLine || !path) return null;
+  return { port: Number(portLine), path: path.trim() };
+}
+
+/**
+ * chrome.exe lancé depuis WSL2. Le processus Linux est le relais d'interop WSL : il vit tant que
+ * chrome.exe vit, mais le tuer ne tue PAS chrome.exe. Arrêt : Browser.close par CDP, puis repli
+ * PowerShell ciblé sur ce --user-data-dir (jamais le Chrome habituel de l'utilisateur).
+ */
+async function launchWindowsChrome(opts: LaunchOptions): Promise<ChromeProcess> {
+  const version = windowsChromeVersion(opts.browser.path);
+  assertSupportedVersion(version);
+  const win = await toWindowsPath(opts.userDataDir);
+  const args = buildWindowsChromeArgs({ userDataDirWin: win, headless: opts.headless });
+  const portFile = join(opts.userDataDir, 'DevToolsActivePort');
+  rmSync(portFile, { force: true });
+  const errFd = opts.stderrLog !== undefined ? openSync(opts.stderrLog, 'a', 0o600) : 'ignore';
+  const child = spawn(opts.browser.path, args, { detached: true, stdio: ['ignore', 'ignore', errFd], env: opts.env ?? process.env });
+  if (typeof errFd === 'number') closeSync(errFd);
+  const pid = child.pid;
+  if (pid === undefined) throw new Error(`Impossible de lancer ${opts.browser.path}.`);
+  let exited: string | null = null;
+  child.once('exit', (code, sig) => { exited = `code=${code} signal=${sig}`; });
+  const relayAlive = () => exited === null;
+
+  const kill = async (timeoutMs = 5000): Promise<void> => {
+    // 1. Fermeture propre par CDP : chrome.exe écrit ses cookies et s'arrête, le relais WSL sort.
+    if (relayAlive()) await closeViaCdp(`ws://127.0.0.1:${port}${devtoolsPath}`, () => !relayAlive(), timeoutMs);
+    if (!relayAlive()) return;
+    // 2. Repli : tuer côté Windows les processus de CE --user-data-dir, puis le relais.
+    await killWindowsChrome(win);
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* déjà parti */ }
+    if (await windowsChromeAlive(win) > 0) throw new Error(`chrome.exe (${win}) survit à Stop-Process`);
+  };
+
+  let port = 0;
+  let devtoolsPath = '';
+  const found = await waitPortFile(portFile, Date.now() + (opts.startTimeoutMs ?? 30_000), () => exited, opts.userDataDir);
+  if (found === null) {
+    await killWindowsChrome(win).catch(() => undefined);
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* déjà parti */ }
+    throw new Error(`chrome.exe n'a pas exposé de port DevTools en temps voulu (profil ${win}).`);
+  }
+  port = found.port;
+  devtoolsPath = found.path;
+  // Réseau WSL : chrome.exe écoute sur le 127.0.0.1 de Windows, joignable depuis WSL seulement en mode mirrored.
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    await kill(3000).catch(() => undefined);
+    throw new Error(`chrome.exe a démarré (port DevTools ${port}) mais 127.0.0.1:${port} est injoignable depuis WSL (${(e as Error).message}) : activez networkingMode=mirrored dans %USERPROFILE%\\.wslconfig puis \`wsl --shutdown\`.`);
+  }
+  return {
+    pid, pgid: pid, port, version, child, windowsUserDataDir: win,
+    wsUrl: `ws://127.0.0.1:${port}${devtoolsPath}`,
+    kill,
   };
 }

@@ -115,6 +115,7 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
+  windowsProfilesDir: { raw: 'C:\\grasp\\profiles', value: 'C:\\grasp\\profiles' },
 };
 
 test('régression #4 (CLI) — `config set` sur chaque clé publique : persiste (relecture du fichier) ou lève', async () => {

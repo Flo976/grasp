@@ -1,22 +1,33 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, writeSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, writeSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
-import { type GraspPaths } from '../core/paths.js';
+import { bridgeSocketPath, checkSocketPaths, type GraspPaths } from '../core/paths.js';
 import { checkPermissions, ensurePrivateDir } from '../core/perms.js';
 import { loadConfigFile, resolveConfig, type ResolvedConfig } from '../core/config.js';
 import { effectivePolicy, type EffectivePolicy } from '../core/policy.js';
 import { GraspError } from '../core/errors.js';
-import { readBody, request, sendError, sendJson, type Endpoint, optStr, readJson } from '../core/http.js';
-import { discoverChrome, profileDirFor, realProbe, type DiscoveredBrowser } from '../browser/discover.js';
-import { assertSupportedVersion, chromeVersion } from '../browser/launch.js';
+import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, readJson, str } from '../core/http.js';
+import { discoverChrome, profileRootsFor, realProbe, type DiscoveredBrowser, type ProfileRoots } from '../browser/discover.js';
+import { assertSupportedVersion, browserVersion } from '../browser/launch.js';
+import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
+import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { spawnBridge, type BridgeHandle } from './bridges.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 
-export interface Session { id: string; profile: string | null; userDataDir: string; ephemeral: boolean; createdAt: string; bridge: BridgeHandle }
+export interface Session {
+  id: string;
+  profile: string | null;
+  userDataDir: string;
+  ephemeral: boolean;
+  createdAt: string;
+  bridge: BridgeHandle;
+  /** Bascule de profil en cours : le bridge est relancé, les requêtes reçoivent un 409 explicite. */
+  switching: boolean;
+}
 
 export interface ControlPlaneOptions {
   paths: GraspPaths;
@@ -76,6 +87,14 @@ function socketInUse(path: string): Promise<boolean> {
   });
 }
 
+/** Racines des profils ; chrome.exe : %LOCALAPPDATA%\\grasp\\profiles côté Windows, ou windowsProfilesDir. */
+export async function resolveProfileRoots(browser: DiscoveredBrowser | undefined, config: ResolvedConfig, paths: GraspPaths, home: string): Promise<ProfileRoots> {
+  if (browser?.kind !== 'windows') return profileRootsFor(browser, paths, home, {});
+  const w = config.windowsProfilesDir;
+  if (w !== null) return profileRootsFor(browser, paths, home, { windowsProfilesDir: /^[A-Za-z]:\\/.test(w) ? await toWslPath(w) : w });
+  return profileRootsFor(browser, paths, home, { localAppData: await windowsLocalAppData() });
+}
+
 export async function startControlPlane(o: ControlPlaneOptions): Promise<ControlPlane> {
   const { paths } = o;
   const log = o.log ?? ((m: string) => process.stderr.write(`${new Date().toISOString()} grasp: ${m}\n`));
@@ -92,6 +111,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   // 3. Config et politique : un seul objet, gelé, partagé par le garde et le rapport.
   const { config, policy } = loadEffective(paths);
+  const transport = o.transport ?? config.transport;
+  // Sockets Unix limités à 107 octets : refus explicite ici plutôt qu'un « listen EADDRINUSE » plus tard.
+  checkSocketPaths(paths, transport);
   const token = readOrCreateToken(paths.tokenFile);
   const tokenHash = sha(token);
 
@@ -103,8 +125,14 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     log(`mode attach : sessions ouvertes dans le navigateur existant ${config.cdpUrl} (jamais lancé ni tué par Grasp)`);
   } else {
     browser = discoverChrome(o.env, realProbe, o.home, config.chromePath === null ? undefined : config.chromePath);
-    version = assertSupportedVersion(await chromeVersion(browser.path));
+    version = assertSupportedVersion(await browserVersion(browser));
     log(`navigateur : ${browser.path} (${browser.kind}, Chrome ${version})`);
+  }
+  const roots = await resolveProfileRoots(browser, config, paths, o.home);
+  const store = new ProfileStore(roots.profiles, roots.posix);
+  if (browser?.kind === 'windows') {
+    for (const d of [roots.profiles, roots.tmp]) mkdirSync(d, { recursive: true });
+    log(`mode windows : chrome.exe piloté depuis WSL2, profils côté Windows dans ${roots.profiles} (droits POSIX non applicables sur NTFS)`);
   }
   if (process.getuid?.() === 0 && o.env.GRASP_ALLOW_NO_SANDBOX !== '1') {
     throw new Error("Grasp tourne en root : le sandbox Chrome ne peut pas fonctionner. Utilisez un utilisateur non-root ou --cap-add=SYS_ADMIN ; sinon GRASP_ALLOW_NO_SANDBOX=1 en connaissance de cause.");
@@ -112,45 +140,119 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   if (process.getuid?.() === 0) log('AVERTISSEMENT : GRASP_ALLOW_NO_SANDBOX=1 — Chrome sans sandbox.');
 
   const sessions = new Map<string, Session>();
-  const persistInstances = () => writePrivate(paths.instancesFile, JSON.stringify([...sessions.values()].map((s) => ({ id: s.id, bridgePid: s.bridge.pid, chromePgid: s.bridge.chromePgid })), null, 2));
+  const persistInstances = () => writePrivate(paths.instancesFile, JSON.stringify([...sessions.values()].map((s) => ({
+    id: s.id, bridgePid: s.bridge.pid, chromePgid: s.bridge.chromePgid,
+    ...(s.bridge.windowsUserDataDir !== undefined ? { windowsUserDataDir: s.bridge.windowsUserDataDir } : {}),
+  })), null, 2));
 
-  async function createSession(profile: string | undefined): Promise<Session> {
-    if (profile !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(profile)) throw new GraspError(400, 'nom de profil invalide ([A-Za-z0-9_-], 64 max)');
-    if (profile !== undefined && [...sessions.values()].some((s) => s.profile === profile)) throw new GraspError(409, `le profil « ${profile} » est déjà utilisé par une session`);
-    const id = `s${randomBytes(6).toString('hex')}`;
-    const ephemeral = profile === undefined;
-    if (config.cdpUrl !== null && profile !== undefined) throw new GraspError(400, 'mode attach : le profil est celui du navigateur existant, --profile est sans effet');
-    const userDataDir = ephemeral || browser === undefined ? join(paths.tmpProfilesDir, id) : profileDirFor(browser, profile, paths.profilesDir, o.home);
-    const bridge = await spawnBridge({
-      id, userDataDir, policy, headless: config.headless,
+  /** Lance le bridge d'une session sur son --user-data-dir courant. */
+  async function startBridge(s: Omit<Session, 'bridge'>): Promise<BridgeHandle> {
+    let handle: BridgeHandle | undefined;
+    handle = await spawnBridge({
+      id: s.id, userDataDir: s.userDataDir, policy, headless: config.headless,
       ...(browser !== undefined ? { browser } : {}),
       ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}),
-      socketPath: join(paths.bridgesDir, `${id}.sock`),
-      downloadDir: join(paths.dataDir, 'downloads', id),
-      stderrLog: join(paths.logDir, `chrome-${id}.log`),
+      socketPath: bridgeSocketPath(paths, s.id),
+      downloadDir: join(paths.dataDir, 'downloads', s.id),
+      stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
     }, {
+      log,
       onExit: (code) => {
-        if (!sessions.has(id)) return;
-        log(`session ${id} : bridge arrêté (code ${code}) — groupe Chrome ${bridge.chromePgid} tué`);
-        sessions.delete(id);
+        // Seule la mort du bridge COURANT d'une session vivante compte (pas celui qu'une bascule remplace).
+        const cur = sessions.get(s.id);
+        if (cur === undefined || handle === undefined || cur.bridge !== handle || cur.switching) return;
+        log(`session ${s.id} : bridge arrêté (code ${code}) — groupe Chrome ${handle.chromePgid} tué`);
+        sessions.delete(s.id);
         persistInstances();
-        if (ephemeral) rmSync(userDataDir, { recursive: true, force: true });
+        if (cur.ephemeral) removeDir(cur.userDataDir);
       },
     }).catch((e: Error) => { throw new GraspError(502, `démarrage du navigateur impossible : ${e.message}`); });
-    for (const w of bridge.warnings) log(w);
-    const s: Session = { id, profile: profile ?? null, userDataDir, ephemeral, createdAt: new Date().toISOString(), bridge };
+    for (const w of handle.warnings) log(w);
+    return handle;
+  }
+
+  function removeDir(dir: string): void {
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { log(`AVERTISSEMENT : ${dir} non supprimé : ${(e as Error).message}`); }
+  }
+
+  /** Profil nommé : choisi AVANT le lancement, créé à la volée s'il n'existe pas. */
+  function profileFor(name: string, why: string): { profile: ProfileInfo; created: boolean } {
+    if (config.cdpUrl !== null) throw new GraspError(400, `mode attach : le profil est celui du navigateur existant, ${why} est sans effet`);
+    validateProfileName(name);
+    const holder = [...sessions.values()].find((x) => x.profile === name);
+    if (holder !== undefined) throw new GraspError(409, `le profil « ${name} » est déjà utilisé par la session ${holder.id}`);
+    return store.ensure(name);
+  }
+
+  async function createSession(profile: string | undefined): Promise<{ session: Session; profileCreated: boolean }> {
+    const id = `s${randomBytes(6).toString('hex')}`;
+    const p = profile !== undefined ? profileFor(profile, '--profile') : undefined;
+    const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false };
+    const bridge = await startBridge(base);
+    const s: Session = { ...base, bridge };
     sessions.set(id, s);
     persistInstances();
-    log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid})`);
-    return s;
+    if (profile !== undefined) store.touch(profile);
+    log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${profile !== undefined ? `, profil ${profile}` : ''})`);
+    return { session: s, profileCreated: p?.created === true };
+  }
+
+  /**
+   * Bascule de profil : arrêt du bridge et de son navigateur, relance sur le --user-data-dir du
+   * nouveau profil, MÊME identifiant de session. En cas d'échec, on rouvre l'ancien profil.
+   */
+  async function switchProfile(s: Session, name: string): Promise<{ profile: string; previous: string | null; unchanged: boolean }> {
+    validateProfileName(name);
+    if (config.cdpUrl !== null) throw new GraspError(400, 'mode attach : le profil est celui du navigateur existant, la bascule est sans effet');
+    if (s.switching) throw new GraspError(409, `bascule de profil déjà en cours pour la session ${s.id}`);
+    if (s.profile === name) return { profile: name, previous: name, unchanged: true };
+    if (store.get(name) === undefined) {
+      const names = store.list().map((p) => p.name);
+      throw new GraspError(404, `profil « ${name} » inconnu (profils : ${names.join(', ') || 'aucun'}) — \`grasp profiles create ${name}\` d'abord`);
+    }
+    const { profile: target } = profileFor(name, 'la bascule');
+    const prev = { profile: s.profile, userDataDir: s.userDataDir, ephemeral: s.ephemeral };
+    s.switching = true;
+    try {
+      const code = await s.bridge.stop();
+      if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+      Object.assign(s, { profile: name, userDataDir: target.path, ephemeral: false });
+      try {
+        s.bridge = await startBridge(s);
+      } catch (e) {
+        Object.assign(s, prev);
+        try {
+          s.bridge = await startBridge(s);
+        } catch (e2) {
+          sessions.delete(s.id);
+          persistInstances();
+          throw new GraspError(502, `bascule vers « ${name} » impossible (${(e as Error).message}) et réouverture de l'ancien profil impossible (${(e2 as Error).message}) : session ${s.id} fermée`);
+        }
+        persistInstances();
+        throw new GraspError(502, `bascule vers « ${name} » impossible : ${(e as Error).message} — session ${s.id} restée sur ${prev.profile ?? 'un profil éphémère'}`);
+      }
+      if (prev.ephemeral) removeDir(prev.userDataDir);
+      store.touch(name);
+      persistInstances();
+      log(`session ${s.id} : profil ${prev.profile ?? '(éphémère)'} → ${name} (bridge ${s.bridge.pid}, Chrome ${s.bridge.chromePid})`);
+      return { profile: name, previous: prev.profile, unchanged: false };
+    } finally { s.switching = false; }
   }
 
   async function closeSession(s: Session): Promise<void> {
     sessions.delete(s.id);
     persistInstances();
     const code = await s.bridge.stop();
-    if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son groupe Chrome`);
-    if (s.ephemeral) rmSync(s.userDataDir, { recursive: true, force: true });
+    if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+    if (s.ephemeral) removeDir(s.userDataDir);
+  }
+
+  function profilesReport(current: Session | undefined): Record<string, unknown> {
+    const profiles = store.list().map((p) => {
+      const holder = [...sessions.values()].find((x) => x.profile === p.name);
+      return { ...p, running: holder !== undefined, session: holder?.id ?? null };
+    });
+    return { root: store.root, posix: store.posix, current: current?.profile ?? null, profiles };
   }
 
   function pickSession(req: IncomingMessage, url: URL): Session {
@@ -208,12 +310,47 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       const route = `${req.method} ${url.pathname}`;
       if (route === 'GET /security/effective') return sendJson(res, 200, await securityReport());
       if (route === 'GET /sessions') {
-        return sendJson(res, 200, [...sessions.values()].map((s) => ({ id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid })));
+        return sendJson(res, 200, [...sessions.values()].map((s) => ({ id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir })));
       }
       if (route === 'POST /sessions') {
         const body = await readJson(req);
-        const s = await createSession(optStr(body, 'profile'));
-        return sendJson(res, 201, { id: s.id, profile: s.profile });
+        const { session: s, profileCreated } = await createSession(optStr(body, 'profile'));
+        return sendJson(res, 201, { id: s.id, profile: s.profile, profileCreated });
+      }
+      if (route === 'GET /profiles') {
+        let current: Session | undefined;
+        try { current = pickSession(req, url); } catch { current = undefined; }
+        return sendJson(res, 200, profilesReport(current));
+      }
+      if (route === 'POST /profiles') {
+        const body = await readJson(req);
+        const p = store.create(str(body, 'name'), { useWhen: optStr(body, 'useWhen') });
+        log(`profil « ${p.name} » créé (${p.path})`);
+        return sendJson(res, 201, p);
+      }
+      if (route === 'POST /profiles/import') {
+        const body = await readJson(req);
+        const r = await store.importProfile(str(body, 'name'), str(body, 'sourcePath'), { profileDirectory: optStr(body, 'profileDirectory'), skipLocked: optBool(body, 'skipLocked') });
+        if (r.skipped.length) log(`AVERTISSEMENT : import « ${r.profile.name} » : ${r.skipped.length} fichier(s) verrouillé(s) ignoré(s) : ${r.skipped.join(', ')}`);
+        log(`profil « ${r.profile.name} » importé depuis ${r.profile.importedFrom}`);
+        return sendJson(res, 201, r);
+      }
+      const pm = /^\/profiles\/([^/]+)$/.exec(url.pathname);
+      if (pm && req.method === 'DELETE') {
+        const name = decodeURIComponent(pm[1]!);
+        validateProfileName(name);
+        const holder = [...sessions.values()].find((x) => x.profile === name);
+        if (holder !== undefined) throw new GraspError(409, `le profil « ${name} » est utilisé par la session ${holder.id} : \`grasp session close ${holder.id}\` d'abord`);
+        store.remove(name);
+        log(`profil « ${name} » supprimé`);
+        return sendJson(res, 200, { ok: true });
+      }
+      const sp = /^\/sessions\/([^/]+)\/profile$/.exec(url.pathname);
+      if (sp && req.method === 'POST') {
+        const s = sessions.get(sp[1]!);
+        if (!s) throw new GraspError(404, `session ${sp[1]} inconnue — \`grasp session list\``);
+        const body = await readJson(req);
+        return sendJson(res, 200, { ok: true, id: s.id, ...await switchProfile(s, str(body, 'name')) });
       }
       const m = /^\/sessions\/([^/]+)$/.exec(url.pathname);
       if (m && req.method === 'DELETE') {
@@ -222,14 +359,17 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         await closeSession(s);
         return sendJson(res, 200, { ok: true });
       }
-      if (SESSION_ROUTES.has(url.pathname)) return await proxy(pickSession(req, url), req, res, url);
+      if (SESSION_ROUTES.has(url.pathname)) {
+        const s = pickSession(req, url);
+        if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
+        return await proxy(s, req, res, url);
+      }
       throw new GraspError(404, `route inconnue : ${route}`);
     } catch (e) { sendError(res, e); }
   }
 
   // 5. Écoute. Socket Unix 0600 par défaut ; TCP seulement sur 127.0.0.1.
   const server: Server = createServer((req, res) => { void handle(req, res); });
-  const transport = o.transport ?? config.transport;
   let endpoint: Endpoint;
   rmSync(paths.endpointFile, { force: true });
   if (transport === 'unix') {

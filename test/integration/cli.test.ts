@@ -137,3 +137,23 @@ test('--no-sandbox : jamais ajouté pour un utilisateur non-root, même avec GRA
     assert.ok(cmdline.includes('--headless=new'));
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); t.cleanup(); }
 });
+
+test('session close sans id : ferme l\'unique session ; refus explicite s\'il y en a plusieurs ou aucune', async () => {
+  const t = makeTestEnv();
+  const srv = await startServer(t.env);
+  try {
+    const none = await runCli(t.env, ['session', 'close']);
+    assert.notEqual(none.code, 0);
+    assert.match(none.stderr, /^ERROR: session: aucune session/m);
+    const a = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const b = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const amb = await runCli(t.env, ['session', 'close']);
+    assert.notEqual(amb.code, 0);
+    assert.match(amb.stderr, /précisez/);
+    assert.equal((await runCli(t.env, ['session', 'close', b])).stdout, 'OK\n');
+    const r = await runCli(t.env, ['session', 'close']);
+    assert.deepEqual([r.code, r.stdout], [0, 'OK\n'], r.stderr);
+    assert.match(r.stderr, new RegExp(a), 'la session fermée est nommée sur stderr');
+    assert.deepEqual((await srv.api('GET', '/sessions')).json(), []);
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); t.cleanup(); }
+});

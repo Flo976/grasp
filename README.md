@@ -21,7 +21,7 @@ Sur la page de test : **388 octets** de snapshot, contre 18,7 Ko pour une captur
 (×48). Après une action, `--snap-diff` ne renvoie que ce qui a changé (une ligne pour un `fill`).
 
 - TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Pas de Playwright/Puppeteer.
-- Linux (desktop et conteneur). macOS en best-effort, Windows hors scope.
+- Linux (desktop et conteneur), et Chrome Windows piloté depuis WSL2 (voir [Mode Windows](#mode-windows-chromeexe-depuis-wsl2)). macOS en best-effort.
 - Tests : `node:test` uniquement, contre un vrai Chrome et un site local. Aucun site externe.
 
 ## Démarrage rapide
@@ -92,6 +92,92 @@ README dérive du code, `npm test` échoue.
 Le control plane ne parle jamais CDP, et le bridge n'a ni token ni config : il reçoit la
 politique gelée à son lancement, par le canal IPC.
 
+## Profils
+
+Modèle pinchtab : **un profil = un `--user-data-dir` complet possédé par Grasp**, choisi AVANT de
+lancer le navigateur. Les cookies, le stockage local et les connexions persistent d'une session à
+l'autre ; deux profils ne partagent rien.
+
+```bash
+grasp profiles create florent --use-when "comptes perso"
+grasp profiles create sooatek
+grasp profiles                                   # * = profil de la session courante
+* florent  prof_231b0997  -  session s13fadfae77fd  (comptes perso)
+  sooatek  prof_18cdceb1  -
+grasp session create --profile florent           # profil créé à la volée s'il n'existe pas (conseil sur stderr)
+grasp profile sooatek                            # l'agent change lui-même de profil
+grasp profiles rm sooatek                        # refusé (409) tant qu'une session l'utilise
+```
+
+- **Stockage** : `<racine>/<id>/`, avec `profile.json` (`id`, `name`, `createdAt`, `lastUsedAt`,
+  `source` = `created`|`imported`, `importedFrom`, `useWhen`). `id` = `prof_` + 8 premiers hex du
+  SHA-256 du nom ; noms `[A-Za-z0-9_.-]{1,64}`. Répertoires `0700`, fichiers `0600` (sauf NTFS).
+- **Identité** : `accountEmail` et `accountName` sont lus, en lecture seule, dans
+  `Default/Preferences` (`account_info`) puis `Local State` (`profile.info_cache`).
+- **Bascule** (`grasp profile <nom>`, `POST /sessions/<id>/profile`) : le control plane arrête le
+  bridge et son navigateur (fermeture propre par `Browser.close`, pour que les cookies soient écrits),
+  puis relance sur le `--user-data-dir` du profil **en gardant l'identifiant de session**. La page
+  repart de `about:blank`. Si le nouveau profil ne démarre pas, la session est rouverte sur l'ancien
+  (502 explicite). Le profil cible doit exister (404 sinon, avec la liste) : une faute de frappe ne
+  crée pas de profil en silence. Une session sans `--profile` (éphémère) peut basculer ; son répertoire
+  temporaire est alors supprimé.
+- **Mode attach** (`cdpUrl`) : le profil est celui du navigateur existant ; `--profile` et la bascule
+  répondent 400.
+
+### Import d'un profil Chrome existant
+
+```bash
+# répertoire de données complet (copie)
+grasp profiles import perso ~/.config/google-chrome
+# un seul profil d'un répertoire de données : copié vers Default/
+grasp profiles import sooatek "/mnt/c/Users/<vous>/AppData/Local/Google/Chrome/User Data" --profile-directory "Profile 9"
+```
+
+- La source n'est **jamais modifiée**. Copie dans un dossier caché puis renommage : un import
+  avorté ne laisse rien.
+- Avec `--profile-directory`, un `Local State` minimal est écrit : `os_crypt` conservé (clé de
+  déchiffrement des cookies) et l'entrée `info_cache` du profil renommée `Default`.
+- Exclus : `Cache`, `Code Cache`, `GPUCache`, `DawnCache` (et variantes Dawn/Graphite),
+  `ShaderCache`, `GrShaderCache`, `GPUPersistentCache`, `Service Worker/CacheStorage` et
+  `ScriptCache`, `Crashpad`, `Singleton*`, `lockfile`, `*.lock`, `DevToolsActivePort`.
+- Refusés : liens symboliques, source qui ne ressemble pas à un profil Chrome (pas de `Local State`
+  ni de dossier avec `Preferences`), `--profile-directory` absent (la liste des profils est donnée).
+- **Fichier verrouillé** (Chrome source ouvert : sous Windows, `Network/Cookies` d'un profil ouvert
+  est illisible) : échec 409 qui liste les fichiers et conseille de fermer Chrome ; `--skip-locked`
+  importe sans eux et les liste en avertissement.
+- Un profil importé n'emporte pas forcément ses connexions : voir les limites ci-dessous.
+
+## Mode Windows (chrome.exe depuis WSL2)
+
+Le Chrome Linux headless se fait bloquer par Cloudflare sur certains sites ; le vrai Chrome Windows
+passe. Grasp le pilote directement depuis WSL2 :
+
+```bash
+grasp config set chromePath "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+grasp config set headless false        # facultatif : fenêtre visible côté Windows
+grasp doctor                           # signale le mode windows, démarre chrome.exe pour de vrai
+```
+
+- **Détection** : un chemin `*.exe` sous `/mnt/<lecteur>/` est classé `windows`. La version est lue
+  dans le dossier de version voisin (`…\Application\156.0.8078.76\`) : `chrome.exe --version`
+  ouvrirait une fenêtre dans le Chrome de l'utilisateur.
+- **Profils côté Windows** : le chiffrement DPAPI des cookies exige que chrome.exe lise lui-même ses
+  profils. Racine par défaut `%LOCALAPPDATA%\grasp\profiles` (résolu par `cmd.exe /c echo
+  %LOCALAPPDATA%` + `wslpath`), surchargeable par `windowsProfilesDir` (`/mnt/c/…` ou `C:\…`).
+  Sessions éphémères dans `<racine>\.tmp\<id>`. Les droits Unix ne s'appliquent pas sur NTFS :
+  Grasp démarre quand même et `doctor` le signale.
+- **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=0
+  --no-first-run --no-default-browser-check [--headless=new]`, lecture de `DevToolsActivePort` via
+  `/mnt/c`, connexion à `127.0.0.1:<port>`. **WSL doit être en `networkingMode=mirrored`** ; sinon
+  erreur explicite qui le dit.
+- **Cycle de vie** : pas de groupe de processus ni de `PDEATHSIG` au-delà de la frontière WSL. Arrêt
+  par CDP `Browser.close` ; à défaut, PowerShell (`Get-CimInstance Win32_Process`) retrouve les
+  `chrome.exe` dont la ligne de commande porte **exactement ce `--user-data-dir`** et les tue. Le
+  Chrome habituel de l'utilisateur n'est jamais visé (son `User Data` est explicitement refusé). Le
+  control plane ferme ses navigateurs à l'arrêt ; un bridge qui meurt (même par `SIGKILL`) voit son
+  chrome.exe tué par le control plane ; un control plane tué par `SIGKILL` laisse ses bridges fermer
+  leurs navigateurs ; `grasp stop` forcé vise aussi les `chrome.exe` connus (`instances.json`).
+
 ## Snapshot
 
 `GET /snap` (CLI : `grasp snap [--max octets]`), une ligne par nœud :
@@ -142,11 +228,17 @@ mutante accepte `--snap-diff`.
 ## API HTTP (control plane)
 
 `Authorization: Bearer <token>` obligatoire (sauf `GET /health`). Session :
-`X-Grasp-Session: <id>` ou `?session=`, facultatif s'il n'y en a qu'une.
+`X-Grasp-Session: <id>` ou `?session=`, facultatif s'il n'y en a qu'une. Les routes `/profiles`
+ne sont pas liées à une session (`GET /profiles` utilise la session, si elle est connue, pour
+renvoyer `current`).
 
 ```
 GET  /health                  GET  /security/effective
 POST /sessions {profile?}     GET  /sessions            DELETE /sessions/:id
+POST /sessions/:id/profile {name}                      bascule de profil, même id
+GET  /profiles                POST /profiles {name, useWhen?}
+POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
+DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?}
 GET  /snap?max=   GET /text?max=   GET /location   GET /screenshot   GET /pdf
 POST /click  {target, snapDiff?, max?}        POST /fill   {target, value, …}
@@ -217,8 +309,12 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 |---|---|
 | Config, token | `${XDG_CONFIG_HOME:-~/.config}/grasp/{config.json,token}` |
 | État, logs, PID, endpoint | `${XDG_STATE_HOME:-~/.local/state}/grasp/` |
-| Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
-| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) |
+| Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/<id>/` ; snap : `~/snap/chromium/common/grasp-profiles/` ; chrome.exe : `%LOCALAPPDATA%\grasp\profiles\` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
+| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` |
+
+Un socket Unix est limité à 107 octets. Si `XDG_RUNTIME_DIR` est trop long pour le socket du control
+plane **ou** pour ceux des bridges, `grasp serve` refuse de démarrer en le disant (au lieu d'un
+`listen EADDRINUSE` trompeur à la première session) : prenez un `XDG_RUNTIME_DIR` plus court.
 
 ## Découverte du navigateur
 
@@ -228,10 +324,10 @@ Ordre : `$GRASP_CHROME` → `chromePath` (config) → `which` sur `google-chrome
 repli.
 
 - **Wrappers ≠ ELF** : snap, Flatpak et le `chromium-browser` d'Ubuntu sont des scripts shell.
-  Ils sont détectés et classés (`elf`, `script`, `snap`, `flatpak`).
+  Ils sont détectés et classés (`elf`, `script`, `snap`, `flatpak`, et `windows` pour un `*.exe`
+  sous `/mnt/`).
 - **Confinement snap** : un Chromium snap ne lit ni hors de `$HOME` ni dans les dossiers cachés
-  (donc pas `~/.local/share`). Les profils vont sous `~/snap/chromium/common/grasp-profiles/`,
-  et un profil imposé ailleurs est refusé avec un message clair.
+  (donc pas `~/.local/share`). Les profils vont sous `~/snap/chromium/common/grasp-profiles/`.
 - **Version** : refus en dessous de Chrome 112 (`--headless=new`).
 - **`grasp doctor`** fait un vrai démarrage de Chrome, le pilote via CDP et l'arrête. Un wrapper
   « exécutable » qui ne démarre pas est donc détecté.
@@ -254,14 +350,16 @@ grasp security                            # politique telle que le garde l'appli
 ```
 
 Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
-`allowCookies`, `transport` (`unix`|`tcp`), `port`. Une modification prend effet au redémarrage du
+`allowCookies`, `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
+déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
 
 ## Tests
 
 ```bash
-npm test             # build + 90 tests (unitaires + intégration avec un vrai Chrome)
+npm test             # build + tests unitaires et d'intégration avec un vrai Chrome
 npm run test:unit    # unitaires seuls, sans navigateur
+GRASP_TEST_WINDOWS=1 npm test   # ajoute le test réel chrome.exe (WSL2 mirrored + Chrome Windows)
 ```
 
 L'intégration démarre un `node:http` local qui sert la page de test (`test/helpers/testsite.ts`).
@@ -272,4 +370,15 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
   pas, même si la garde de navigation s'y applique.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
 - Une session = un onglet. Les popups sont gardés par l'allowlist mais ne sont pas pilotables.
+- **Profil importé ≠ session Google importée** : validé sous Windows, l'import de « Profile 9 »
+  s'est fait sans fichier verrouillé et l'identité (`accountEmail`) est lue, mais
+  `myaccount.google.com` ouvert sur la copie a montré une page **non connectée**. Les connexions
+  Google ne survivent pas forcément à une copie de profil (protections de Chrome et de Google liées
+  à l'appareil et au profil d'origine). Le chemin fiable : créer un profil Grasp, l'ouvrir avec
+  `headless=false` et s'y connecter une fois à la main ; la connexion persiste ensuite.
+- **chrome.exe orphelin** si le control plane **et** le bridge sont tués par `SIGKILL` en même temps
+  (rien ne reste pour appeler `Browser.close` ou PowerShell). `grasp stop` forcé le rattrape via
+  `instances.json` ; sinon, fermez la fenêtre ou tuez le processus dont la ligne de commande contient
+  `\grasp\profiles\`.
+- La bascule de profil relance le navigateur : la page courante n'est pas conservée.
 - macOS : non testé (pas de `/proc`, pas de `setpriv` ; le control plane tue alors les groupes Chrome).
