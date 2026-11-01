@@ -510,6 +510,30 @@ export const ARRIERE_PLAN_PAGE = `<!doctype html>
 <p id="out">Rien</p>
 </body></html>`;
 
+/**
+ * Relecture v3. Connexion courte avec reCAPTCHA et « Veuillez patienter » : pas une page de challenge.
+ * Long-polling ouvert au chargement. Polling de fond (fetch toutes les 300 ms, sans changement du DOM).
+ */
+export const CONNEXION_CAPTCHA_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Connexion</title></head><body>
+<form><label for="em">Email</label> <input id="em" type="email"> <label for="mdp">Mot de passe</label> <input id="mdp" type="password">
+<iframe src="/recaptcha/api2/anchor" title="reCAPTCHA" width="300" height="80"></iframe>
+<button type="button">Se connecter</button></form>
+<p class="challenge-hint">Veuillez patienter, vérification en cours…</p>
+</body></html>`;
+
+export const LONG_POLL_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Long-polling</title></head><body>
+<h1>Messagerie</h1><button id="b" onclick="fetch('/api/lent?ms=10000'); document.getElementById('etat').textContent = 'Relancé'">Relancer</button><p id="etat">Prêt</p>
+<script>addEventListener('load', () => { fetch('/api/lent?ms=10000').catch(() => {}); });</script>
+</body></html>`;
+
+export const POLLING_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Polling</title></head><body>
+<h1>Tableau de bord</h1><button id="b" onclick="document.getElementById('etat').textContent = 'Cliqué'">Agir</button><p id="etat">Prêt</p>
+<script>setInterval(() => { fetch('/api/data').catch(() => {}); }, 300);</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -531,11 +555,15 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/api/data') { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); return; }
     if (u.pathname === '/api/secret') { res.statusCode = 401; res.setHeader('content-type', 'application/json'); res.end('{"error":"corps-réponse-secret"}'); return; }
     if (u.pathname === '/api/lent') {
-      const ms = Math.min(5000, Number(u.searchParams.get('ms') ?? '500'));
+      const ms = Math.min(15000, Number(u.searchParams.get('ms') ?? '500'));
       res.setHeader('content-type', 'application/json');
-      setTimeout(() => res.end('{"ok":true}'), ms);
+      setTimeout(() => res.end('{"ok":true}'), ms).unref(); // long-polling : ne retient pas la fin des tests
       return;
     }
+    if (u.pathname === '/connexion-captcha') { res.end(CONNEXION_CAPTCHA_PAGE); return; }
+    if (u.pathname === '/recaptcha/api2/anchor') { res.end('<!doctype html><title>reCAPTCHA</title><p>Je ne suis pas un robot</p>'); return; }
+    if (u.pathname === '/long-poll') { res.end(LONG_POLL_PAGE); return; }
+    if (u.pathname === '/polling') { res.end(POLLING_PAGE); return; }
     if (u.pathname === '/challenge-reseau') { res.end(CHALLENGE_RESEAU_PAGE); return; }
     if (u.pathname === '/challenge-minuterie') { res.end(CHALLENGE_MINUTERIE_PAGE); return; }
     if (u.pathname === '/challenge-ok') { res.end(CHALLENGE_OK_PAGE); return; }

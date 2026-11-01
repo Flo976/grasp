@@ -27,12 +27,25 @@ export const STABLE_QUIET_MS = 400;
 /**
  * Requête en vol depuis plus longtemps que ce délai : présumée de longue durée (long-polling, flux,
  * EventSource déguisé) et ignorée par l'attente de stabilité, sinon chaque attente irait au plafond.
+ * Une requête ouverte au chargement et jamais terminée coûte ainsi au plus ~1,6 s à `nav`.
  */
-export const LONG_REQUEST_MS = 4000;
+export const LONG_REQUEST_MS = 1200;
+
+/**
+ * Requête déclenchée par une action (partie dans sa fenêtre, voir ACTION_WINDOW_MS) : attendue plus longtemps
+ * qu'une requête de fond — un « Enregistrer » qui poste 2 s doit voir sa confirmation dans le diff.
+ */
+export const ACTION_REQUEST_MS = 2500;
+
+/**
+ * Fenêtre d'attribution d'une action : seules les requêtes parties entre le début de l'action et ce délai
+ * après sa fin (ou enchaînées à l'une d'elles) sont attendues. Un polling de fond n'est pas une réaction.
+ */
+export const ACTION_WINDOW_MS = 400;
 
 /**
  * Après une action (click, press, fill…) : délai d'observation d'une réaction différée (navigation, pushState,
- * requête réseau) avant de rendre la main sans attente de stabilité.
+ * requête réseau) avant de rendre la main sans attente de stabilité. Sondé par pas de 20 ms.
  */
 export const ACTION_GRACE_MS = 120;
 

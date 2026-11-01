@@ -328,24 +328,33 @@ est vide, le titre aussi, et un `--snap-diff` saisit le DOM en pleine transition
 
 - **`nav`** attend le `load`, puis que la page soit calme pendant **400 ms** — ni mutation du DOM, ni
   activité réseau (document, XHR, fetch, script ; pas les images, polices, balises de mesure ni flux
-  permanents ; une requête en vol depuis plus de 4 s est présumée de longue durée et ignorée ; le réseau
+  permanents ; requêtes du document principal seulement, pas celles des iframes ; une requête en vol depuis
+  plus de 1,2 s est présumée de longue durée — long-polling, flux — et ignorée ; une requête répétée à
+  intervalles réguliers — polling — aussi ; le réseau
   n'est suivi qu'avec `allowConsole=true`, la valeur par défaut — sans console, aucun domaine Network
   n'est activé et seul le DOM compte) —, au plus
   **5 s** (clé `stableTimeoutMs` ; `0` = pas d'attente). Une **navigation de document qui démarre pendant
   l'attente** (redirection JS, `location.replace` d'une page de challenge anti-bot) est suivie, et la
-  stabilité du nouveau document attendue, dans le même plafond. Une page de challenge reconnue (peu de texte,
-  titre ou marqueurs typiques : « Just a moment », `#challenge-…`, captcha…) est guettée jusqu'à sa
-  redirection. Titre et URL sont lus après. Une page qui bouge encore au plafond rend la main quand même,
+  stabilité du nouveau document attendue, dans le même plafond. Une page de challenge reconnue à un marqueur
+  propre à un service anti-bot (titre « Just a moment… » / « Attention Required », `#challenge-running`,
+  `_cf_chl_opt`, `challenge-platform`, `awswaf`, `captcha-delivery`…) est guettée jusqu'à sa redirection, au
+  plafond ; un simple indice (page très courte sans champ de saisie, « veuillez patienter », iframe captcha…)
+  seulement 1,5 s, sans note — une page de connexion avec reCAPTCHA n'est pas un challenge. Titre et URL sont lus après. Une page qui bouge encore au plafond rend la main quand même,
   avec une note sur stderr : `note: DOM encore instable après 5021 ms (63 mutations) : la page peut encore
   changer` (ou `réseau encore actif après … (N requête(s) en cours)`, `page de challenge anti-bot probable,
   toujours affichée après …`).
 - **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui fait réagir la page** —
-  navigation, route `pushState` d'une application monopage, requête réseau partie depuis l'action (XHR
-  d'un « Enregistrer », suggestions d'une autocomplétion) — l'attend aussi, même sans `--snap-diff`, dans
-  le même plafond. Une action sans aucune de ces réactions dans les 120 ms ne l'attend pas.
+  navigation, route `pushState` d'une application monopage, requête réseau partie pendant l'action ou dans
+  les 400 ms qui suivent (XHR d'un « Enregistrer », suggestions d'une autocomplétion), ou enchaînée à l'une
+  d'elles — l'attend aussi, même sans `--snap-diff`, dans le même plafond (une telle requête est attendue
+  jusqu'à 2,5 s). Un polling de fond n'est pas une réaction. Une action sans aucune de ces réactions dans les
+  120 ms ne l'attend pas.
 - **Onglet en arrière-plan** (`document.visibilityState = hidden`) : les entrées y sont livrées mais la page
   ne rend plus (`requestAnimationFrame` suspendu). L'onglet est ramené au premier plan avant l'action, avec
-  une note (`onglet en arrière-plan (document caché) : ramené au premier plan avant l'action`).
+  une note (`onglet en arrière-plan (document caché) : ramené au premier plan avant l'action`). Si
+  `Page.bringToFront` reste sans effet (fenêtre réduite, écran verrouillé), c'est dit autrement, et ce n'est
+  plus retenté sur ce document. En mode attach (Chrome de l'utilisateur), jamais de `Page.bringToFront` :
+  l'onglet est laissé en arrière-plan, avec une note.
 - **Mécanisme** : un `MutationObserver` injecté par Grasp dans un **monde isolé** (`grasp-lecture`) : la page
   ne voit ni la fonction ni ses variables, et ne peut pas fausser la mesure (ses propres `setTimeout` ou
   prototypes sont ceux de son monde). C'est du code fixe de Grasp, pas une expression de l'agent : autorisé
