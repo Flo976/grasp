@@ -58,6 +58,20 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
     for (let i = 0; i < 20 && !got; i++) { await new Promise((r) => setTimeout(r, 500)); got = existsSync(dl); }
     assert.ok(got, `${dl} absent : le dossier de téléchargement transmis à chrome.exe est faux`);
     assert.equal(readFileSync(dl, 'utf8'), 'contenu grasp');
+    // Captures et console : la capture passe par CDP, le fichier est écrit côté Linux (état de Grasp).
+    await runCli(env, ['nav', `${site.url}/capture`]);
+    const shot = JSON.parse((await runCli(env, ['screenshot', '--full', '--json'])).stdout);
+    assert.ok(shot.path.startsWith(`${paths.stateDir}/captures/`), shot.path);
+    assert.equal(shot.height, 3100, 'page entière');
+    const el = JSON.parse((await runCli(env, ['screenshot', '--el', '#cible', '--refs', '--max-width', '100', '--json'])).stdout);
+    assert.ok(el.width <= 100 && el.width > 0, JSON.stringify(el));
+    await runCli(env, ['nav', `${site.url}/console`]);
+    await new Promise((r) => setTimeout(r, 1000));
+    const cons = await runCli(env, ['console']);
+    assert.match(cons.stdout, /erreur objet/, cons.stderr);
+    assert.match(cons.stdout, /absent\.png → 404/);
+    assert.match((await runCli(env, ['click', '#absent', '--shot-on-error'])).stderr, /\(capture : \/\S+\.png\)$/m);
+    await runCli(env, ['nav', `${site.url}/`]);
     const winFlorent = `${winRoot}\\${profileId('florent')}`;
     const winSooatek = `${winRoot}\\${profileId('sooatek')}`;
     assert.ok(await ours(winFlorent) > 0, 'chrome.exe tourne sur le profil florent');

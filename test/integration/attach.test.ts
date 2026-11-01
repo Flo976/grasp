@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverChrome, realProbe } from '../../src/browser/discover.js';
@@ -29,6 +29,24 @@ test('mode attach : pilote un navigateur déjà ouvert (cdpUrl) sans jamais le t
     await runCli(env, ['fill', '#nom', 'Ada']);
     await runCli(env, ['click', 'text:Valider']);
     assert.match((await runCli(env, ['text'])).stdout, /Nom : Ada/);
+    // Captures et console : même chemin CDP, fichier écrit côté Linux, comme en mode lancé.
+    await runCli(env, ['nav', `${site.url}/`]);
+    const shot = JSON.parse((await runCli(env, ['screenshot', '--full', '--json'])).stdout);
+    assert.equal(shot.path.startsWith(`${paths.stateDir}/captures/`), true, shot.path);
+    assert.ok(shot.width > 0 && shot.height > 0);
+    assert.equal(readFileSync(shot.path).subarray(1, 4).toString(), 'PNG');
+    const elShot = await runCli(env, ['screenshot', '--el', 'text:Valider', '--refs']);
+    assert.equal(elShot.code, 0, elShot.stderr);
+    await runCli(env, ['nav', `${site.url}/console`]);
+    await new Promise((r) => setTimeout(r, 500));
+    const cons = await runCli(env, ['console', '--level', 'error']);
+    assert.match(cons.stdout, /erreur objet/, cons.stderr);
+    assert.match(cons.stdout, /absent\.png → 404/);
+    const bad = await runCli(env, ['click', '#absent', '--shot-on-error']);
+    assert.match(bad.stderr, /\(capture : \/\S+\.png\)$/m);
+    await runCli(env, ['nav', `${site.url}/`]);
+    await runCli(env, ['fill', '#nom', 'Ada']);
+    await runCli(env, ['click', 'text:Valider']);
     // la garde s'applique aussi au navigateur externe
     assert.notEqual((await runCli(env, ['nav', 'https://example.com'])).code, 0);
 

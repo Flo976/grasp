@@ -17,6 +17,11 @@ export interface ResolvedConfig {
   allowDownload: boolean;
   allowUpload: boolean;
   allowCookies: boolean;
+  /**
+   * Lecture de la console du navigateur (journal, exceptions, requêtes en échec). Autorisée par défaut :
+   * elle n'exécute rien. false : rien n'est capturé et Runtime.enable n'est jamais appelé (non détectable par la page).
+   */
+  allowConsole: boolean;
   transport: 'unix' | 'tcp';
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
@@ -36,6 +41,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowDownload: false,
   allowUpload: false,
   allowCookies: false,
+  allowConsole: true,
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
@@ -83,6 +89,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   allowDownload: bool,
   allowUpload: bool,
   allowCookies: bool,
+  allowConsole: bool,
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',
     parse(raw) { if (raw !== 'unix' && raw !== 'tcp') throw new Error('unix|tcp attendu'); return raw; },
@@ -126,6 +133,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowDownload: pick('allowDownload'),
     allowUpload: pick('allowUpload'),
     allowCookies: pick('allowCookies'),
+    allowConsole: pick('allowConsole'),
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),

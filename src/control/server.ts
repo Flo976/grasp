@@ -45,7 +45,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -60,6 +60,7 @@ export function permissionTargets(paths: GraspPaths): Array<{ path: string; kind
     { path: paths.configFile, kind: 'file' },
     { path: paths.tokenFile, kind: 'file' },
     { path: paths.stateDir, kind: 'dir' },
+    { path: paths.capturesDir, kind: 'dir' },
     { path: paths.dataDir, kind: 'dir' },
     { path: paths.profilesDir, kind: 'dir' },
     { path: paths.tmpProfilesDir, kind: 'dir' },
@@ -111,7 +112,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   // 1. Permissions AVANT toute création : on refuse, on ne corrige pas en silence.
   checkPermissions(permissionTargets(paths));
-  for (const d of [paths.configDir, paths.stateDir, paths.logDir, paths.dataDir, paths.profilesDir, paths.tmpProfilesDir, paths.runDir, paths.bridgesDir]) ensurePrivateDir(d);
+  for (const d of [paths.configDir, paths.stateDir, paths.logDir, paths.capturesDir, paths.dataDir, paths.profilesDir, paths.tmpProfilesDir, paths.runDir, paths.bridgesDir]) ensurePrivateDir(d);
 
   // 2. Instance unique.
   if (existsSync(paths.pidFile)) {
@@ -183,6 +184,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       socketPath: bridgeSocketPath(paths, s.id),
       downloadDir: downloadDirFor(browser, roots, paths, s.id),
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
+      capturesDir: paths.capturesDir,
     }, {
       log,
       onExit: (code) => {
@@ -370,7 +372,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try {
       r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, req.method ?? 'GET', path, body && body.length ? JSON.parse(body.toString('utf8')) : undefined);
     } catch (e) { throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`); }
-    res.writeHead(r.status, { 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': r.body.length });
+    // En-têtes x-grasp-* du bridge (dimensions d'une capture) transmis tels quels.
+    const extra: Record<string, string> = {};
+    for (const [k, v] of Object.entries(r.headers)) if (k.startsWith('x-grasp-') && typeof v === 'string') extra[k] = v;
+    res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': r.body.length });
     res.end(r.body);
   }
 

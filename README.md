@@ -1,7 +1,9 @@
 # Grasp
 
-Serveur de contrôle de Chrome pour agents IA. L'agent ne regarde pas de captures d'écran : il lit
-**l'arbre d'accessibilité aplati**, une ligne par nœud utile, et agit par références stables.
+Serveur de contrôle de Chrome pour agents IA. L'agent ne regarde pas de captures d'écran par défaut : il lit
+**l'arbre d'accessibilité aplati**, une ligne par nœud utile, et agit par références stables. Quand
+l'image est vraiment nécessaire, `grasp screenshot` écrit un fichier et ne renvoie que son **chemin** ;
+pour déboguer, `grasp console` lit le journal du navigateur (logs, exceptions, requêtes en échec).
 
 ```
 page "Inscription" http://127.0.0.1:45457/
@@ -222,16 +224,101 @@ nouvelle page.
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
 | `check <sél> [--uncheck]` | Coche ou décoche, puis **vérifie l'état**. |
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |
-| `screenshot [-o f.png]`, `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
+| `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
+| `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
+| `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`.
 Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
-mutante accepte `--snap-diff`.
+(`nav`, `click`, `fill`, `select`, `check`, `press`) accepte :
+
+- `--snap-diff` : diff du snapshot dans le même aller-retour ;
+- `--console` : entrées console produites **pendant** l'action, après `OK` (ou le diff) ;
+- `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur.
+
+```
+grasp click '#envoyer' --console --snap-diff
+  ~ e9kfo:button "Envoyer" [focus]
+  #42 error network POST http://127.0.0.1:8080/api/commande → 500 Internal Server Error
+  #43 error exception Uncaught TypeError: r.items is undefined ← afficher:88 ← charger:40 (app.js:88)
+grasp click '#absent' --shot-on-error
+  ERROR: click: aucun élément ne correspond à #absent (capture : ~/.local/state/grasp/captures/grasp-….png)
+```
 
 **Sorties** : `OK` sur stdout ; conseils et notes sur stderr ; erreurs
 `ERROR: <cmd>: <raison>` sur stderr avec un code non nul ; `--json` pour la sortie structurée.
 `export S=$(grasp session create)` capture uniquement l'identifiant.
+
+## Captures d'écran
+
+```
+grasp screenshot [-o f|-] [--full] [--el <sélecteur>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs] [--json]
+```
+
+- **Sans `-o`** : fichier `0600` dans `${XDG_STATE_HOME}/grasp/captures/` (dossier `0700`, vérifié au
+  démarrage ; les 50 plus récentes sont gardées, les plus anciennes supprimées), et **seulement le chemin**
+  sur stdout : l'agent n'ouvre l'image que s'il en a besoin. `--json` :
+  `{"path", "width", "height", "bytes", "format"}` (dimensions lues dans l'image produite).
+  `-o fichier` écrit là (format déduit de l'extension à défaut de `--format`) ; `-o -` envoie le binaire
+  sur stdout redirigé.
+- **`--full`** : page entière. **`--el`** : découpe sur la boîte de l'élément (ref, CSS ou `text:`), après
+  `scrollIntoView`. **`--max-width`** : réduit l'échelle (jamais agrandie) pour économiser les tokens
+  image. **`--format`/`--quality`** : jpeg et webp (1-100) ; `--quality` sur du png → 400.
+- **`--refs`** : dessine en magenta les refs du snapshot (stables, donc celles de `snap`) sur les éléments
+  interactifs visibles dans la zone capturée. L'overlay est un hôte `<grasp-overlay>` (shadow root fermé,
+  `aria-hidden`) injecté depuis un **monde isolé** et retiré juste après : le snapshot et le texte de la
+  page sont inchangés. Autorisé même avec `allowEval=false` : c'est du code fixe de Grasp, pas une
+  expression de l'agent.
+- **Pas d'effet de bord** : `captureBeyondViewport` de Chrome fait disparaître la barre de défilement
+  jusqu'au rechargement (la page se remet en page sur une autre largeur). Grasp ne l'utilise pas : une
+  zone qui déborde du viewport est capturée en agrandissant temporairement le viewport
+  (`Emulation.setDeviceMetricsOverride`, puis retour attendu et défilement restauré). Testé.
+- **Mode Windows et attach** : tout passe par CDP, le fichier est écrit côté Linux par le bridge.
+- `GET /screenshot` sans `save=1` renvoie toujours le binaire (en-têtes `x-grasp-width`, `x-grasp-height`,
+  `x-grasp-format`).
+
+## Console du navigateur
+
+Le bridge tient, **par onglet piloté**, un tampon circulaire de 1000 entrées numérotées (`seq`
+croissant, jamais remis à zéro), qui survit aux navigations (repère `navigation → url`) :
+
+| Source | Contenu |
+|---|---|
+| `console` | `console.*` : niveau, arguments en aperçu compact (`{code: 42, detail: "…", nested: {…}}`, `%s %d %o %c`), `fichier:ligne` depuis la pile |
+| `exception` | exceptions non rattrapées et promesses rejetées : message et pile courte (3 appels) |
+| `network` | requêtes en échec (`Network.loadingFailed` : `net::ERR_…`, CORS, blocage) et réponses HTTP ≥ 400 : méthode, URL tronquée, code |
+| `grasp` | requêtes **bloquées par le garde de navigation** de Grasp (`blocked: true`) |
+| `security`, `deprecation`, `intervention`, `violation`, `javascript`… | domaine `Log` : CSP, contenu mixte, dépréciations, interventions |
+
+Les iframes, y compris hors processus (OOPIF), sont écoutées (`[iframe]`). Les messages réseau
+redondants du domaine `Log` (« Failed to load resource », CORS) sont fusionnés dans l'entrée `network`.
+
+```
+grasp console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--clear] [--json]
+#9 error network GET http://127.0.0.1:8080/absent.png → 404 Not Found
+#10 error network GET http://localhost:8080/api/data → net::ERR_FAILED (CORS : MissingAllowOriginHeader) [hors allowlist : non bloqué par Grasp, le garde ne couvre que les documents]
+#11 info  console [iframe] depuis le cadre (console-frame:1)
+#12 warn  console répété (app.js:31) ×5
+seq courant : 12 — suite : grasp console --since 12        (stderr)
+```
+
+- Une ligne par entrée : `#seq niveau source texte (fichier:ligne)`, doublons consécutifs fusionnés
+  `×N`, texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error (les repères
+  de navigation restent). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
+  écartées et les entrées perdues par le tampon sont signalées sur stderr. `--clear` vide le tampon
+  après lecture (le `seq` continue).
+- **Sensibilité — décision** : la lecture console est **autorisée par défaut** (`allowConsole=true`). Elle
+  n'exécute rien et ne donne rien de plus que ce que la page affiche ou envoie déjà à l'agent par `text` et
+  `snap`. Mais les arguments de `console.*` peuvent contenir des données de la page (jetons loggués par
+  négligence…), d'où un interrupteur explicite, affiché par `grasp security`. Garanties : **jamais** de
+  corps de requête ou de réponse, **jamais** d'en-têtes (`Cookie`, `Authorization` ni aucun autre) — Grasp
+  n'active même pas le tampon des corps réseau (`maxTotalBufferSize: 0`) ; identifiants d'URL retirés et
+  valeurs des paramètres sensibles masquées (`token`, `key`, `secret`, `pass`, `auth`, `session`, `sig`,
+  `jwt`, `code`…). Testé avec un `Authorization: Bearer …`, un corps et un `?token=` sur une réponse 401.
+- **`allowConsole=false`** : `console` et `--console` → 403, et Grasp n'appelle **jamais** `Runtime.enable`,
+  `Log.enable` ni `Network.enable` (vérifié par espion CDP). `Runtime.enable` est un vecteur connu de
+  détection de l'automatisation par les protections anti-bot ; à couper sur les sites qui y sont sensibles.
 
 ## API HTTP (control plane)
 
@@ -247,16 +334,19 @@ POST /sessions/:id/profile {name}                      bascule de profil, même 
 GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
 DELETE /profiles/:name        (409 si une session l'utilise)
-POST /navigate {url, snapDiff?}
-GET  /snap?max=   GET /text?max=   GET /location   GET /screenshot   GET /pdf
-POST /click  {target, snapDiff?, max?}        POST /fill   {target, value, …}
+POST /navigate {url, snapDiff?, console?, shotOnError?}
+GET  /snap?max=   GET /text?max=   GET /location   GET /pdf
+GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
+GET  /console?level=&since=&limit=&clear=1    POST /console {level?, since?, limit?, clear?}
+POST /click  {target, snapDiff?, console?, shotOnError?, max?}        POST /fill   {target, value, …}
 POST /select {target, value, …}               POST /check  {target, checked?, …}
 POST /press  {key, target?, …}
 POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
-incohérent ou pas de session · 502 navigateur.
+incohérent ou pas de session · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
+`screenshot` (chemin, avec `shotOnError`) et `console`/`consoleSeq` (avec `console`).
 
 ## Sécurité
 
@@ -265,7 +355,7 @@ incohérent ou pas de session · 502 navigateur.
 | # | Règle | Implémentation | Tests |
 |---|---|---|---|
 | 1 | **Absent ≠ désactivé.** | Le fichier est typé `T \| undefined` ; `resolveConfig` fusionne clé par clé (`!== undefined`). Clé inconnue ou mal typée : refus de démarrer. Un lint interdit `?? false`, `\|\| false` et `?? []` dans `src/`. | `config.test.ts`, `security.test.ts` (#1 de bout en bout avec `{"chromePath": …}` seul) |
-| 2 | **Détecter ≠ bloquer.** | Pré-contrôle de `/navigate` → 403 avant tout appel CDP, **et** garde runtime dans le navigateur (`Fetch.requestPaused` sur tous les documents : redirections, liens, popups, iframes) → requête annulée, page courante conservée. Le blocage n'est pas configurable. | `navigation-guard.test.ts`, `security.test.ts` #2 : `allowedDomains=["127.0.0.1"]`, `POST /navigate example.com` → 403 **et** URL/titre inchangés |
+| 2 | **Détecter ≠ bloquer.** | Pré-contrôle de `/navigate` → 403 avant tout appel CDP, **et** garde runtime dans le navigateur (`Fetch.requestPaused` sur tous les documents : redirections, liens, popups, iframes, y compris les navigations **internes** à une iframe hors processus, attachée par l'onglet) → requête annulée, page courante conservée. Le blocage n'est pas configurable. | `navigation-guard.test.ts`, `security.test.ts` #2 : `allowedDomains=["127.0.0.1"]`, `POST /navigate example.com` → 403 **et** URL/titre inchangés |
 | 3 | **Ce qui rapporte lit ce qui applique.** | `effectivePolicy()` produit un objet gelé, transmis tel quel aux bridges. `/security/effective` renvoie cet objet et celui que chaque bridge détient en mémoire ; `grasp security` n'affiche que ça et échoue si le serveur est arrêté. Une config modifiée sur disque est signalée (`diskDiffers`), jamais présentée comme appliquée. | `security.test.ts` #3 : endpoint = mémoire du bridge = `grasp security --json` |
 | 4 | **Un écrivain qui ne peut pas écrire échoue.** | `config set` : validation, écriture atomique (tmp, fsync, rename, 0600), **relecture** du fichier par le chemin de démarrage, sinon exception. | `config.test.ts`, `security.test.ts` #4 : chaque clé publique, plus un répertoire en lecture seule → code ≠ 0, pas de `OK`, fichier intact |
 
@@ -276,7 +366,8 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 ### Défauts sûrs
 
 - Token API exigé (32 octets aléatoires, `0600`, comparaison à temps constant).
-- `eval`, téléchargements, upload, cookies : **désactivés**.
+- `eval`, téléchargements, upload, cookies : **désactivés**. Console : lecture **autorisée** (voir
+  [Console](#console-du-navigateur) pour la décision et ses garanties).
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**
   (fail-closed). `*.exemple.com` = sous-domaines seulement ; `*` = tout, en opt-in explicite.
 - `file:`, `data:`, `javascript:`, `chrome:`, `view-source:` toujours bloqués.
@@ -317,6 +408,7 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 |---|---|
 | Config, token | `${XDG_CONFIG_HOME:-~/.config}/grasp/{config.json,token}` |
 | État, logs, PID, endpoint | `${XDG_STATE_HOME:-~/.local/state}/grasp/` |
+| Captures (sans `-o`) | `${XDG_STATE_HOME:-~/.local/state}/grasp/captures/` (0700, fichiers 0600, 50 gardées) |
 | Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/<id>/` ; snap : `~/snap/chromium/common/grasp-profiles/` ; chrome.exe : `%LOCALAPPDATA%\grasp\profiles\` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
 | Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` |
 
@@ -358,7 +450,7 @@ grasp security                            # politique telle que le garde l'appli
 ```
 
 Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
-`allowCookies`, `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
+`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
 déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
 
@@ -391,3 +483,14 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
   bascule, les deux profils sont réservés (création de session ou suppression → 409) ; une session
   fermée pendant la bascule l'interrompt (409) sans laisser de navigateur.
 - macOS : non testé (pas de `/proc`, pas de `setpriv` ; le control plane tue alors les groupes Chrome).
+- **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
+  script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
+  par Grasp…]`) lorsqu'il échoue, sans le bloquer.
+- Console : les messages des workers (service workers, workers dédiés) ne sont pas capturés ; une requête
+  annulée (navigation qui part, `AbortController`) n'est pas signalée ; les URL sont tronquées à 150
+  caractères. Le tampon est perdu à la bascule de profil (le navigateur est relancé).
+- Captures : page entière tronquée à 16 384 px de haut (limite de texture de Chrome, signalée) ;
+  l'overlay `--refs` est un élément du DOM le temps de la capture (un `MutationObserver` de la page peut
+  le voir passer) et ne couvre que le cadre principal ; en mode attach avec une fenêtre visible, un onglet
+  en arrière-plan ou une fenêtre minimisée peut empêcher la capture (erreur 504 explicite après 30 s, non
+  reproduit en headless).

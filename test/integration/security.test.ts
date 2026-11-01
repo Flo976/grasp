@@ -112,6 +112,7 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   allowDownload: { raw: 'true', value: true },
   allowUpload: { raw: 'true', value: true },
   allowCookies: { raw: 'true', value: true },
+  allowConsole: { raw: 'false', value: false },
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },

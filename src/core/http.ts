@@ -60,16 +60,17 @@ export function sendJson(res: ServerResponse, status: number, obj: unknown): voi
   res.end(b);
 }
 
-export function sendBuffer(res: ServerResponse, status: number, type: string, body: Buffer | string): void {
+export function sendBuffer(res: ServerResponse, status: number, type: string, body: Buffer | string, headers: Record<string, string> = {}): void {
   const b = typeof body === 'string' ? Buffer.from(body) : body;
-  res.writeHead(status, { 'content-type': type, 'content-length': b.length });
+  res.writeHead(status, { ...headers, 'content-type': type, 'content-length': b.length });
   res.end(b);
 }
 
 export function sendError(res: ServerResponse, err: unknown): void {
   const status = err instanceof GraspError ? err.status : 500;
   const message = err instanceof Error ? err.message : String(err);
-  if (!res.headersSent) sendJson(res, status, { error: message });
+  const extra = err instanceof GraspError && err.extra !== undefined ? err.extra : {};
+  if (!res.headersSent) sendJson(res, status, { ...extra, error: message });
   else res.destroy();
 }
 
@@ -91,6 +92,19 @@ export function optBool(body: Record<string, unknown>, key: string): boolean | u
   if (v === undefined || v === null) return undefined;
   if (typeof v !== 'boolean') throw new GraspError(400, `champ « ${key} » : booléen attendu`);
   return v;
+}
+/** Entier ≥ 0 (ex. --since 0). */
+export function optCount(v: unknown, key: string): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) throw new GraspError(400, `« ${key} » : entier positif ou nul attendu`);
+  return n;
+}
+/** Drapeau de requête : 1/true → true, 0/false/absent → undefined. */
+export function optFlag(v: unknown, key: string): boolean | undefined {
+  if (v === undefined || v === null || v === '' || v === '0' || v === 'false' || v === false) return undefined;
+  if (v === '1' || v === 'true' || v === true) return true;
+  throw new GraspError(400, `« ${key} » : 1|0 attendu`);
 }
 export function optInt(v: unknown, key: string): number | undefined {
   if (v === undefined || v === null || v === '') return undefined;

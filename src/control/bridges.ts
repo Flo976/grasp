@@ -17,6 +17,8 @@ export interface BridgeInit {
   policy: Readonly<EffectivePolicy>;
   downloadDir?: string;
   stderrLog?: string;
+  /** Captures sans -o (côté Linux, même en mode Windows ou attach). */
+  capturesDir?: string;
 }
 
 export interface BridgeHandle {

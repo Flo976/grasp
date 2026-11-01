@@ -10,6 +10,8 @@ export interface GraspPaths {
   pidFile: string;
   endpointFile: string;
   instancesFile: string;
+  /** Captures d'écran sans -o (0700, fichiers 0600, rotation). */
+  capturesDir: string;
   dataDir: string;
   profilesDir: string;
   tmpProfilesDir: string;
@@ -44,6 +46,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env, home: string 
     pidFile: join(stateDir, 'grasp.pid'),
     endpointFile: join(stateDir, 'endpoint.json'),
     instancesFile: join(stateDir, 'instances.json'),
+    capturesDir: join(stateDir, 'captures'),
     dataDir,
     profilesDir: join(dataDir, 'profiles'),
     tmpProfilesDir: join(dataDir, 'tmp-profiles'),

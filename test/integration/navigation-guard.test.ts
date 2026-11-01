@@ -58,3 +58,19 @@ test('opt-in explicite : allowEval=true autorise eval', async () => {
     assert.equal(await open.page.evaluate('document.title'), 'Inscription');
   } finally { await open.close(); }
 });
+
+test('garde runtime : une iframe cross-origin (OOPIF) qui navigue elle-même hors allowlist est bloquée (console désactivée)', async () => {
+  const fx2 = await openPage({ allowedDomains: ['127.0.0.1', 'localhost'], allowConsole: false });
+  try {
+    await fx2.page.navigate(`${site.url}/console`);
+    await fx2.page.click('#cadre-navigant');
+    let frames: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      frames = (await fx2.cdp.send<{ targetInfos: Array<{ type: string; url: string }> }>('Target.getTargets')).targetInfos.filter((t) => t.type === 'iframe').map((t) => t.url);
+      if (/\[::1\]/.test(fx2.page.lastBlocked()?.url ?? '')) break;
+    }
+    assert.match(fx2.page.lastBlocked()?.url ?? '', /\[::1\]/, 'la navigation interne à l\'iframe doit être interceptée');
+    assert.ok(frames.every((u) => !u.includes('[::1]')), `iframe chargée hors allowlist : ${frames.join(', ')}`);
+  } finally { await fx2.close(); }
+});

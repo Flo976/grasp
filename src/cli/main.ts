@@ -12,17 +12,21 @@ import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
 import { killWindowsChrome } from '../browser/windows.js';
+import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
  * stdout = résultat (OK, snapshot, id…) ; stderr = conseils, avertissements, erreurs.
  */
 
-class CliError extends Error {}
+class CliError extends Error {
+  /** Champs supplémentaires du corps d'erreur (ex. entrées console produites pendant l'action). */
+  constructor(message: string, readonly extra?: Record<string, unknown>) { super(message); }
+}
 
 interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory']);
+const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 function parseArgs(argv: string[]): Args {
@@ -71,19 +75,87 @@ class Client {
     }
     if (r.status >= 400) {
       let msg = r.text();
-      try { msg = String(r.json().error ?? msg); } catch { /* texte brut */ }
-      throw new CliError(msg);
+      let extra: Record<string, unknown> | undefined;
+      try { extra = r.json() as Record<string, unknown>; msg = String(extra.error ?? msg); } catch { /* texte brut */ }
+      throw new CliError(msg, extra);
     }
     return r;
   }
 }
 
-/** Rend le résultat d'une action mutante : OK, ou le diff si --snap-diff. */
+/** Rend le résultat d'une action mutante : OK (ou le diff si --snap-diff), puis la console si --console. */
 function renderAction(r: HttpResult, a: Args): void {
-  const j = r.json() as { diff?: string; detail?: string };
+  const j = r.json() as { diff?: string; detail?: string; console?: { entries: ConsoleEntry[]; seq: number } };
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   if (j.detail) hint(`note: ${j.detail}`);
   out(j.diff !== undefined ? j.diff : 'OK');
+  if (j.console !== undefined) {
+    if (j.console.entries.length > 0) out(j.console.entries.map(formatEntry).join('\n'));
+    hint(`console : ${j.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${j.console.seq}`);
+  }
+}
+
+const SHOT_FORMATS: Record<string, string> = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp' };
+
+/** Options de capture → paramètres de GET /screenshot. Format déduit de l'extension de -o à défaut de --format. */
+function shotQuery(a: Args, file: string | undefined): URLSearchParams {
+  const q = new URLSearchParams();
+  if (a.flags.has('full')) q.set('full', '1');
+  if (a.flags.has('refs')) q.set('refs', '1');
+  for (const [flag, key] of [['el', 'el'], ['quality', 'quality'], ['max-width', 'maxWidth'], ['format', 'format']] as const) {
+    const v = a.flags.get(flag);
+    if (v === true) throw new CliError(`--${flag} attend une valeur`);
+    if (v !== undefined) q.set(key, v);
+  }
+  if (!q.has('format') && file !== undefined && file !== '-') {
+    const ext = /\.[A-Za-z]+$/.exec(file)?.[0]?.toLowerCase();
+    const f = ext !== undefined ? SHOT_FORMATS[ext] : undefined;
+    if (f !== undefined) q.set('format', f);
+  }
+  return q;
+}
+
+async function screenshot(c: Client, a: Args): Promise<void> {
+  const file = a.flags.get('output');
+  if (file === true) throw new CliError('-o attend un fichier (ou - pour stdout)');
+  const q = shotQuery(a, file);
+  const json = a.flags.has('json');
+  if (file === undefined) {
+    // Sans -o : fichier 0600 dans l'état de Grasp, et seulement son CHEMIN sur stdout.
+    q.set('save', '1');
+    const j = (await c.call('GET', `/screenshot?${q}`)).json() as { path: string; width: number; height: number; bytes: number; format: string; truncated?: boolean };
+    out(json ? JSON.stringify({ path: j.path, width: j.width, height: j.height, bytes: j.bytes, format: j.format, ...(j.truncated === true ? { truncated: true } : {}) }) : j.path);
+    if (j.truncated === true) hint('AVERTISSEMENT : page tronquée en hauteur (limite de 16384 px de Chrome)');
+    return;
+  }
+  const r = await c.call('GET', `/screenshot?${q}`);
+  if (file === '-') {
+    if (process.stdout.isTTY) throw new CliError('sortie binaire : redirigez stdout (ou omettez -o pour obtenir un chemin)');
+    process.stdout.write(r.body);
+    return;
+  }
+  writeFileSync(file, r.body, { mode: 0o600 });
+  const truncated = r.headers['x-grasp-truncated'] === '1';
+  out(json ? JSON.stringify({ path: resolvePath(file), width: Number(r.headers['x-grasp-width']), height: Number(r.headers['x-grasp-height']), bytes: r.body.length, format: String(r.headers['x-grasp-format']), ...(truncated ? { truncated: true } : {}) }) : 'OK');
+  if (truncated) hint('AVERTISSEMENT : page tronquée en hauteur (limite de 16384 px de Chrome)');
+}
+
+async function consoleCmd(c: Client, a: Args): Promise<void> {
+  const body: Record<string, unknown> = {};
+  for (const k of ['level', 'since', 'limit'] as const) {
+    const v = a.flags.get(k);
+    if (v === true) throw new CliError(`--${k} attend une valeur`);
+    if (v !== undefined) body[k] = k === 'level' ? v : Number(v);
+  }
+  // Par défaut, les 50 dernières lignes : la console d'une page bavarde coûte cher en tokens.
+  if (body.limit === undefined) body.limit = 50;
+  if (a.flags.has('clear')) body.clear = true;
+  const r = (await c.call('POST', '/console', body)).json() as ConsoleResult;
+  if (a.flags.has('json')) { out(JSON.stringify(r)); return; }
+  if (r.dropped > 0) hint(`AVERTISSEMENT : ${r.dropped} entrée(s) perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
+  if (r.omitted > 0) hint(`${r.omitted} ligne(s) plus ancienne(s) non affichée(s) — --limit N ou --since <seq>`);
+  if (r.entries.length > 0) out(r.entries.map(formatEntry).join('\n'));
+  hint(`seq courant : ${r.seq} — suite : grasp console --since ${r.seq}${body.clear === true ? ' (tampon vidé)' : ''}`);
 }
 
 /** Session visée : --session / GRASP_SESSION, sinon l'unique session ouverte (comme le fait le serveur). */
@@ -185,6 +257,7 @@ function renderSecurity(rep: any): string {
     `download   : ${onoff(p.allowDownload)}`,
     `upload     : ${onoff(p.allowUpload)}`,
     `cookies    : ${onoff(p.allowCookies)}`,
+    `console    : ${p.allowConsole ? 'AUTORISÉ (lecture seule ; Runtime.enable actif)' : 'désactivé'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
     `transport  : ${rep.transport}`,
     `sessions   : ${Object.keys(rep.bridges).length}`,
@@ -202,7 +275,10 @@ async function main(argv: string[]): Promise<number> {
   const json = a.flags.has('json');
   const snapDiff = a.flags.has('snap-diff');
   const max = typeof a.flags.get('max') === 'string' ? Number(a.flags.get('max')) : undefined;
-  const actionBody = (extra: Record<string, unknown>) => ({ ...extra, ...(snapDiff ? { snapDiff: true } : {}), ...(max !== undefined ? { max } : {}) });
+  const actionBody = (extra: Record<string, unknown>) => ({
+    ...extra, ...(snapDiff ? { snapDiff: true } : {}), ...(max !== undefined ? { max } : {}),
+    ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
+  });
 
   switch (a.cmd) {
     case 'serve': {
@@ -324,7 +400,8 @@ async function main(argv: string[]): Promise<number> {
       else hint(`session ${id} : profil ${j.previous ?? '(éphémère)'} → ${j.profile} ; navigateur relancé, la page repart de about:blank`);
       return 0;
     }
-    case 'screenshot': await binary(c, a, '/screenshot', 'png'); return 0;
+    case 'screenshot': await screenshot(c, a); return 0;
+    case 'console': await consoleCmd(c, a); return 0;
     case 'pdf': await binary(c, a, '/pdf', 'pdf'); return 0;
     case 'eval': { const [expression] = need(a, 1, 'eval <expression>'); out(JSON.stringify((await c.call('POST', '/eval', { expression })).json().value)); return 0; }
     case 'cookies': out((await c.call('GET', '/cookies')).text()); return 0;
@@ -407,11 +484,19 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
              profiles rm <nom>                       refusé si une session l'utilise
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
-Lecture      snap [--max octets] | text | screenshot [-o f.png] | pdf [-o f.pdf]
+Lecture      snap [--max octets] | text | pdf [-o f.pdf]
+Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
+               sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
+               --full page entière · --el découpe sur un élément · --max-width réduit l'échelle · --refs dessine les refs
+Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
+               « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél]
-             (actions : --snap-diff renvoie le diff du snapshot en un aller-retour)
+             --snap-diff  diff du snapshot en un aller-retour
+             --console    entrées console produites pendant l'action (combinable avec --snap-diff)
+             --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
+             console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
 Sécurité     security            politique telle que le garde l'applique
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 
@@ -423,5 +508,8 @@ const argv = process.argv.slice(2);
 const cmdName = argv.find((x) => !x.startsWith('-')) ?? 'help';
 main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve') return; process.exit(code); }, (e: Error) => {
   process.stderr.write(`ERROR: ${cmdName}: ${e.message}\n`);
+  // --console sur une action en échec : les entrées produites pendant l'action suivent l'erreur.
+  const entries = e instanceof CliError ? e.extra?.console : undefined;
+  if (Array.isArray(entries) && entries.length > 0) process.stderr.write(`${(entries as ConsoleEntry[]).map(formatEntry).join('\n')}\n`);
   process.exit(1);
 });

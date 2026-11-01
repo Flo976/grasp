@@ -10,6 +10,8 @@ export interface EffectivePolicy {
   allowDownload: boolean;
   allowUpload: boolean;
   allowCookies: boolean;
+  /** Lecture console (tampon du bridge). false : aucune capture, Runtime/Log/Network jamais activés pour elle. */
+  allowConsole: boolean;
   /** Le blocage n'est pas configurable : détecter ≠ bloquer, on bloque toujours. */
   navigation: 'enforce';
   tokenRequired: true;
@@ -22,6 +24,7 @@ export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> 
     allowDownload: cfg.allowDownload,
     allowUpload: cfg.allowUpload,
     allowCookies: cfg.allowCookies,
+    allowConsole: cfg.allowConsole,
     navigation: 'enforce' as const,
     tokenRequired: true as const,
   });
