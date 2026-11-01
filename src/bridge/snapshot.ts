@@ -6,6 +6,8 @@
  * que si le rôle ou le nom du nœud change. C'est ce qui rend --snap-diff exploitable.
  */
 
+import { truncationLine } from '../core/limits.js';
+
 export interface AXValue { value?: unknown }
 export interface AXNode {
   nodeId: string;
@@ -22,23 +24,36 @@ export interface AXNode {
 export interface Snapshot {
   url: string;
   title: string;
-  /** Texte rendu (respecte maxBytes). */
+  /** Texte rendu (respecte maxBytes ; limité à la zone si `scopeBackendId`). */
   text: string;
-  /** ref → backendDOMNodeId, pour tous les nœuds, y compris hors budget. */
+  /** ref → backendDOMNodeId, pour tous les nœuds de la page, y compris hors budget et hors zone. */
   refs: Map<string, number>;
-  /** ref → ligne sans indentation (base du diff). */
+  /** ref → ligne sans indentation (base du diff), dans la zone s'il y en a une. */
   entries: Map<string, string>;
-  /** Lignes de texte brut, sans ref. */
+  /** Lignes de texte brut, sans ref (dans la zone s'il y en a une). */
   texts: string[];
   /** ref → {rôle, nom}, pour la résolution `text:`. */
   meta: Map<string, { role: string; name: string }>;
   /** Nœuds texte émis, pour la résolution `text:` de dernier recours. */
   textNodes: Array<{ text: string; backendNodeId: number }>;
+  /** Avec `scopeBackendId` : la zone a-t-elle été trouvée dans l'arbre d'accessibilité ? */
+  scopeFound?: boolean;
 }
 
-export interface SnapshotOptions { url: string; title: string; maxBytes?: number }
+export interface SnapshotOptions {
+  url: string;
+  title: string;
+  maxBytes?: number;
+  /**
+   * Zone : backendDOMNodeId de l'élément racine. Tout l'arbre est parcouru (les refs dépendent du rang
+   * parmi les homonymes de TOUTE la page, elles restent donc identiques à celles du snapshot complet),
+   * mais seules les lignes du sous-arbre sont émises.
+   */
+  scopeBackendId?: number;
+}
 
-export const DEFAULT_MAX_BYTES = 48 * 1024;
+/** Budget par défaut (octets) ; le bridge applique `snapMax` de la config (12 000 par défaut). */
+export const DEFAULT_MAX_BYTES = 12_000;
 
 /** Conteneurs traversés sans être émis. */
 const PASS_THROUGH = new Set(['generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak', 'LabelText', 'paragraph', 'RootWebArea', 'Section', 'div', 'MenuListPopup', 'ListMarker', 'Abbr', 'emphasis', 'strong', 'superscript', 'subscript', 'time', 'mark', 'code']);
@@ -116,6 +131,11 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   const textNodes: Array<{ text: string; backendNodeId: number }> = [];
   const out: Array<{ depth: number; line: string }> = [];
   const occurrences = new Map<string, number>();
+  const scoped = opts.scopeBackendId !== undefined;
+  let scopeFound = false;
+  // Élagage annoncé : ce que Grasp masque est compté, et dit en dernière ligne.
+  let namelessLinks = 0;
+  let iframes = 0;
 
   const makeRef = (role: string, name: string): string => {
     const key = `${role}\u0000${name}`;
@@ -127,29 +147,47 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     }
   };
 
-  const walk = (node: AXNode, depth: number, ancestorNames: string[]) => {
+  const walk = (node: AXNode, depth: number, ancestorNames: string[], inScopeAbove: boolean) => {
     const role = str(node.role);
     const name = norm(str(node.name));
     let emitted = false;
+    // Racine de la zone : les profondeurs repartent de 0 sous elle.
+    const isScopeRoot = scoped && !inScopeAbove && node.backendDOMNodeId === opts.scopeBackendId;
+    if (isScopeRoot) { scopeFound = true; depth = 0; }
+    const inScope = !scoped || inScopeAbove || isScopeRoot;
     if (!node.ignored) {
       if (role === 'StaticText') {
         const text = norm(name);
         if (text && !namedTexts.has(text) && !ancestorNames.some((a) => a.includes(text))) {
-          texts.push(text);
           if (node.backendDOMNodeId !== undefined) textNodes.push({ text, backendNodeId: node.backendDOMNodeId });
-          out.push({ depth, line: quote(text, 100) });
+          if (inScope) {
+            texts.push(text);
+            out.push({ depth, line: quote(text, 100) });
+          }
         }
         return; // InlineTextBox enfants : inutiles
       }
-      const skip = PASS_THROUGH.has(role) || (NAMED_ONLY.has(role) && !name);
+      if (role === 'Iframe' && inScope) iframes++; // le contenu d'un cadre n'est jamais parcouru
+      // Lien sans nom : du bruit pour l'agent (rien ne dit où il mène). Masqué mais compté, et sa ref
+      // reste résoluble (screenshot --refs la dessine).
+      const nameless = role === 'link' && !name;
+      const skip = PASS_THROUGH.has(role) || (NAMED_ONLY.has(role) && !name) || nameless;
+      if (nameless) {
+        const ref = makeRef(role, name);
+        if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
+        meta.set(ref, { role, name });
+        if (inScope) namelessLinks++;
+      }
       if (!skip && role) {
         const ref = makeRef(role, name);
         const val = VALUE_ROLES.has(role) ? norm(str(node.value)) : '';
         const line = `${ref}:${role}${level(node)}${name ? ` ${quote(name, 80)}` : ''}${val ? `=${quote(val, 60)}` : ''}${flags(node, role)}`;
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
-        entries.set(ref, line);
         meta.set(ref, { role, name });
-        out.push({ depth, line });
+        if (inScope) {
+          entries.set(ref, line);
+          out.push({ depth, line });
+        }
         emitted = true;
       }
     }
@@ -162,9 +200,11 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     // Le texte interne d'un champ (sa valeur) est déjà rendu par `=valeur` : on ne descend pas.
     if (emitted && VALUE_ROLES.has(role)) return;
     const nextNames = emitted && name ? [...ancestorNames, name] : ancestorNames;
+    // Hors zone, la profondeur n'a pas d'importance : rien n'est émis.
+    const nextDepth = emitted && inScope ? depth + 1 : depth;
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
-      if (c) walk(c, emitted ? depth + 1 : depth, nextNames);
+      if (c) walk(c, nextDepth, nextNames, inScope);
     }
   };
 
@@ -183,22 +223,30 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     }
   };
 
-  if (root) walk(root, 0, []);
+  if (root) walk(root, 0, [], false);
 
   const header = `page ${quote(opts.title, 80)} ${opts.url}`;
+  const pruned = [
+    namelessLinks > 0 ? `${namelessLinks} lien${namelessLinks > 1 ? 's' : ''} sans nom (refs visibles avec screenshot --refs)` : '',
+    iframes > 0 ? `${iframes} iframe${iframes > 1 ? 's' : ''} non parcourue${iframes > 1 ? 's' : ''}` : '',
+  ].filter((x) => x !== '');
+  const summary = pruned.length > 0 ? `… élagué : ${pruned.join(', ')}` : undefined;
   const lines = [header];
   let bytes = Buffer.byteLength(header);
-  const reserve = 64;
+  // Place réservée aux lignes finales (élagage, troncature) : le budget est respecté avec elles.
+  const reserve = (summary !== undefined ? Buffer.byteLength(summary) + 1 : 0) + 160;
   let omitted = 0;
+  let rest = 0;
   for (const { depth, line } of out) {
     const l = ' '.repeat(depth) + line;
     const b = Buffer.byteLength(l) + 1;
-    if (omitted > 0 || bytes + b > maxBytes - reserve) { omitted++; continue; }
+    if (omitted > 0 || bytes + b > maxBytes - reserve) { omitted++; rest += l.length + 1; continue; }
     lines.push(l);
     bytes += b;
   }
-  if (omitted > 0) lines.push(`… ${omitted} nœuds omis (budget ${maxBytes} o, ?max= pour augmenter)`);
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes };
+  if (summary !== undefined) lines.push(summary);
+  if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, ...(scoped ? { scopeFound } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */

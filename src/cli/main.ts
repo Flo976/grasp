@@ -26,7 +26,7 @@ class CliError extends Error {
 
 interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit']);
+const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 function parseArgs(argv: string[]): Args {
@@ -187,9 +187,33 @@ function need(a: Args, n: number, usage: string): string[] {
   return a.pos;
 }
 
-function maxQuery(a: Args): string {
-  const m = a.flags.get('max');
-  return typeof m === 'string' ? `?max=${encodeURIComponent(m)}` : '';
+/** --max et --scope de snap / text → paramètres de requête. */
+function readQuery(a: Args): string {
+  const q = new URLSearchParams();
+  for (const k of ['max', 'scope'] as const) {
+    const v = a.flags.get(k);
+    if (v === true) throw new CliError(`--${k} attend une valeur`);
+    if (v !== undefined) q.set(k, v);
+  }
+  return q.size > 0 ? `?${q}` : '';
+}
+
+/** grasp wait [--text T | --sel S | --idle] [--timeout ms] : OK sur stdout, durée sur stderr. */
+async function waitCmd(c: Client, a: Args): Promise<void> {
+  const body: Record<string, unknown> = {};
+  for (const k of ['text', 'sel', 'timeout'] as const) {
+    const v = a.flags.get(k);
+    if (v === true) throw new CliError(`--${k} attend une valeur`);
+    // timeout transmis tel quel : le bridge le valide (une valeur invalide est une erreur, jamais ignorée).
+    if (v !== undefined) body[k] = v;
+  }
+  if (a.flags.has('idle')) body.idle = true;
+  const t = Number(body.timeout);
+  const timeout = Number.isFinite(t) && t > 0 ? t : 60_000;
+  const j = (await c.call('POST', '/wait', body, timeout + 15_000)).json() as { waited: number; condition: string };
+  if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
+  out('OK');
+  hint(`attendu ${j.waited} ms (${j.condition})`);
 }
 
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
@@ -274,9 +298,11 @@ async function main(argv: string[]): Promise<number> {
   const c = new Client(paths, session);
   const json = a.flags.has('json');
   const snapDiff = a.flags.has('snap-diff');
-  const max = typeof a.flags.get('max') === 'string' ? Number(a.flags.get('max')) : undefined;
+  // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
+  const max = typeof a.flags.get('max') === 'string' ? a.flags.get('max') as string : undefined;
+  const scope = a.flags.get('scope');
   const actionBody = (extra: Record<string, unknown>) => ({
-    ...extra, ...(snapDiff ? { snapDiff: true } : {}), ...(max !== undefined ? { max } : {}),
+    ...extra, ...(snapDiff ? { snapDiff: true } : {}), ...(max !== undefined ? { max } : {}), ...(typeof scope === 'string' ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
   });
 
@@ -339,8 +365,9 @@ async function main(argv: string[]): Promise<number> {
       renderAction(await c.call('POST', '/navigate', actionBody({ url })), a);
       return 0;
     }
-    case 'snap': out((await c.call('GET', `/snap${maxQuery(a)}`)).text()); return 0;
-    case 'text': out((await c.call('GET', `/text${maxQuery(a)}`)).text()); return 0;
+    case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
+    case 'text': out((await c.call('GET', `/text${readQuery(a)}`)).text()); return 0;
+    case 'wait': await waitCmd(c, a); return 0;
     case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); renderAction(await c.call('POST', '/click', actionBody({ target })), a); return 0; }
     case 'fill': { const [target, value] = need(a, 2, 'fill <sélecteur> <valeur>'); renderAction(await c.call('POST', '/fill', actionBody({ target, value })), a); return 0; }
     case 'select': { const [target, value] = need(a, 2, 'select <sélecteur> <valeur|libellé>'); renderAction(await c.call('POST', '/select', actionBody({ target, value })), a); return 0; }
@@ -484,7 +511,14 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
              profiles rm <nom>                       refusé si une session l'utilise
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
-Lecture      snap [--max octets] | text | pdf [-o f.pdf]
+Lecture      snap [--max octets] [--scope <ref|css>]   budget 12000 octets par défaut (config snapMax)
+             text [--max N] [--scope <ref|css>]        4000 caractères par défaut (config textMax)
+               sortie coupée : dernière ligne « … tronqué : N caractères restants — affinez avec --max N / --scope <ref|css> »
+               snap : dernière ligne « … élagué : … » si des nœuds sont masqués (liens sans nom, iframes non parcourues)
+             pdf [-o f.pdf]
+Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, élément visible (CSS) ou présent
+               (ref, text:), DOM stable (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
+               nav et --snap-diff attendent déjà le load puis 400 ms sans mutation du DOM (plafond stableTimeoutMs, 5000)
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                --full page entière · --el découpe sur un élément · --max-width réduit l'échelle · --refs dessine les refs
@@ -492,7 +526,8 @@ Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N 
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél]
-             --snap-diff  diff du snapshot en un aller-retour
+             --snap-diff  diff du snapshot en un aller-retour, après stabilité du DOM ; 4000 caractères par défaut
+                          (config diffMax ; --max N l'élargit, --scope <ref|css> le restreint à une zone)
              --console    entrées console produites pendant l'action (combinable avec --snap-diff)
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
@@ -501,6 +536,8 @@ Sécurité     security            politique telle que le garde l'applique
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 
 Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
+               ref disparue (re-rendu) : retrouvée par (rôle, nom) si c'est sans ambiguïté, sinon erreur avec
+               les 3 candidats les plus proches ; text: introuvable : noms proches proposés
 Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une session
 Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
 

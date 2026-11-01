@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   cdp.once('close', () => { if (!stopping) void shutdown(1, 'connexion CDP perdue'); });
   const downloadDir = init.downloadDir ?? join(init.userDataDir, 'downloads');
   if (init.browser?.kind === 'windows') mkdirSync(downloadDir, { recursive: true });
-  page = await PageController.attach(cdp, policy, { downloadDir: await chromeDownloadPath(downloadDir, init.browser?.kind ?? 'attach'), newTab: attached, capturesDir: init.capturesDir });
+  page = await PageController.attach(cdp, policy, { downloadDir: await chromeDownloadPath(downloadDir, init.browser?.kind ?? 'attach'), newTab: attached, capturesDir: init.capturesDir, ...(init.limits !== undefined ? { limits: init.limits } : {}) });
 
   const c = info;
   server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached })));

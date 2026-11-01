@@ -164,6 +164,10 @@ test('allowConsole=false : lecture refusée (403), --console refusé, et Runtime
   try {
     await off.page.navigate(`${site.url}/console`);
     await off.page.click('#log');
+    // L'attente de stabilité (nav, --snap-diff, wait) passe par un monde isolé : pas de Runtime.enable non plus.
+    await off.page.click('#log', { snapDiff: true });
+    await off.page.wait({ text: 'Console' });
+    await off.page.wait({ idle: true });
     await assert.rejects(off.page.consoleQuery({}), (e: GraspError) => e.status === 403 && /allowConsole/.test(e.message));
     await assert.rejects(off.page.click('#log', { console: true }), (e: GraspError) => e.status === 403);
     await assert.rejects(off.page.nav(`${site.url}/console`, { console: true }), (e: GraspError) => e.status === 403);

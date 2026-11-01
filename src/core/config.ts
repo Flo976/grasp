@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, existsSync, openSync, fsyncSync, closeSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { DEFAULT_LIMITS, type Limits } from './limits.js';
 
 /**
  * Configuration. Règle n°1 : « absent » ≠ « désactivé ».
@@ -28,6 +29,14 @@ export interface ResolvedConfig {
   cdpUrl: string | null;
   /** Chrome Windows (chromePath = …/chrome.exe sous /mnt/) : répertoire des profils côté Windows. Défaut : %LOCALAPPDATA%\\grasp\\profiles. */
   windowsProfilesDir: string | null;
+  /** Budget par défaut de `snap`, en octets (`--max` le surcharge à chaque appel). */
+  snapMax: number;
+  /** Limite par défaut de `text`, en caractères. */
+  textMax: number;
+  /** Limite par défaut de la sortie `--snap-diff`, en caractères. */
+  diffMax: number;
+  /** Plafond de l'attente de stabilité du DOM (après nav, avant --snap-diff), en ms ; 0 = pas d'attente. */
+  stableTimeoutMs: number;
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -46,7 +55,16 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   port: 7319,
   cdpUrl: null,
   windowsProfilesDir: null,
+  snapMax: DEFAULT_LIMITS.snapMax,
+  textMax: DEFAULT_LIMITS.textMax,
+  diffMax: DEFAULT_LIMITS.diffMax,
+  stableTimeoutMs: DEFAULT_LIMITS.stableTimeoutMs,
 });
+
+/** Limites de lecture transmises au bridge (elles ne relèvent pas de la politique de sécurité). */
+export function limitsOf(cfg: ResolvedConfig): Limits {
+  return { snapMax: cfg.snapMax, textMax: cfg.textMax, diffMax: cfg.diffMax, stableTimeoutMs: cfg.stableTimeoutMs };
+}
 
 export const PUBLIC_KEYS: readonly ConfigKey[] = Object.freeze(Object.keys(DEFAULTS) as ConfigKey[]);
 
@@ -63,6 +81,19 @@ const bool: KeySpec<boolean> = {
   },
   help: 'true|false',
 };
+
+function int(min: number, max: number, help: string): KeySpec<number> {
+  const check = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
+  return {
+    check,
+    parse(raw) {
+      const n = Number(raw);
+      if (!/^\d+$/.test(raw) || !check(n)) throw new Error(`entier entre ${min} et ${max} attendu, reçu ${JSON.stringify(raw)}`);
+      return n;
+    },
+    help,
+  };
+}
 
 const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   chromePath: {
@@ -114,6 +145,10 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
     parse(raw) { if (!WIN_DIR_RE.test(raw)) throw new Error('chemin sur un disque Windows attendu : /mnt/c/… ou C:\\…'); return raw; },
     help: 'répertoire des profils de chrome.exe (WSL2) : /mnt/c/… ou C:\\… ; défaut %LOCALAPPDATA%\\grasp\\profiles',
   },
+  snapMax: int(512, 10_000_000, `octets, budget par défaut de snap (${DEFAULT_LIMITS.snapMax}) ; --max le surcharge`),
+  textMax: int(100, 10_000_000, `caractères, limite par défaut de text (${DEFAULT_LIMITS.textMax}) ; --max la surcharge`),
+  diffMax: int(100, 10_000_000, `caractères, limite par défaut de --snap-diff (${DEFAULT_LIMITS.diffMax}) ; --max la surcharge`),
+  stableTimeoutMs: int(0, 60_000, `ms, plafond de l'attente de stabilité du DOM après nav et avant --snap-diff (${DEFAULT_LIMITS.stableTimeoutMs}) ; 0 = pas d'attente`),
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -138,6 +173,10 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),
     windowsProfilesDir: pick('windowsProfilesDir'),
+    snapMax: pick('snapMax'),
+    textMax: pick('textMax'),
+    diffMax: pick('diffMax'),
+    stableTimeoutMs: pick('stableTimeoutMs'),
   };
 }
 

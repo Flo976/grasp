@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { DiscoveredBrowser } from '../browser/discover.js';
 import type { EffectivePolicy } from '../core/policy.js';
+import type { Limits } from '../core/limits.js';
 import { checkSocketPath } from '../core/paths.js';
 import { killWindowsChrome } from '../browser/windows.js';
 
@@ -19,6 +20,8 @@ export interface BridgeInit {
   stderrLog?: string;
   /** Captures sans -o (côté Linux, même en mode Windows ou attach). */
   capturesDir?: string;
+  /** Limites de lecture (snap, text, --snap-diff) et plafond de stabilité, lus une fois au démarrage. */
+  limits?: Limits;
 }
 
 export interface BridgeHandle {

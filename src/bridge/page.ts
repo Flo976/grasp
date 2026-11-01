@@ -7,10 +7,15 @@ import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type Snapshot } from './snapshot.js';
 import { parseKey } from './keys.js';
+import { DEFAULT_LIMITS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
+import { fmtCandidate, nearest, type Candidate } from './match.js';
 
 export interface ActionOptions {
   snapDiff?: boolean | undefined;
-  maxBytes?: number | undefined;
+  /** Limite de la sortie --snap-diff, en caractères (défaut : `diffMax`). */
+  max?: number | undefined;
+  /** Zone du --snap-diff (ref, CSS ou text:) : seuls ses nœuds sont comparés. */
+  scope?: string | undefined;
   /** Renvoie les entrées console produites pendant l'action. */
   console?: boolean | undefined;
   /** En cas d'échec, capture du viewport ; son chemin est ajouté au message d'erreur. */
@@ -34,6 +39,11 @@ export interface ShotOptions {
 export interface Shot { data: Buffer; width: number; height: number; format: ImageFormat; truncated?: boolean }
 export interface SavedShot { path: string; width: number; height: number; bytes: number; format: ImageFormat; truncated?: boolean }
 
+export interface WaitOptions { text?: string | undefined; sel?: string | undefined; idle?: boolean | undefined; timeout?: number | undefined }
+export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel' | 'idle' }
+/** Résultat d'une attente de stabilité du DOM. `error` : l'attente elle-même a échoué (jamais silencieux). */
+interface Stability { stable: boolean; ms: number; mutations: number; error?: string }
+
 interface Box { x: number; y: number; width: number; height: number }
 interface CallFrame { functionName: string; url: string; lineNumber: number; columnNumber: number }
 
@@ -43,6 +53,34 @@ const MAX_CAPTURE_PX = 16_384;
 /** Entrées console renvoyées au plus avec une action (--console). */
 const ACTION_CONSOLE_LIMIT = 200;
 const OVERLAY_COLOR = 'rgb(255, 0, 170)';
+/** wait --text / --sel : délai par défaut et maximum (le client HTTP abandonne à 120 s). */
+const WAIT_DEFAULT_MS = 10_000;
+const WAIT_MAX_MS = 60_000;
+/** refs déjà remises à l'agent (ref → rôle, nom), pour retrouver un élément re-rendu. */
+const KNOWN_REFS_MAX = 50_000;
+
+/**
+ * Stabilité du DOM, exécutée dans un monde isolé (code fixe de Grasp, autorisé même si allowEval=false) :
+ * résout quand aucune mutation n'a eu lieu pendant `quiet` ms, ou au plafond `cap`. Seules les mutations
+ * qui changent l'arbre d'accessibilité comptent (structure, texte, attributs ARIA/visibilité) : les
+ * animations (style, class) d'un carrousel ne doivent pas faire attendre 5 s à chaque page.
+ */
+const STABLE_FN = `function (quiet, cap) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    let last = t0, n = 0;
+    const obs = new MutationObserver((recs) => { n += recs.length; last = performance.now(); });
+    obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
+      attributeFilter: ['hidden', 'aria-hidden', 'aria-expanded', 'aria-label', 'aria-busy', 'aria-checked', 'aria-selected', 'role', 'disabled', 'open'] });
+    const tick = () => {
+      const now = performance.now();
+      if (now - last >= quiet) { obs.disconnect(); resolve({ stable: true, mutations: n }); }
+      else if (now - t0 >= cap) { obs.disconnect(); resolve({ stable: false, mutations: n }); }
+      else setTimeout(tick, Math.max(10, Math.min(50, quiet - (now - last))));
+    };
+    setTimeout(tick, Math.min(50, quiet));
+  });
+}`;
 
 /**
  * Overlay des refs, exécuté dans un monde isolé : la page ne voit ni la fonction ni ses variables,
@@ -102,6 +140,15 @@ export class PageController {
   private readonly frames = new Map<string, string>();
   /** Sessions CDP des iframes hors processus (OOPIF) de l'onglet : gardées et écoutées comme lui. */
   private readonly children = new Set<string>();
+  private limits: Limits = { ...DEFAULT_LIMITS };
+  /** ref → (rôle, nom) de chaque ref vue dans un snapshot : base de la résolution d'une ref disparue. */
+  private readonly knownRefs = new Map<string, { role: string; name: string }>();
+  /** Monde isolé « grasp-lecture » du document courant (invalidé à chaque navigation du cadre principal). */
+  private isoCtx: number | undefined;
+  /** Navigations du cadre principal : une action qui navigue attend aussi la stabilité. */
+  private navCount = 0;
+  /** Notes de l'action en cours (ex. ref retrouvée après re-rendu). */
+  private notes: string[] | undefined;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -110,7 +157,7 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
     // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
@@ -119,6 +166,7 @@ export class PageController {
     const pc = new PageController(cdp, sessionId, targetId, policy);
     pc.foreign = opts.newTab === true;
     pc.capturesDir = opts.capturesDir;
+    if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     await pc.init(opts.downloadDir);
     return pc;
   }
@@ -354,7 +402,11 @@ export class PageController {
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
         case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
-        case 'Page.navigatedWithinDocument': if (main) this.pendingNavAt = 0; break;
+        // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
+        case 'Page.navigatedWithinDocument': if (main) { this.pendingNavAt = 0; this.navCount++; } break;
+        case 'Page.frameNavigated':
+          if (e.params.frame?.parentId === undefined) { this.navCount++; this.isoCtx = undefined; }
+          break;
         case 'Page.javascriptDialogOpening': {
           // Un dialogue bloque tout l'onglet : on le ferme et on le signale.
           const type: string = e.params.type;
@@ -401,9 +453,9 @@ export class PageController {
   }
 
   /** Attend la fin d'une éventuelle navigation déclenchée par une action. */
-  private async settle(): Promise<void> {
-    await sleep(60);
-    const end = Date.now() + 30_000;
+  private async settle(maxMs = 30_000): Promise<void> {
+    await sleep(Math.min(60, maxMs));
+    const end = Date.now() + maxMs;
     while (Date.now() < end) {
       const pending = this.pendingNavAt !== 0 && Date.now() - this.pendingNavAt < 1500;
       if (!this.loading && !pending) break;
@@ -416,16 +468,43 @@ export class PageController {
     if (opts.console === true) this.assertConsole();
     const seq = this.consoleBuf.seq;
     try {
-      const before = opts.snapDiff === true ? await this.snapshot({ maxBytes: opts.maxBytes }) : undefined;
-      const loc = await this.navigate(url);
+      const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
+      const { loc, stab } = await this.navigateStable(url);
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
-      if (before) out.diff = diffSnapshots(before, await this.snapshot({ maxBytes: opts.maxBytes }));
+      if (!stab.stable) out.detail = PageController.unstableNote(stab);
+      if (before) out.diff = await this.diffAfter(before, opts);
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
     } catch (e) { throw await this.decorate(e, opts, seq); }
   }
 
+  /** Navigue, attend le load PUIS la stabilité du DOM (rendu côté client), et lit titre et URL après. */
   async navigate(url: string): Promise<{ url: string; title: string }> {
+    return (await this.navigateStable(url)).loc;
+  }
+
+  private async navigateStable(url: string): Promise<{ loc: { url: string; title: string }; stab: Stability }> {
+    await this.navigateLoaded(url);
+    const stab = await this.waitStable();
+    return { loc: await this.location(), stab };
+  }
+
+  private static unstableNote(st: Stability): string {
+    return `DOM encore instable après ${st.ms} ms (${st.mutations} mutations)${st.error !== undefined ? ` — attente impossible : ${st.error}` : ''} : la page peut encore changer`;
+  }
+
+  /** Diff après l'action, borné (diffMax ou --max), sur la zone --scope s'il y en a une. */
+  private async diffAfter(before: Snapshot, opts: ActionOptions): Promise<string> {
+    let after: Snapshot;
+    try { after = await this.snapshot({ scope: opts.scope }); } catch (e) {
+      // L'action a eu lieu : une zone disparue n'en fait pas un échec, mais c'est dit.
+      if (opts.scope !== undefined && e instanceof GraspError && (e.status === 404 || e.status === 409)) return `(zone ${opts.scope} introuvable après l'action : ${e.message})`;
+      throw e;
+    }
+    return truncateText(diffSnapshots(before, after), opts.max ?? this.limits.diffMax, { wholeLines: true });
+  }
+
+  private async navigateLoaded(url: string): Promise<void> {
     const v = checkUrl(this.policy.allowedDomains, url);
     if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
     this.blocked = null;
@@ -444,7 +523,6 @@ export class PageController {
     }
     if (r.loaderId) await loaded.promise; else loaded.cancel();
     await this.settle();
-    return this.location();
   }
 
   private onceEvent(method: string, timeoutMs: number): { promise: Promise<void>; cancel(): void } {
@@ -459,17 +537,184 @@ export class PageController {
     return { promise, cancel: () => { cleanup(); promise.catch(() => undefined); } };
   }
 
-  async snapshot(opts: { maxBytes?: number | undefined } = {}): Promise<Snapshot> {
+  /**
+   * Snapshot d'accessibilité. `maxBytes` : budget en octets (défaut `snapMax`). `scope` (ref, CSS, text:) :
+   * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
+   */
+  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<Snapshot> {
+    const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
+    const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     const { nodes } = await this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree');
     const { url, title } = await this.location();
-    return buildSnapshot(nodes, opts.maxBytes !== undefined ? { url, title, maxBytes: opts.maxBytes } : { url, title });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    this.remember(snap);
+    if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
+    return snap;
   }
 
-  async text(maxBytes = 64 * 1024): Promise<string> {
-    const r = await this.s<{ result: { value?: string } }>('Runtime.evaluate', { expression: 'document.body ? document.body.innerText : ""', returnByValue: true });
-    const t = r.result.value ?? '';
-    const buf = Buffer.from(t);
-    return buf.length <= maxBytes ? t : `${buf.subarray(0, maxBytes).toString('utf8')}\n… (tronqué à ${maxBytes} o)`;
+  /** Mémorise (rôle, nom) de chaque ref remise à l'agent ; borné, les plus anciennes sortent d'abord. */
+  private remember(snap: Snapshot): void {
+    for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, m); }
+    for (const k of this.knownRefs.keys()) {
+      if (this.knownRefs.size <= KNOWN_REFS_MAX) break;
+      this.knownRefs.delete(k);
+    }
+  }
+
+  /** innerText de la page (ou de la zone `scope`), coupé à `max` caractères (défaut `textMax`) avec une ligne explicite. */
+  async text(max?: number, scope?: string): Promise<string> {
+    let t: string;
+    if (scope !== undefined && scope.trim() !== '') {
+      const id = await this.resolve(scope.trim());
+      t = await this.callIsolated<string>(id, 'function () { const el = this.nodeType === 1 ? this : this.parentElement; return el ? el.innerText : (this.textContent || \'\'); }');
+    } else {
+      const r = await this.s<{ result: { value?: string } }>('Runtime.evaluate', { expression: 'document.body ? document.body.innerText : ""', returnByValue: true });
+      t = r.result.value ?? '';
+    }
+    return truncateText(t, max ?? this.limits.textMax);
+  }
+
+  // ---------- Monde isolé de lecture : stabilité, wait, text --scope (code fixe, jamais celui de l'agent) ----------
+
+  private async isolatedContext(): Promise<number> {
+    if (this.isoCtx !== undefined) return this.isoCtx;
+    const { executionContextId } = await this.s<{ executionContextId: number }>('Page.createIsolatedWorld', { frameId: this.mainFrameId, worldName: 'grasp-lecture', grantUniveralAccess: false });
+    this.isoCtx = executionContextId;
+    return executionContextId;
+  }
+
+  /**
+   * Évalue du code FIXE de Grasp dans le monde isolé de lecture ; les données de l'agent n'y entrent
+   * que sérialisées en JSON. Un contexte périmé (navigation) est recréé une fois.
+   */
+  private async evalIsolated<T>(expression: string, awaitPromise = false): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      const ctx = await this.isolatedContext();
+      let r: { result: { value?: unknown }; exceptionDetails?: { text: string; exception?: { description?: string } } };
+      try {
+        r = await this.s('Runtime.evaluate', { contextId: ctx, expression, returnByValue: true, awaitPromise });
+      } catch (e) {
+        this.isoCtx = undefined;
+        if (attempt >= 1) throw e;
+        continue;
+      }
+      if (r.exceptionDetails) throw new GraspError(500, `script interne de Grasp en échec : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+      return r.result.value as T;
+    }
+  }
+
+  /** Appelle une fonction fixe sur un nœud, dans le monde isolé de lecture. */
+  private async callIsolated<T>(backendNodeId: number, fn: string): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      const ctx = await this.isolatedContext();
+      let objectId: string;
+      try {
+        ({ object: { objectId } } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId, executionContextId: ctx }));
+      } catch {
+        this.isoCtx = undefined;
+        if (attempt >= 1) throw notFound("l'élément n'existe plus — refaites `snap`");
+        continue;
+      }
+      try {
+        const r = await this.s<{ result: { value?: T }; exceptionDetails?: { text: string } }>('Runtime.callFunctionOn', { objectId, functionDeclaration: fn, returnByValue: true });
+        if (r.exceptionDetails) throw new GraspError(500, `script interne de Grasp en échec : ${r.exceptionDetails.text}`);
+        return r.result.value as T;
+      } finally { void this.s('Runtime.releaseObject', { objectId }).catch(() => undefined); }
+    }
+  }
+
+  /**
+   * Attend que le DOM ne bouge plus pendant STABLE_QUIET_MS (MutationObserver dans un monde isolé), au plus
+   * `capMs`. Une navigation pendant l'attente détruit le monde isolé : on attend la fin du chargement et on
+   * recommence avec le temps restant. Ne lève jamais : le résultat dit si la page est stable.
+   */
+  private async waitStable(capMs = this.limits.stableTimeoutMs): Promise<Stability> {
+    const t0 = Date.now();
+    let mutations = 0;
+    let error: string | undefined;
+    if (capMs <= 0) return { stable: true, ms: 0, mutations: 0 };
+    for (;;) {
+      const left = capMs - (Date.now() - t0);
+      if (left <= 0) return { stable: false, ms: Date.now() - t0, mutations, ...(error !== undefined ? { error } : {}) };
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const r = await Promise.race([
+          this.evalIsolated<{ stable: boolean; mutations: number }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left})`, true),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('le navigateur ne répond pas')), left + 3000); }),
+        ]);
+        return { stable: r.stable, ms: Date.now() - t0, mutations: mutations + r.mutations };
+      } catch (e) {
+        // Navigation pendant l'attente (contexte détruit) : on attend la fin du chargement, puis on recommence.
+        error = (e as Error).message;
+        mutations++;
+        this.isoCtx = undefined;
+        await this.settle(Math.max(0, capMs - (Date.now() - t0)));
+      } finally { clearTimeout(timer); }
+    }
+  }
+
+  /**
+   * `grasp wait` : --text (texte visible), --sel (élément visible : CSS, ou présent : ref / text:), --idle
+   * (DOM stable, défaut). Délai dépassé = 504 qui dit ce qui manque.
+   */
+  async wait(o: WaitOptions): Promise<WaitResult> {
+    const modes = [o.text !== undefined, o.sel !== undefined, o.idle === true].filter((x) => x).length;
+    if (modes > 1) throw badRequest('wait : une seule condition à la fois (--text, --sel ou --idle)');
+    if (o.text !== undefined && o.text.trim() === '') throw badRequest('wait --text attend un texte non vide');
+    if (o.sel !== undefined && o.sel.trim() === '') throw badRequest('wait --sel attend un sélecteur');
+    if (o.timeout !== undefined && (!Number.isInteger(o.timeout) || o.timeout < 1 || o.timeout > WAIT_MAX_MS)) throw badRequest(`timeout : entier de 1 à ${WAIT_MAX_MS} ms attendu`);
+    const t0 = Date.now();
+    if (o.text === undefined && o.sel === undefined) {
+      const cap = o.timeout ?? (this.limits.stableTimeoutMs > 0 ? this.limits.stableTimeoutMs : DEFAULT_LIMITS.stableTimeoutMs);
+      const st = await this.waitStable(cap);
+      if (!st.stable) throw new GraspError(504, `${PageController.unstableNote(st).replace(/ : la page peut encore changer$/, '')} — --timeout <ms> pour attendre plus longtemps`);
+      return { ok: true, waited: Date.now() - t0, condition: 'idle' };
+    }
+    const timeout = o.timeout ?? WAIT_DEFAULT_MS;
+    const end = t0 + timeout;
+    let state: 'absent' | 'hidden' = 'absent';
+    let lastErr: string | undefined;
+    for (;;) {
+      let r: 'ok' | 'absent' | 'hidden';
+      try { r = o.text !== undefined ? await this.hasText(o.text) : await this.hasSel(o.sel!.trim()); lastErr = undefined; } catch (e) {
+        if (e instanceof GraspError && e.status === 400) throw e;
+        // Navigation en cours, document qui se recharge : on réessaie jusqu'au délai.
+        r = 'absent';
+        lastErr = (e as Error).message;
+      }
+      if (r === 'ok') return { ok: true, waited: Date.now() - t0, condition: o.text !== undefined ? 'text' : 'sel' };
+      state = r;
+      const left = end - Date.now();
+      if (left <= 0) break;
+      await sleep(Math.min(100, left));
+    }
+    const why = lastErr !== undefined ? ` (dernière erreur : ${lastErr})` : '';
+    if (o.text !== undefined) throw new GraspError(504, `« ${o.text} » absent de la page après ${timeout} ms${why}`);
+    throw new GraspError(504, `${state === 'hidden' ? `${o.sel} présent mais invisible` : `aucun élément ne correspond à ${o.sel}`} après ${timeout} ms${why}`);
+  }
+
+  private async hasText(t: string): Promise<'ok' | 'absent'> {
+    const found = await this.evalIsolated<boolean>(`((t) => { const n = (s) => s.replace(/\\s+/g, ' '); return !!document.body && n(document.body.innerText).includes(n(t)); })(${JSON.stringify(t)})`);
+    return found ? 'ok' : 'absent';
+  }
+
+  private async hasSel(sel: string): Promise<'ok' | 'absent' | 'hidden'> {
+    if (REF_RE.test(sel) || sel.startsWith('text:')) {
+      // Ref ou texte accessible : présent dans le snapshot (une ambiguïté veut dire « présent »).
+      try { await this.resolve(sel); return 'ok'; } catch (e) {
+        if (e instanceof GraspError && e.status === 409) return 'ok';
+        if (e instanceof GraspError && e.status === 404) return 'absent';
+        throw e;
+      }
+    }
+    const css = sel.startsWith('css:') ? sel.slice(4) : sel;
+    const r = await this.evalIsolated<number>(`((s) => {
+      let els; try { els = document.querySelectorAll(s); } catch { return -1; }
+      for (const el of els) if (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0) return 1;
+      return els.length > 0 ? 2 : 0;
+    })(${JSON.stringify(css)})`);
+    if (r === -1) throw badRequest(`sélecteur CSS invalide : ${css}`);
+    return r === 1 ? 'ok' : r === 2 ? 'hidden' : 'absent';
   }
 
   // ---------- Sélecteurs : ref e5, CSS #id, texte text:Valider ----------
@@ -480,11 +725,44 @@ export class PageController {
     if (REF_RE.test(s)) {
       const sn = snap ?? await this.snapshot();
       const id = sn.refs.get(s);
-      if (id === undefined) throw notFound(`ref ${s} introuvable dans la page actuelle — refaites \`snap\``);
-      return id;
+      return id !== undefined ? id : this.relocate(s, sn);
     }
     if (s.startsWith('text:')) return this.resolveText(s.slice(5).trim(), snap ?? await this.snapshot());
     return this.resolveCss(s.startsWith('css:') ? s.slice(4) : s);
+  }
+
+  /** Candidats résolubles du snapshot (ref, rôle, nom, nœud). */
+  private static candidates(snap: Snapshot): Array<Candidate & { id: number }> {
+    const all: Array<Candidate & { id: number }> = [];
+    for (const [ref, m] of snap.meta) {
+      const id = snap.refs.get(ref);
+      if (id !== undefined) all.push({ ref, role: m.role, name: m.name, id });
+    }
+    return all;
+  }
+
+  /**
+   * Ref absente du snapshot courant (re-rendu, rang parmi les homonymes décalé, nom changé) : on retrouve
+   * l'élément par (rôle, nom) mémorisés quand la ref a été remise. Unique → utilisé (et signalé) ;
+   * ambigu → 409, introuvable → 404, avec les 3 candidats les plus proches (ref, rôle, nom).
+   */
+  private relocate(ref: string, snap: Snapshot): number {
+    const prev = this.knownRefs.get(ref);
+    if (prev === undefined) throw notFound(`ref ${ref} inconnue : elle ne vient d'aucun snapshot de cette session — refaites \`snap\``);
+    const what = `${prev.role}${prev.name !== '' ? ` "${prev.name}"` : ''}`;
+    const all = PageController.candidates(snap);
+    const strip = (c: Candidate): Candidate => ({ ref: c.ref, role: c.role, name: c.name });
+    const same = all.filter((c) => c.role === prev.role && c.name === prev.name);
+    if (same.length === 1) {
+      this.notes?.push(`ref ${ref} retrouvée → ${same[0]!.ref} (${what}) après re-rendu`);
+      return same[0]!.id;
+    }
+    if (same.length > 1) {
+      const c = same.slice(0, 3).map(strip);
+      throw new GraspError(409, `ref ${ref} (${what}) n'est plus dans la page et ${same.length} éléments ont ce rôle et ce nom : ${c.map(fmtCandidate).join(', ')}${same.length > 3 ? ', …' : ''} — choisissez une ref`, { candidates: c });
+    }
+    const near = nearest(prev, all, 3).map(strip);
+    throw new GraspError(404, `ref ${ref} (${what}) n'est plus dans la page ; ${near.length > 0 ? `candidats les plus proches : ${near.map(fmtCandidate).join(', ')}` : 'aucun candidat — refaites `snap`'}`, { candidates: near });
   }
 
   private resolveText(t: string, snap: Snapshot): number {
@@ -505,7 +783,8 @@ export class PageController {
     const textHits = snap.textNodes.filter((n) => n.text === t || n.text.toLowerCase().includes(lower));
     if (textHits.length === 1) return textHits[0]!.backendNodeId;
     if (textHits.length > 1) throw conflict(`text:${t} est ambigu (${textHits.length} textes correspondent) — utilisez une ref`);
-    throw notFound(`aucun élément nommé « ${t} » — vérifiez avec \`snap\``);
+    const near = nearest({ name: t }, PageController.candidates(snap).filter((c) => c.name !== ''), 3).map((c): Candidate => ({ ref: c.ref, role: c.role, name: c.name }));
+    throw new GraspError(404, `aucun élément nommé « ${t} »${near.length > 0 ? ` — noms proches : ${near.map(fmtCandidate).join(', ')}` : ' — vérifiez avec `snap`'}`, { candidates: near });
   }
 
   private async resolveCss(selector: string): Promise<number> {
@@ -549,18 +828,24 @@ export class PageController {
     this.lastDialog = null;
     const seq = this.consoleBuf.seq;
     const t0 = Date.now();
+    const nav0 = this.navCount;
+    const actionNotes: string[] = [];
+    this.notes = actionNotes;
     try {
-      const before = opts.snapDiff ? await this.snapshot({ maxBytes: opts.maxBytes }) : undefined;
+      const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
       let detail: string | void;
       try { detail = await fn(before); } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp' }).catch(() => undefined); }
       await this.settle();
+      // Le diff est calculé sur un DOM stable (sinon : état intermédiaire, refs aussitôt invalides) ;
+      // une action qui a navigué attend aussi le rendu, comme `nav`.
+      const stab = opts.snapDiff === true || this.navCount !== nav0 ? await this.waitStable() : undefined;
       const res: ActionResult = { ok: true };
-      const notes = [detail, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
-      if (before) res.diff = diffSnapshots(before, await this.snapshot({ maxBytes: opts.maxBytes }));
+      if (before) res.diff = await this.diffAfter(before, opts);
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; }
   }
 
   private async clickNode(id: number): Promise<void> {

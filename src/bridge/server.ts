@@ -33,15 +33,17 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), maxBytes: optInt(body.max, 'max'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError') };
+      const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
         // L'objet exact que le garde consulte (règle n°3).
         case 'GET /policy': return sendJson(res, 200, page.policy);
         case 'GET /location': return sendJson(res, 200, { ...(await page.location()), lastBlocked: page.lastBlocked() });
         case 'POST /navigate': return sendJson(res, 200, await page.nav(str(body, 'url'), opts));
-        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', (await page.snapshot({ maxBytes: optInt(q.get('max'), 'max') })).text);
-        case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max')));
+        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', (await page.snapshot({ maxBytes: optInt(q.get('max'), 'max'), scope })).text);
+        case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max'), scope));
+        case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));
         case 'POST /click': return sendJson(res, 200, await page.click(str(body, 'target'), opts));
         case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts));
         case 'POST /select': return sendJson(res, 200, await page.select(str(body, 'target'), str(body, 'value'), opts));

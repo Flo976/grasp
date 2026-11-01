@@ -57,6 +57,79 @@ Promise.reject(new Error('promesse rejetée'));
 <script>function lancer() { throw new Error('exception non rattrapée'); } lancer();</script>
 </body></html>`;
 
+/** Texte long (≈ 15 000 caractères), une zone ciblable (#zone), et un bouton qui ajoute 300 nœuds (diff volumineux). */
+export const LONG_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Long</title></head><body>
+<h1>Page longue</h1>
+<button id="ajout300" onclick="const m = document.getElementById('ajouts'); for (let i = 0; i < 300; i++) { const b = document.createElement('button'); b.textContent = 'Article ajouté ' + i; m.append(b); }">Ajouter 300</button>
+<div id="ajouts"></div>
+${Array.from({ length: 200 }, (_, i) => `<p>Paragraphe n° ${i} : du texte de remplissage pour dépasser la limite.</p>`).join('\n')}
+<section id="zone" aria-label="Zone"><h2>Zone ciblée</h2><p>Texte de la zone</p><button>Dans la zone</button></section>
+</body></html>`;
+
+/** Application rendue APRÈS le load, par étapes de 150 ms : titre vide et page vide au load. */
+export const SPA_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title></title></head><body><div id="app"></div>
+<script>
+addEventListener('load', () => {
+  const app = document.getElementById('app');
+  const steps = [
+    () => { app.innerHTML = '<p>Chargement…</p>'; },
+    () => { document.title = 'Application'; },
+    () => { app.innerHTML = '<nav><a href="/">Accueil</a></nav>'; },
+    () => { app.insertAdjacentHTML('beforeend', '<main><h1>Contenu chargé</h1><button>Commander</button></main>'); },
+  ];
+  steps.forEach((f, i) => setTimeout(f, 150 * (i + 1)));
+});
+</script></body></html>`;
+
+/** DOM qui ne se stabilise jamais (compteur toutes les 80 ms). */
+export const AGITE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Agitée</title></head><body><h1>Agitée</h1><p id="n">0</p>
+<script>let i = 0; setInterval(() => { document.getElementById('n').textContent = String(++i); }, 80);</script></body></html>`;
+
+/** Contenu tardif (wait) et transition en plusieurs étapes (--snap-diff après stabilité). */
+export const TARDIF_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Tardif</title></head><body><h1>Tardif</h1>
+<button id="charger" onclick="setTimeout(() => { const p = document.createElement('p'); p.id = 'resultat'; p.textContent = 'Résultat prêt'; document.body.append(p); }, 700)">Charger</button>
+<button id="transition" onclick="transition()">Transition</button>
+<button id="route" onclick="history.pushState({}, '', '/tardif?vue=1'); setTimeout(() => { document.getElementById('zone').innerHTML = '<h2>Vue routée</h2>'; }, 200)">Route</button>
+<div id="zone"><ul><li>Ancien A</li><li>Ancien B</li></ul></div>
+<p id="cache" hidden>Caché</p>
+<script>
+function transition() {
+  const z = document.getElementById('zone');
+  z.innerHTML = '<p>Chargement…</p>';
+  setTimeout(() => { z.innerHTML = '<h2>Étape 1</h2>'; }, 150);
+  setTimeout(() => { z.insertAdjacentHTML('beforeend', '<button onclick="document.title = \\'Confirmé\\'">Confirmer la réservation</button>'); }, 300);
+  setTimeout(() => { z.querySelector('h2').textContent = 'Résultat final'; }, 450);
+}
+</script></body></html>`;
+
+/** Refs résilientes : homonymes supprimables, nom qui change, re-rendu complet de la liste. */
+export function refsPage(n: number): string {
+  const items = ['Alpha', 'Beta', 'Gamma'].slice(0, n).map((x) => `<li>${x} <button onclick="supprimer(this, '${x}')">Supprimer</button></li>`).join('');
+  return `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Refs</title></head><body><h1>Refs</h1>
+<ul id="liste">${items}</ul>
+<button id="panier" onclick="this.textContent = 'Panier (' + (++nb) + ')'">Panier (1)</button>
+<button id="rerendre" onclick="const l = document.getElementById('liste'); l.innerHTML = l.innerHTML">Re-rendre</button>
+<p id="log">aucun</p>
+<script>let nb = 1; function supprimer(b, x) { b.closest('li').remove(); document.getElementById('log').textContent = 'supprimé : ' + x; }</script>
+</body></html>`;
+}
+
+/** Élagage : trois liens sans nom, deux iframes (contenu jamais parcouru par le snapshot). */
+export const ELAGUE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Élagage</title>
+<style>a.vide{display:inline-block;width:12px;height:12px;background:#ccc;margin:4px}</style></head><body>
+<h1>Élagage</h1>
+<a href="/">Accueil</a>
+<a class="vide" href="/a"></a><a class="vide" href="/b"></a><a class="vide" href="/c"><span></span></a>
+<iframe src="/console-frame" title="cadre"></iframe>
+<iframe srcdoc="<p>contenu interne</p>"></iframe>
+</body></html>`;
+
 function resultPage(q: URLSearchParams): string {
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Merci</title></head><body>
@@ -90,6 +163,12 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/absent.png') { res.statusCode = 404; res.end('introuvable'); return; }
     if (u.pathname === '/api/data') { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); return; }
     if (u.pathname === '/api/secret') { res.statusCode = 401; res.setHeader('content-type', 'application/json'); res.end('{"error":"corps-réponse-secret"}'); return; }
+    if (u.pathname === '/long') { res.end(LONG_PAGE); return; }
+    if (u.pathname === '/spa') { res.end(SPA_PAGE); return; }
+    if (u.pathname === '/agite') { res.end(AGITE_PAGE); return; }
+    if (u.pathname === '/tardif') { res.end(TARDIF_PAGE); return; }
+    if (u.pathname === '/refs') { res.end(refsPage(Number(u.searchParams.get('n') ?? '3'))); return; }
+    if (u.pathname === '/elague') { res.end(ELAGUE_PAGE); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');
       res.end(`<!doctype html><title>Gros</title><ul>${items}</ul>`); return;

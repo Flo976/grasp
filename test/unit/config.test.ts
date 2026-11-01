@@ -66,6 +66,10 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
   windowsProfilesDir: { raw: '/mnt/c/Users/Florent Didelot/grasp-profiles', value: '/mnt/c/Users/Florent Didelot/grasp-profiles' },
+  snapMax: { raw: '20000', value: 20000 },
+  textMax: { raw: '8000', value: 8000 },
+  diffMax: { raw: '6000', value: 6000 },
+  stableTimeoutMs: { raw: '0', value: 0 },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {

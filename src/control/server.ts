@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import { bridgeSocketPath, checkSocketPaths, type GraspPaths } from '../core/paths.js';
 import { checkPermissions, ensurePrivateDir } from '../core/perms.js';
-import { loadConfigFile, resolveConfig, type ResolvedConfig } from '../core/config.js';
+import { loadConfigFile, resolveConfig, limitsOf, type ResolvedConfig } from '../core/config.js';
 import { effectivePolicy, type EffectivePolicy } from '../core/policy.js';
 import { GraspError } from '../core/errors.js';
 import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, readJson, str } from '../core/http.js';
@@ -45,7 +45,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -185,6 +185,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       downloadDir: downloadDirFor(browser, roots, paths, s.id),
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
       capturesDir: paths.capturesDir,
+      limits: limitsOf(config),
     }, {
       log,
       onExit: (code) => {

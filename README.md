@@ -21,6 +21,8 @@ exo60:main
 
 Sur la page de test : **388 octets** de snapshot, contre 18,7 Ko pour une capture PNG en base64
 (×48). Après une action, `--snap-diff` ne renvoie que ce qui a changé (une ligne pour un `fill`).
+Sur une vraie page, chaque lecture est **bornée par défaut** (`text` et `--snap-diff` : 4000
+caractères, `snap` : 12 000 octets) et toute coupure le dit en dernière ligne ; `--scope` lit une zone.
 
 - TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Pas de Playwright/Puppeteer.
 - Linux (desktop et conteneur), et Chrome Windows piloté depuis WSL2 (voir [Mode Windows](#mode-windows-chromeexe-depuis-wsl2)). macOS en best-effort.
@@ -39,6 +41,7 @@ grasp nav http://127.0.0.1:8080/
 grasp snap
 grasp fill e5k2 "Ada"                      # ref issue du snap
 grasp click text:Valider --snap-diff
+grasp wait --text "Inscription reçue"      # contenu tardif (nav et --snap-diff attendent déjà la stabilité)
 grasp text                                 # vérifier le résultat dans la page
 grasp stop
 ```
@@ -201,24 +204,86 @@ grasp doctor                           # signale le mode windows, démarre chrom
 - **Élagage** : conteneurs `generic`, `none`, `paragraph`, `LabelText`… traversés sans être émis ;
   groupes et cellules sans nom omis ; texte brut répété dans un nom accessible supprimé ; valeur
   interne d'un champ jamais répétée en texte.
-- **Budget** : `maxBytes` (48 Ko par défaut, `?max=`). Au-delà : `… N nœuds omis`. Les refs
-  hors budget restent résolubles.
+- **Budget** : 12 000 octets par défaut (clé `snapMax` ; `--max octets` par appel, `?max=`). Il était de
+  48 Ko : sur une vraie page (GitHub, Booking), c'est 12 000 tokens pour une seule lecture. Au-delà, la
+  dernière ligne le dit : `… tronqué : 52341 caractères restants (1890 nœuds omis) — affinez avec --max N /
+  --scope <ref|css>`. Les refs hors budget restent résolubles.
+- **Zone** (`--scope <ref|css>`, `?scope=` ; `text:` accepté aussi) : seules les lignes du sous-arbre de
+  l'élément. Tout l'arbre est quand même parcouru, si bien que les refs sont **celles du snapshot complet**
+  (le rang parmi les homonymes se compte sur la page entière) : une ref lue dans une zone s'utilise telle
+  quelle. Une zone absente de l'arbre d'accessibilité (élément masqué) → 404.
+- **Élagage annoncé** : ce que Grasp masque est compté sur une ligne finale (avant la ligne de troncature
+  s'il y en a une) : `… élagué : 3 liens sans nom (refs visibles avec screenshot --refs), 2 iframes non
+  parcourues`. Un lien sans nom accessible est du bruit pour l'agent (rien ne dit où il mène) : il n'est
+  plus émis, mais sa ref reste résoluble et `screenshot --refs` la dessine. Le contenu des iframes n'est
+  jamais parcouru (voir les limites).
 - **Refs stables** : `e` + hash base36 de (rôle, nom accessible, rang parmi les homonymes). Ce
   n'est pas un index positionnel : insérer un élément en haut de page ne décale aucune ref, et une
   ref change seulement si le rôle ou le nom du nœud change. C'est ce qui rend `--snap-diff`
   lisible au lieu d'un bruit total.
+- **Refs résilientes** : le bridge mémorise (rôle, nom) de chaque ref remise à l'agent (50 000 au plus).
+  Une ref absente du snapshot courant (re-rendu qui décale le rang d'un homonyme, nom qui change) est
+  recherchée par **(rôle, nom exacts)** dans un snapshot recalculé :
+  - un seul élément correspond → il est utilisé, et c'est signalé (`note: ref e1erc retrouvée → eu02h
+    (button "Supprimer") après re-rendu`) ;
+  - plusieurs → 409, aucun clic : `ref e1erc (button "Supprimer") n'est plus dans la page et 2 éléments ont
+    ce rôle et ce nom : evu3y button "Supprimer", eu02h button "Supprimer" — choisissez une ref` ;
+  - aucun → 404 avec les **3 candidats les plus proches** (même rôle favorisé, similarité des noms
+    insensible à la casse et aux accents) : `ref e9yo0 (button "Panier (1)") n'est plus dans la page ;
+    candidats les plus proches : e2k1m button "Panier (2)", …`.
 
-`--snap-diff` sur une action mutante renvoie `+` (apparu), `-` (disparu), `~` (modifié). Si
-l'action a déclenché une navigation : `navigation → <url>` puis le snapshot complet de la
-nouvelle page.
+  Le corps d'erreur JSON porte aussi `candidates: [{ref, role, name}]`. Un `text:` introuvable propose de
+  même les noms proches (`aucun élément nommé « Supprmer » — noms proches : evu3y button "Supprimer", …`).
+  Une ref jamais vue dans cette session → 404 « refaites `snap` ».
+
+`--snap-diff` sur une action mutante renvoie `+` (apparu), `-` (disparu), `~` (modifié), **calculé sur un
+DOM stable** (voir ci-dessous). Si l'action a déclenché une navigation : `navigation → <url>` puis le
+snapshot de la nouvelle page. La sortie est bornée à **4000 caractères** (clé `diffMax` ; `--max N` par
+appel), coupée en fin de ligne avec la même dernière ligne `… tronqué : N caractères restants — affinez
+avec --max N / --scope <ref|css>` ; `--scope <ref|css>` restreint le diff à une zone (si la zone a disparu
+après l'action, le diff le dit au lieu d'échouer : l'action, elle, a eu lieu).
+
+## Attente de stabilité
+
+Une page moderne se rend **après** son `load` (React, Booking, Amazon) : sans attente, le snapshot suivant
+est vide, le titre aussi, et un `--snap-diff` saisit le DOM en pleine transition (refs aussitôt invalides).
+
+- **`nav`** attend le `load`, puis que le DOM ne bouge plus pendant **400 ms**, au plus **5 s** (clé
+  `stableTimeoutMs` ; `0` = pas d'attente). Titre et URL sont lus après. Une page qui bouge encore au
+  plafond rend la main quand même, avec une note sur stderr : `note: DOM encore instable après 5021 ms
+  (63 mutations) : la page peut encore changer`.
+- **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui navigue** (lien, envoi de
+  formulaire, route `pushState` d'une application monopage) l'attend aussi, même sans `--snap-diff`. Une action sans navigation ni diff n'attend pas.
+- **Mécanisme** : un `MutationObserver` injecté par Grasp dans un **monde isolé** (`grasp-lecture`) : la page
+  ne voit ni la fonction ni ses variables, et ne peut pas fausser la mesure (ses propres `setTimeout` ou
+  prototypes sont ceux de son monde). C'est du code fixe de Grasp, pas une expression de l'agent : autorisé
+  même avec `allowEval=false`. Ne comptent que les mutations qui changent l'arbre d'accessibilité : structure,
+  texte, et les attributs `hidden`, `aria-hidden`, `aria-expanded`, `aria-label`, `aria-busy`,
+  `aria-checked`, `aria-selected`, `role`, `disabled`, `open`. Les changements de `style`/`class` (animations,
+  carrousels) sont ignorés, sinon chaque page animée coûterait 5 s. Une navigation pendant l'attente détruit
+  le monde isolé : Grasp attend la fin du chargement et recommence avec le temps restant.
+
+```
+grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
+```
+
+- `--text T` : T apparaît dans le texte visible de la page (`innerText`, espaces normalisés).
+- `--sel S` : un élément CSS **visible** correspond (`checkVisibility`) ; une ref ou un `text:` : présent dans
+  le snapshot (une ambiguïté compte comme « présent »).
+- `--idle` (défaut sans option) : DOM stable, comme après `nav`.
+- Délai : 10 000 ms par défaut (`--idle` : `stableTimeoutMs`), 60 000 au plus. Dépassé → **504** qui dit ce
+  qui manque (`« Jamais affiché » absent de la page après 300 ms`, `#cache présent mais invisible après
+  300 ms`, `DOM encore instable après 600 ms (8 mutations)`). Une seule condition à la fois (400 sinon).
+- Sortie : `OK` sur stdout, `attendu 712 ms (text)` sur stderr ; `--json` : `{"ok", "waited", "condition"}`.
 
 ## Commandes
 
 | Commande | Effet |
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
-| `snap [--max N]` | Snapshot d'accessibilité. |
-| `text [--max N]` | `innerText` de la page. |
+| `snap [--max octets] [--scope <ref\|css>]` | Snapshot d'accessibilité (12 000 octets par défaut). |
+| `text [--max N] [--scope <ref\|css>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). |
+| `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément. |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
@@ -233,7 +298,8 @@ nouvelle page.
 Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
 (`nav`, `click`, `fill`, `select`, `check`, `press`) accepte :
 
-- `--snap-diff` : diff du snapshot dans le même aller-retour ;
+- `--snap-diff` : diff du snapshot dans le même aller-retour, après stabilité du DOM, borné à 4000
+  caractères (`--max N`), restreint à une zone avec `--scope <ref|css>` ;
 - `--console` : entrées console produites **pendant** l'action, après `OK` (ou le diff) ;
 - `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur.
 
@@ -335,10 +401,11 @@ GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
 DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?, console?, shotOnError?}
-GET  /snap?max=   GET /text?max=   GET /location   GET /pdf
+GET  /snap?max=&scope=   GET /text?max=&scope=   GET /location   GET /pdf
+POST /wait {text? | sel? | idle?, timeout?}
 GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
 GET  /console?level=&since=&limit=&clear=1    POST /console {level?, since?, limit?, clear?}
-POST /click  {target, snapDiff?, console?, shotOnError?, max?}        POST /fill   {target, value, …}
+POST /click  {target, snapDiff?, max?, scope?, console?, shotOnError?}   POST /fill   {target, value, …}
 POST /select {target, value, …}               POST /check  {target, checked?, …}
 POST /press  {key, target?, …}
 POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
@@ -346,7 +413,8 @@ POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
 incohérent ou pas de session · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
-`screenshot` (chemin, avec `shotOnError`) et `console`/`consoleSeq` (avec `console`).
+`screenshot` (chemin, avec `shotOnError`), `console`/`consoleSeq` (avec `console`) et `candidates`
+(ref disparue ou `text:` introuvable). Pour les actions, `max` est la limite du diff en caractères.
 
 ## Sécurité
 
@@ -454,6 +522,10 @@ Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`
 déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
 
+Limites de lecture (transmises au bridge à son lancement, à côté de la politique gelée, dont elles ne font
+pas partie) : `snapMax` (octets, 12000), `textMax` (caractères, 4000), `diffMax` (caractères, 4000),
+`stableTimeoutMs` (ms, 5000 ; 0 = pas d'attente de stabilité). `--max` les surcharge à chaque appel.
+
 ## Tests
 
 ```bash
@@ -466,8 +538,19 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
 
 ## Limites connues
 
-- Le snapshot couvre le cadre principal ; le contenu des iframes cross-origin (OOPIF) n'y figure
-  pas, même si la garde de navigation s'y applique.
+- Le snapshot couvre le cadre principal ; le contenu des iframes (même origine ou non) n'y figure
+  pas, même si la garde de navigation s'y applique. C'est désormais annoncé (`… élagué : N iframes non
+  parcourues`). L'attente de stabilité et `wait` n'observent aussi que le cadre principal.
+- Attente de stabilité : une page qui mute sans arrêt sa structure ou son texte (compteur, flux en direct
+  toutes les < 400 ms) coûte `stableTimeoutMs` à chaque `nav` (note sur stderr) ; une animation qui ne
+  touche que `style`/`class` n'est pas vue, de même qu'un contenu qui n'apparaît qu'après plus de 400 ms de
+  calme (`grasp wait --text` est fait pour ça). Chaque `nav` coûte au moins 400 ms de plus qu'avant.
+- Refs résilientes : la mémoire (rôle, nom) vit dans le bridge, elle est perdue à la bascule de profil ; la
+  relocalisation exige le même rôle et le même nom exact (un nom qui change n'est jamais deviné : il est
+  proposé en candidat). Le défaut d'origine du hash par rang demeure : si le 1er de deux homonymes disparaît,
+  la ref du 1er désigne désormais le 2e (elle existe toujours, aucune relocalisation n'a lieu).
+- `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
+  (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
 - Une session = un onglet. Les popups sont gardés par l'allowlist mais ne sont pas pilotables.
 - **Profil importé ≠ session Google importée** : validé sous Windows, l'import de « Profile 9 »

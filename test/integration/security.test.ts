@@ -117,6 +117,10 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
   windowsProfilesDir: { raw: 'C:\\grasp\\profiles', value: 'C:\\grasp\\profiles' },
+  snapMax: { raw: '20000', value: 20000 },
+  textMax: { raw: '8000', value: 8000 },
+  diffMax: { raw: '6000', value: 6000 },
+  stableTimeoutMs: { raw: '0', value: 0 },
 };
 
 test('régression #4 (CLI) — `config set` sur chaque clé publique : persiste (relecture du fichier) ou lève', async () => {
