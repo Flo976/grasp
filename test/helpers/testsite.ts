@@ -177,6 +177,46 @@ function resultPage(q: URLSearchParams): string {
 </ul></body></html>`;
 }
 
+/**
+ * Livraison des entrées : chaque événement reçu par la page (en capture, monde principal) est noté dans
+ * window.__ev (« type:isTrusted »). « Compter » change le texte, « Inerte » ne fait rien, « Muet » ne
+ * modifie qu'un nœud masqué (mutation du DOM sans changement de l'arbre d'accessibilité).
+ */
+export const SONDE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Sonde</title></head><body>
+<h1>Sonde</h1>
+<button id="compter" onclick="document.getElementById('compte').textContent = 'Compte : ' + (++n)">Compter</button>
+<button id="inerte">Inerte</button>
+<button id="muet" onclick="document.getElementById('cache').textContent = String(++m)">Muet</button>
+<div id="cache" hidden>0</div>
+<p id="compte">Compte : 0</p>
+<label><input type="checkbox" id="case"> Case sonde</label>
+<form action="/submit" method="get"><label for="q">Recherche</label> <input id="q" name="q" value="lemurien"></form>
+<label for="vider">À vider</label> <input id="vider" value="ancien">
+<script>let n = 0, m = 0; window.__ev = [];
+for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown', 'keyup', 'input']) addEventListener(t, (e) => __ev.push(t + ':' + e.isTrusted), true);</script>
+</body></html>`;
+
+/**
+ * Élément flottant à droite, plus haut que le viewport, bord gauche noir de 6 px (comme l'infobox de Wikipédia) :
+ * la découpe --el ne doit pas rogner son bord gauche quand la capture agrandit le viewport.
+ */
+export const FLOTTANT_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Flottant</title>
+<style>html,body{margin:0;background:#fff} #info{float:right;width:300px;height:1500px;margin:10.5px 13.3px;background:rgb(255,0,0);border-left:6px solid rgb(0,0,0)}
+p{margin:0 0 20px}</style></head>
+<body><div id="petit" style="position:absolute;left:20.6px;top:30.4px;width:100.5px;height:40px;border-left:2px solid rgb(0,0,0);background:rgb(255,0,0)"></div><div id="info" role="img" aria-label="Infobox"></div>${Array.from({ length: 60 }, (_, i) => `<p>Paragraphe ${i} du texte qui coule autour de la boîte flottante.</p>`).join('')}</body></html>`;
+
+/** Iframes : même origine (lisible), et autre origine (localhost) dont le contenu n'est pas lisible depuis la page. */
+export const CADRES_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Cadres</title></head><body>
+<h1>Cadres</h1>
+<iframe id="meme" src="/cadre-texte" title="Cadre même origine"></iframe>
+<iframe id="autre" title="Cadre autre origine"></iframe>
+<div id="vide"></div>
+<script>document.getElementById('autre').src = 'http://localhost:' + location.port + '/cadre-texte';</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -208,6 +248,10 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cadres-secrets') { res.end(CADRES_SECRETS_PAGE); return; }
     if (u.pathname === '/csp') { res.end(CSP_PAGE); return; }
     if (u.pathname === '/bavard') { res.end(BAVARD_PAGE); return; }
+    if (u.pathname === '/sonde') { res.end(SONDE_PAGE); return; }
+    if (u.pathname === '/flottant') { res.end(FLOTTANT_PAGE); return; }
+    if (u.pathname === '/cadres') { res.end(CADRES_PAGE); return; }
+    if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');
       res.end(`<!doctype html><title>Gros</title><ul>${items}</ul>`); return;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChromeArgs, parseChromeVersion, assertSupportedVersion, MIN_CHROME_MAJOR } from '../../src/browser/launch.js';
+import { buildChromeArgs, parseChromeVersion, assertSupportedVersion, MIN_CHROME_MAJOR, ANTI_BACKGROUND_ARGS, mergeDisableFeatures } from '../../src/browser/launch.js';
 
 const base = { userDataDir: '/p', headless: true, env: {}, uid: 1000, shmBytes: 2 * 1024 ** 3 };
 
@@ -47,4 +47,25 @@ test(`version : refus en dessous de ${MIN_CHROME_MAJOR}`, () => {
   assert.throws(() => assertSupportedVersion('Chromium 111.0.5563.64'), /112/);
   assert.throws(() => assertSupportedVersion('???'), /version/i);
   assert.doesNotThrow(() => assertSupportedVersion('Google Chrome 112.0.1.1'));
+});
+
+test('arrière-plan : ni étranglement des minuteries, ni mise en veille du rendu, ni fenêtre occultée ignorée', () => {
+  const { args } = buildChromeArgs(base);
+  for (const a of ANTI_BACKGROUND_ARGS) assert.ok(args.includes(a), `${a} absent`);
+  assert.deepEqual([...ANTI_BACKGROUND_ARGS].sort(), ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding']);
+});
+
+test('--disable-features : un seul drapeau, fusionné (CalculateNativeWinOcclusion ajouté aux fonctions déjà désactivées)', () => {
+  const { args } = buildChromeArgs(base);
+  const df = args.filter((a) => a.startsWith('--disable-features='));
+  assert.equal(df.length, 1, `un seul --disable-features attendu : ${df.join(' ')}`);
+  const feats = df[0]!.slice('--disable-features='.length).split(',');
+  for (const f of ['Translate', 'MediaRouter', 'OptimizationHints', 'CalculateNativeWinOcclusion']) assert.ok(feats.includes(f), `${f} absent de ${df[0]}`);
+  assert.equal(new Set(feats).size, feats.length, 'pas de doublon');
+});
+
+test('mergeDisableFeatures : fusionne plusieurs drapeaux en un seul, sans doublon, ordre conservé', () => {
+  assert.deepEqual(mergeDisableFeatures(['--a', '--disable-features=X,Y', '--b', '--disable-features=Y,Z'], ['Z', 'W']), ['--a', '--disable-features=X,Y,Z,W', '--b']);
+  assert.deepEqual(mergeDisableFeatures(['--a'], ['W']), ['--a', '--disable-features=W']);
+  assert.deepEqual(mergeDisableFeatures(['--a', 'about:blank'], ['W']), ['--a', '--disable-features=W', 'about:blank'], 'avant l\'URL de départ');
 });

@@ -63,7 +63,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'POST /console':
           return sendJson(res, 200, await page.consoleQuery({ level: level(body.level), since: optCount(body.since, 'since'), limit: optInt(body.limit, 'limit'), clear: optBool(body, 'clear') }));
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
-        case 'POST /eval': return sendJson(res, 200, { ok: true, value: await page.evaluate(str(body, 'expression')) });
+        case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());
         case 'POST /upload': {
           const files = body.files;

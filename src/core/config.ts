@@ -37,6 +37,8 @@ export interface ResolvedConfig {
   diffMax: number;
   /** Plafond de l'attente de stabilité du DOM (après nav, avant --snap-diff), en ms ; 0 = pas d'attente. */
   stableTimeoutMs: number;
+  /** Délai de livraison d'une entrée native avant reprise (premier plan, puis repli synthétique), en ms. */
+  inputDeliveryMs: number;
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -59,11 +61,12 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   textMax: DEFAULT_LIMITS.textMax,
   diffMax: DEFAULT_LIMITS.diffMax,
   stableTimeoutMs: DEFAULT_LIMITS.stableTimeoutMs,
+  inputDeliveryMs: DEFAULT_LIMITS.inputDeliveryMs,
 });
 
 /** Limites de lecture transmises au bridge (elles ne relèvent pas de la politique de sécurité). */
 export function limitsOf(cfg: ResolvedConfig): Limits {
-  return { snapMax: cfg.snapMax, textMax: cfg.textMax, diffMax: cfg.diffMax, stableTimeoutMs: cfg.stableTimeoutMs };
+  return { snapMax: cfg.snapMax, textMax: cfg.textMax, diffMax: cfg.diffMax, stableTimeoutMs: cfg.stableTimeoutMs, inputDeliveryMs: cfg.inputDeliveryMs };
 }
 
 export const PUBLIC_KEYS: readonly ConfigKey[] = Object.freeze(Object.keys(DEFAULTS) as ConfigKey[]);
@@ -149,6 +152,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   textMax: int(100, 10_000_000, `caractères, limite par défaut de text (${DEFAULT_LIMITS.textMax}) ; --max la surcharge`),
   diffMax: int(100, 10_000_000, `caractères, limite par défaut de --snap-diff (${DEFAULT_LIMITS.diffMax}) ; --max la surcharge`),
   stableTimeoutMs: int(0, 60_000, `ms, plafond de l'attente de stabilité du DOM après nav et avant --snap-diff (${DEFAULT_LIMITS.stableTimeoutMs}) ; 0 = pas d'attente`),
+  inputDeliveryMs: int(50, 10_000, `ms, délai de livraison d'une entrée (click, check, press, fill) avant reprise : premier plan, puis repli synthétique annoncé (${DEFAULT_LIMITS.inputDeliveryMs})`),
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -177,6 +181,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     textMax: pick('textMax'),
     diffMax: pick('diffMax'),
     stableTimeoutMs: pick('stableTimeoutMs'),
+    inputDeliveryMs: pick('inputDeliveryMs'),
   };
 }
 

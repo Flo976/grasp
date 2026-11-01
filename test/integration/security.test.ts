@@ -121,6 +121,7 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   textMax: { raw: '8000', value: 8000 },
   diffMax: { raw: '6000', value: 6000 },
   stableTimeoutMs: { raw: '0', value: 0 },
+  inputDeliveryMs: { raw: '500', value: 500 },
 };
 
 test('régression #4 (CLI) — `config set` sur chaque clé publique : persiste (relecture du fichier) ou lève', async () => {

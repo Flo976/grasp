@@ -12,9 +12,14 @@ export interface Limits {
   diffMax: number;
   /** Plafond de l'attente de stabilité du DOM après nav / avant --snap-diff, en ms (0 = pas d'attente). */
   stableTimeoutMs: number;
+  /**
+   * Délai de livraison d'une entrée (click, check, press, fill au clavier), en ms : sans événement de
+   * confiance reçu par la page dans ce délai, Grasp passe à l'étage de reprise suivant.
+   */
+  inputDeliveryMs: number;
 }
 
-export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({ snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000 });
+export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({ snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300 });
 
 /** Fenêtre de calme exigée : aucune mutation pendant ce délai = DOM stable. */
 export const STABLE_QUIET_MS = 400;

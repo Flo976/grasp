@@ -3,7 +3,10 @@ import { readFileSync, rmSync, statfsSync, existsSync, openSync, closeSync } fro
 import { join } from 'node:path';
 import { realProbe, type DiscoveredBrowser } from './discover.js';
 import { CdpClient } from './cdp.js';
+import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures } from './args.js';
 import { buildWindowsChromeArgs, killWindowsChrome, toWindowsPath, windowsChromeAlive, windowsChromeVersion } from './windows.js';
+
+export { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures };
 
 export const MIN_CHROME_MAJOR = 112;
 export const MIN_SHM_BYTES = 256 * 1024 * 1024;
@@ -29,6 +32,7 @@ export function buildChromeArgs(input: ChromeArgsInput): { args: string[]; warni
     '--disable-breakpad',
     '--disable-crash-reporter',
     '--disable-features=Translate,MediaRouter,OptimizationHints',
+    ...ANTI_BACKGROUND_ARGS,
     '--metrics-recording-only',
     '--password-store=basic',
     '--use-mock-keychain',
@@ -47,7 +51,7 @@ export function buildChromeArgs(input: ChromeArgsInput): { args: string[]; warni
     warnings.push(`/dev/shm ne fait que ${Math.round(input.shmBytes / 1024 / 1024)} Mo (< 256 Mo) : Chrome crasherait en boucle. --disable-dev-shm-usage ajouté. Remédiation : docker run --shm-size=1g.`);
   }
   args.push('about:blank');
-  return { args, warnings };
+  return { args: mergeDisableFeatures(args, ALWAYS_DISABLED_FEATURES), warnings };
 }
 
 export function shmSize(path = '/dev/shm'): number | null {

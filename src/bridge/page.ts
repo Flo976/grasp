@@ -114,6 +114,127 @@ const OVERLAY_FN = `function (labels, color) {
   return labels.length;
 }`;
 
+/**
+ * Sonde de livraison des entrées, armée dans le monde isolé (code fixe de Grasp, autorisé même si
+ * allowEval=false) : écouteurs en capture sur window qui comptent les événements de confiance (isTrusted)
+ * et synthétiques, et MutationObserver (effet observable d'un repli synthétique). `at` : point du clic
+ * (hit-test) ou focus (touche, saisie) ; renvoie la balise touchée, pour reconnaître un cadre (iframe) dont
+ * les événements n'arrivent jamais à cette fenêtre.
+ */
+const PROBE_ARM_FN = `function (types, token, at) {
+  const prev = globalThis.__graspProbe; if (prev) prev.stop();
+  const p = { token, trusted: 0, synthetic: 0, mutations: 0 };
+  const on = (e) => { if (e.isTrusted) p.trusted++; else p.synthetic++; };
+  for (const t of types) addEventListener(t, on, true);
+  const mo = new MutationObserver((r) => { p.mutations += r.length; });
+  mo.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  p.stop = () => { for (const t of types) removeEventListener(t, on, true); mo.disconnect(); };
+  globalThis.__graspProbe = p;
+  const hit = at === null ? document.activeElement : document.elementFromPoint(at.x, at.y);
+  return hit ? hit.nodeName : null;
+}`;
+const PROBE_READ_FN = `function (token) {
+  const p = globalThis.__graspProbe;
+  return p && p.token === token ? { trusted: p.trusted, synthetic: p.synthetic, mutations: p.mutations } : null;
+}`;
+const PROBE_STOP_FN = `function (token) {
+  const p = globalThis.__graspProbe;
+  if (p && p.token === token) { p.stop(); delete globalThis.__graspProbe; }
+  return true;
+}`;
+/** Repli d'un clic : séquence pointeur/souris puis el.click() sur l'élément, depuis le monde isolé (isTrusted=false). */
+const SYNTH_CLICK_FN = `function (x, y) {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, view: window };
+  const p = { pointerId: 1, isPrimary: true, pointerType: 'mouse' };
+  el.dispatchEvent(new PointerEvent('pointerdown', { ...o, ...p, buttons: 1 }));
+  el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 }));
+  if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+  el.dispatchEvent(new PointerEvent('pointerup', { ...o, ...p, buttons: 0 }));
+  el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 }));
+  el.click();
+  return true;
+}`;
+/**
+ * Repli d'une touche, sur l'élément qui a le focus : keydown/keypress/keyup synthétiques, et l'action par
+ * défaut qu'un événement synthétique ne déclenche pas : Entrée = soumission implicite du formulaire
+ * (requestSubmit) ou activation d'un bouton/lien ; Espace = activation ; caractère = insertion.
+ */
+const SYNTH_KEY_FN = `function (key, code, keyCode, text, mods) {
+  const el = document.activeElement || document.body;
+  const o = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true, altKey: !!(mods & 1), ctrlKey: !!(mods & 2), metaKey: !!(mods & 4), shiftKey: !!(mods & 8) };
+  const go = el.dispatchEvent(new KeyboardEvent('keydown', o));
+  if (go && text) el.dispatchEvent(new KeyboardEvent('keypress', { ...o, charCode: text.charCodeAt(0) }));
+  if (go && !o.altKey && !o.ctrlKey && !o.metaKey) {
+    const tag = el.nodeName, type = (el.type || '').toLowerCase();
+    const activable = tag === 'BUTTON' || tag === 'SUMMARY' || (tag === 'INPUT' && ['submit', 'button', 'reset', 'image'].includes(type));
+    if (key === 'Enter') {
+      if (tag === 'A' && el.href) el.click();
+      else if (activable) el.click();
+      else if (tag === 'INPUT' && el.form) el.form.requestSubmit();
+    } else if (key === ' ' && (activable || (tag === 'INPUT' && (type === 'checkbox' || type === 'radio')))) el.click();
+    else if (text && (el.isContentEditable || tag === 'TEXTAREA' || tag === 'INPUT')) document.execCommand('insertText', false, text);
+  }
+  el.dispatchEvent(new KeyboardEvent('keyup', o));
+  return true;
+}`;
+/** Repli d'une saisie : setter natif de value + input (contenteditable : texte remplacé). */
+const SYNTH_FILL_FN = `function (v) {
+  if (this.isContentEditable) { this.textContent = v; this.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v })); return true; }
+  const p = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(p, 'value').set.call(this, v);
+  this.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}`;
+
+/**
+ * innerText d'une zone (text --scope). Iframe : texte de son document s'il est accessible (même origine),
+ * sinon { frame, src } — jamais une chaîne vide muette (l'innerText d'une <iframe> est toujours vide).
+ */
+const SCOPE_TEXT_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el) return { text: this.textContent || '' };
+  if (el.nodeName === 'IFRAME' || el.nodeName === 'FRAME') {
+    let doc = null;
+    try { doc = el.contentDocument; } catch (e) { doc = null; }
+    if (doc) return { text: doc.body ? doc.body.innerText : '', frame: true };
+    return { frame: true, src: el.src || el.getAttribute('src') || '' };
+  }
+  return { text: el.innerText };
+}`;
+
+const CLICK_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+const KEY_EVENTS = ['keydown', 'keyup', 'keypress', 'beforeinput', 'input'];
+/** Champs que la frappe ne remplit pas : valeur posée par le setter natif, sans vérification de livraison. */
+const SETTER_ONLY_INPUTS = new Set(['date', 'time', 'datetime-local', 'month', 'week']);
+/** Balises dont les événements partent vers un autre document : livraison non vérifiable depuis cette fenêtre. */
+const FRAME_TAGS = new Set(['IFRAME', 'FRAME', 'OBJECT', 'EMBED', 'FENCEDFRAME', 'PORTAL']);
+const NO_CHANGE = '(aucun changement)';
+
+type DeliveryKind = 'clic' | 'touche' | 'saisie';
+const KIND: Record<DeliveryKind, { failed: string; synth: string; note: string }> = {
+  clic: { failed: 'clic non livré', synth: 'le clic synthétique', note: 'clic synthétique' },
+  touche: { failed: 'touche non livrée', synth: 'la touche synthétique', note: 'touche synthétique' },
+  saisie: { failed: 'saisie non livrée', synth: 'la saisie synthétique', note: 'saisie synthétique' },
+};
+interface Probe { trusted: number; synthetic: number; mutations: number }
+interface DeliverOptions {
+  kind: DeliveryKind;
+  types: string[];
+  /** Point du clic (recalculé à chaque essai) ; absent : l'élément qui a le focus reçoit l'entrée. */
+  point?: () => Promise<{ x: number; y: number }>;
+  /** Envoi natif par CDP (Input.*). */
+  native: (at: { x: number; y: number } | undefined) => Promise<void>;
+  /** Avant le 2e essai natif (ex. refocaliser et resélectionner un champ). */
+  prepare?: () => Promise<void>;
+  /** Repli DOM depuis le monde isolé (isTrusted=false). */
+  synthetic: (at: { x: number; y: number } | undefined) => Promise<void>;
+  /** Effet observable du repli ; défaut : mutation du DOM ou navigation. */
+  effect?: () => Promise<boolean>;
+}
+/** Crochets de test : simulent une reprise de la livraison pendant un étage. */
+export interface TestHooks { recovering?(stage: 'front' | 'synthetic'): void | Promise<void> }
+
 interface ElementInfo { tag: string; type: string; disabled: boolean; readOnly: boolean; editable: boolean; checkable: boolean; checked: boolean | null }
 
 const REF_RE = /^e[0-9a-z]{1,4}$/;
@@ -159,6 +280,13 @@ export class PageController {
   private navCount = 0;
   /** Notes de l'action en cours (ex. ref retrouvée après re-rendu). */
   private notes: string[] | undefined;
+  /** Chargements démarrés dans le cadre principal (une action qui navigue a été livrée). */
+  private loadStarts = 0;
+  /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
+  private undelivered = false;
+  private probeSeq = 0;
+  /** Crochets de test (jamais utilisés en production). */
+  testHooks: TestHooks | undefined;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -416,7 +544,7 @@ export class PageController {
       const main = e.params?.frameId === this.mainFrameId;
       switch (e.method) {
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
-        case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; } break;
+        case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; this.loadStarts++; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
         // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
         case 'Page.navigatedWithinDocument': if (main) { this.pendingNavAt = 0; this.navCount++; } break;
@@ -582,7 +710,13 @@ export class PageController {
     let t: string;
     if (scope !== undefined && scope.trim() !== '') {
       const id = await this.resolve(scope.trim());
-      t = await this.callIsolated<string>(id, 'function () { const el = this.nodeType === 1 ? this : this.parentElement; return el ? el.innerText : (this.textContent || \'\'); }');
+      const r = await this.callIsolated<{ text?: string; frame?: boolean; src?: string }>(id, SCOPE_TEXT_FN);
+      if (r.text === undefined) {
+        // Cadre d'une autre origine (ou hors processus) : son document n'est pas accessible depuis la page.
+        const src = r.src !== undefined && r.src !== '' ? redactUrl(r.src, 300) : '(sans src)';
+        throw conflict(`la zone ${scope.trim()} est une iframe d'une autre origine (${src}) : son contenu n'est pas lisible depuis la page — pour le lire : grasp nav <URL du cadre> (si l'allowlist l'autorise)`);
+      }
+      t = r.text;
     } else {
       const r = await this.s<{ result: { value?: string } }>('Runtime.evaluate', { expression: 'document.body ? document.body.innerText : ""', returnByValue: true });
       t = r.result.value ?? '';
@@ -620,7 +754,7 @@ export class PageController {
   }
 
   /** Appelle une fonction fixe sur un nœud, dans le monde isolé de lecture. */
-  private async callIsolated<T>(backendNodeId: number, fn: string): Promise<T> {
+  private async callIsolated<T>(backendNodeId: number, fn: string, ...args: unknown[]): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       const ctx = await this.isolatedContext();
       let objectId: string;
@@ -632,8 +766,8 @@ export class PageController {
         continue;
       }
       try {
-        const r = await this.s<{ result: { value?: T }; exceptionDetails?: { text: string } }>('Runtime.callFunctionOn', { objectId, functionDeclaration: fn, returnByValue: true });
-        if (r.exceptionDetails) throw new GraspError(500, `script interne de Grasp en échec : ${r.exceptionDetails.text}`);
+        const r = await this.s<{ result: { value?: T }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.callFunctionOn', { objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true });
+        if (r.exceptionDetails) throw new GraspError(500, `script interne de Grasp en échec : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
         return r.result.value as T;
       } finally { void this.s('Runtime.releaseObject', { objectId }).catch(() => undefined); }
     }
@@ -854,6 +988,7 @@ export class PageController {
     const nav0 = this.navCount;
     const actionNotes: string[] = [];
     this.notes = actionNotes;
+    this.undelivered = false;
     try {
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
       let detail: string | void;
@@ -865,25 +1000,142 @@ export class PageController {
       const res: ActionResult = { ok: true };
       const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
-      if (before) res.diff = await this.diffAfter(before, opts);
+      if (before) {
+        res.diff = await this.diffAfter(before, opts);
+        // « Aucun changement » après une entrée qui n'a pas atteint la page : ce n'est pas un OK ordinaire.
+        if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
+      }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; }
   }
 
-  private async clickNode(id: number): Promise<void> {
-    const info = await this.describe(id);
-    if (info.disabled) throw conflict('élément désactivé');
+  /** Point du clic : centre du premier quad, après défilement. 409 si l'élément n'a pas de zone cliquable. */
+  private async clickPoint(id: number): Promise<{ x: number; y: number }> {
     await this.s('DOM.scrollIntoViewIfNeeded', { backendNodeId: id }).catch(() => undefined);
     let quads: number[][] = [];
     try { ({ quads } = await this.s<{ quads: number[][] }>('DOM.getContentQuads', { backendNodeId: id })); } catch { /* invisible */ }
     const q = quads[0];
     if (!q || q.length < 8) throw conflict("l'élément n'a pas de zone cliquable (invisible ou hors rendu)");
-    const x = (q[0]! + q[2]! + q[4]! + q[6]!) / 4;
-    const y = (q[1]! + q[3]! + q[5]! + q[7]!) / 4;
-    await this.s('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    await this.s('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
-    await this.s('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+    return { x: (q[0]! + q[2]! + q[4]! + q[6]!) / 4, y: (q[1]! + q[3]! + q[5]! + q[7]!) / 4 };
+  }
+
+  /** Clic natif vérifié (voir `deliver`). `effect` : effet attendu du repli synthétique (ex. case cochée). */
+  private async clickNode(id: number, effect?: () => Promise<boolean>): Promise<void> {
+    const info = await this.describe(id);
+    if (info.disabled) throw conflict('élément désactivé');
+    await this.deliver({
+      kind: 'clic', types: CLICK_EVENTS,
+      point: () => this.clickPoint(id),
+      native: async (at) => {
+        const { x, y } = at!;
+        await this.s('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        await this.s('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+        await this.s('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+      },
+      synthetic: async (at) => { await this.callIsolated(id, SYNTH_CLICK_FN, at?.x ?? 0, at?.y ?? 0); },
+      ...(effect !== undefined ? { effect } : {}),
+    });
+  }
+
+  // ---------- Livraison vérifiée des entrées ----------
+
+  /** Navigation (ou chargement) du cadre principal depuis l'instant t0 : la page a réagi à l'entrée. */
+  private navigatedSince(m: { nav: number; loads: number; t0: number }): boolean {
+    return this.navCount !== m.nav || this.loadStarts !== m.loads || this.pendingNavAt >= m.t0;
+  }
+
+  private mark(): { nav: number; loads: number; t0: number } { return { nav: this.navCount, loads: this.loadStarts, t0: Date.now() }; }
+
+  /** Arme la sonde ; renvoie son jeton et la balise touchée (point du clic, ou élément focalisé). */
+  private async armProbe(types: string[], at: { x: number; y: number } | undefined): Promise<{ token: string; hit: string | null }> {
+    const token = `p${process.pid}-${++this.probeSeq}`;
+    const hit = await this.evalIsolated<string | null>(`(${PROBE_ARM_FN})(${JSON.stringify(types)}, ${JSON.stringify(token)}, ${JSON.stringify(at ?? null)})`);
+    return { token, hit };
+  }
+
+  private stopProbe(token: string): void {
+    void this.evalIsolated(`(${PROBE_STOP_FN})(${JSON.stringify(token)})`).catch(() => undefined);
+  }
+
+  /**
+   * Attend, au plus `inputDeliveryMs`, que `ok(sonde)` soit vrai ou que la page navigue (la sonde disparaît
+   * avec le document : la page a réagi). 'nav' | 'yes' | 'no'.
+   */
+  private async awaitProbe(token: string, m: { nav: number; loads: number; t0: number }, ok: (p: Probe) => boolean | Promise<boolean>): Promise<'nav' | 'yes' | 'no'> {
+    const end = Date.now() + this.limits.inputDeliveryMs;
+    for (;;) {
+      let p: Probe | null;
+      try { p = await this.evalIsolated<Probe | null>(`(${PROBE_READ_FN})(${JSON.stringify(token)})`); } catch (e) {
+        if (this.navigatedSince(m)) return 'nav';
+        throw e;
+      }
+      if (p === null || this.navigatedSince(m)) return 'nav';
+      if (await ok(p)) return 'yes';
+      const left = end - Date.now();
+      if (left <= 0) return 'no';
+      await sleep(Math.min(25, left));
+    }
+  }
+
+  /**
+   * Entrée native VÉRIFIÉE. Avant l'envoi, une sonde (monde isolé) écoute en capture les événements de
+   * confiance ; si rien n'arrive dans `inputDeliveryMs` (écran Windows verrouillé, fenêtre sans rendu : le
+   * routage par hit-test abandonne les événements de CDP alors qu'Input.dispatch* répond OK) :
+   * (a) Page.bringToFront + focus émulé, second essai natif ; (b) repli DOM synthétique dans le monde isolé,
+   * annoncé par une note ; (c) si même le repli ne produit rien d'observable : ERREUR, jamais de faux OK.
+   * Une entrée qui part vers un cadre (iframe) n'est pas vérifiable depuis cette fenêtre : c'est dit.
+   */
+  private async deliver(o: DeliverOptions): Promise<'native' | 'retry' | 'synthetic' | 'unverified'> {
+    const k = KIND[o.kind];
+    let at = o.point !== undefined ? await o.point() : undefined;
+    let probe: { token: string; hit: string | null };
+    try { probe = await this.armProbe(o.types, at); } catch (e) {
+      await o.native(at);
+      this.notes?.push(`livraison de l'entrée non vérifiée (sonde impossible : ${(e as Error).message})`);
+      return 'unverified';
+    }
+    try {
+      if (probe.hit !== null && FRAME_TAGS.has(probe.hit)) {
+        await o.native(at);
+        this.notes?.push(`entrée envoyée dans un cadre (<${probe.hit.toLowerCase()}>) : livraison non vérifiable depuis la page`);
+        return 'unverified';
+      }
+      let m = this.mark();
+      await o.native(at);
+      if (await this.awaitProbe(probe.token, m, (p) => p.trusted > 0) !== 'no') return 'native';
+
+      // (a) Onglet au premier plan, focus émulé, second essai.
+      await this.testHooks?.recovering?.('front');
+      await this.s('Page.bringToFront').catch(() => undefined);
+      await this.s('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+      if (o.prepare !== undefined) await o.prepare();
+      if (o.point !== undefined) at = await o.point();
+      this.stopProbe(probe.token);
+      probe = await this.armProbe(o.types, at);
+      m = this.mark();
+      await o.native(at);
+      if (await this.awaitProbe(probe.token, m, (p) => p.trusted > 0) !== 'no') {
+        this.notes?.push('entrée native livrée au 2e essai, après Page.bringToFront et focus émulé');
+        return 'retry';
+      }
+
+      // (b) Repli DOM synthétique (isTrusted=false), depuis le monde isolé.
+      await this.testHooks?.recovering?.('synthetic');
+      this.stopProbe(probe.token);
+      probe = await this.armProbe(o.types, at);
+      m = this.mark();
+      await o.synthetic(at);
+      const effect = o.effect;
+      const seen = await this.awaitProbe(probe.token, m, effect !== undefined ? () => effect() : (p) => p.mutations > 0);
+      if (seen !== 'no') {
+        this.undelivered = true;
+        this.notes?.push(`${k.note} : l'entrée native n'a pas atteint la page (ni au 1er essai, ni après Page.bringToFront et focus émulé)`);
+        return 'synthetic';
+      }
+      // (c) Rien d'observable : jamais de faux OK.
+      throw new GraspError(502, `${k.failed} : l'entrée native n'a pas atteint la page (ni au 1er essai, ni après Page.bringToFront et focus émulé), et ${k.synth} n'a produit aucun effet observable (${effect !== undefined ? 'ni l\'état attendu, ni navigation' : 'ni mutation du DOM, ni navigation'}) en ${this.limits.inputDeliveryMs} ms — écran Windows verrouillé ou éteint, fenêtre de Chrome sans rendu ?`);
+    } finally { this.stopProbe(probe.token); }
   }
 
   click(sel: string, opts: ActionOptions = {}): Promise<ActionResult> {
@@ -897,15 +1149,29 @@ export class PageController {
       const isField = (info.tag === 'INPUT' && !NON_TEXT_INPUTS.has(info.type)) || info.tag === 'TEXTAREA' || info.editable;
       if (!isField) throw badRequest(`fill attend un champ de saisie, reçu <${info.tag.toLowerCase()}${info.type ? ` type=${info.type}` : ''}> — utilisez click, check ou select`);
       if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
-      await this.s('DOM.focus', { backendNodeId: id });
-      await this.callOn(id, `function () { if (typeof this.select === 'function') this.select(); else { const r = document.createRange(); r.selectNodeContents(this); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }`);
-      if (value === '') {
-        await this.s('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 });
-        await this.s('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 });
-      } else {
-        await this.s('Input.insertText', { text: value });
-      }
+      const prepare = async () => {
+        await this.s('DOM.focus', { backendNodeId: id });
+        await this.callOn(id, `function () { if (typeof this.select === 'function') this.select(); else { const r = document.createRange(); r.selectNodeContents(this); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }`);
+      };
+      const type = async () => {
+        if (value === '') {
+          await this.s('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 });
+          await this.s('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 });
+        } else {
+          await this.s('Input.insertText', { text: value });
+        }
+      };
       const read = `function () { return this.isContentEditable ? this.innerText.trim() : this.value; }`;
+      await prepare();
+      // Saisie au clavier vérifiée (Suppr, insertText) ; date, heure… : setter natif ci-dessous, comme avant.
+      if (info.tag === 'INPUT' && SETTER_ONLY_INPUTS.has(info.type)) await type();
+      else {
+        await this.deliver({
+          kind: 'saisie', types: KEY_EVENTS, prepare, native: type,
+          synthetic: async () => { await this.callIsolated(id, SYNTH_FILL_FN, value); },
+          effect: async () => (await this.callIsolated<string>(id, read)) === value,
+        });
+      }
       let actual = await this.callOn<string>(id, read);
       if (actual !== value) {
         // Champs que la frappe ne remplit pas (date, time…) : setter natif + événements.
@@ -946,7 +1212,7 @@ export class PageController {
       if (!info.checkable) throw badRequest(`check attend une case à cocher ou un bouton radio, reçu <${info.tag.toLowerCase()}>`);
       if (info.type === 'radio' && !desired) throw badRequest('un bouton radio ne se décoche pas : cochez une autre option du groupe');
       if (info.checked === desired) return 'déjà dans cet état';
-      try { await this.clickNode(id); } catch (e) {
+      try { await this.clickNode(id, async () => (await this.describe(id)).checked === desired); } catch (e) {
         if (!(e instanceof GraspError) || e.status !== 409) throw e;
         // case masquée (case stylée) : on clique son label
         await this.callOn(id, `function () { const el = this.labels && this.labels[0] ? this.labels[0] : this; el.click(); }`);
@@ -961,13 +1227,21 @@ export class PageController {
     let parsed: ReturnType<typeof parseKey>;
     try { parsed = parseKey(key); } catch (e) { return Promise.reject(badRequest((e as Error).message)); }
     return this.act(opts, async (snap) => {
-      if (sel !== undefined && sel !== '') await this.s('DOM.focus', { backendNodeId: await this.resolve(sel, snap) });
+      const target = sel !== undefined && sel !== '' ? await this.resolve(sel, snap) : undefined;
+      const focus = async () => { if (target !== undefined) await this.s('DOM.focus', { backendNodeId: target }); };
+      await focus();
       const { def, modifiers } = parsed;
       const base = { key: def.key, code: def.code, windowsVirtualKeyCode: def.keyCode, nativeVirtualKeyCode: def.keyCode, modifiers };
-      await this.s('Input.dispatchKeyEvent', def.text !== undefined
-        ? { ...base, type: 'keyDown', text: def.text, unmodifiedText: def.text }
-        : { ...base, type: 'rawKeyDown' });
-      await this.s('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+      await this.deliver({
+        kind: 'touche', types: KEY_EVENTS, prepare: focus,
+        native: async () => {
+          await this.s('Input.dispatchKeyEvent', def.text !== undefined
+            ? { ...base, type: 'keyDown', text: def.text, unmodifiedText: def.text }
+            : { ...base, type: 'rawKeyDown' });
+          await this.s('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+        },
+        synthetic: async () => { await this.evalIsolated(`(${SYNTH_KEY_FN})(${JSON.stringify(def.key)}, ${JSON.stringify(def.code)}, ${Number(def.keyCode)}, ${JSON.stringify(def.text ?? '')}, ${Number(modifiers)})`); },
+      });
     });
   }
 
@@ -1028,8 +1302,7 @@ export class PageController {
     if (elId !== undefined) {
       const b = await this.boxOf(elId);
       if (b === null) throw conflict("l'élément n'a pas de boîte visible (invisible ou hors rendu)");
-      const x = Math.floor(b.x + vv.pageX), y = Math.floor(b.y + vv.pageY);
-      region = { x, y, width: Math.ceil(b.x + vv.pageX + b.width) - x, height: Math.ceil(b.y + vv.pageY + b.height) - y };
+      region = PageController.pixelBox(b, vv);
       expand = !inViewport(region);
     } else if (o.full === true) {
       region = { x: 0, y: 0, width: Math.ceil(m.cssContentSize.width), height: Math.ceil(m.cssContentSize.height) };
@@ -1037,12 +1310,7 @@ export class PageController {
     } else if (o.maxWidth !== undefined) {
       region = { x: vv.pageX, y: vv.pageY, width: surface.width, height: surface.height };
     }
-    if (region !== undefined && expand) {
-      // Limite de texture mesurée sur la ZONE capturée (le viewport agrandi), pas depuis le haut du document.
-      const maxPx = Math.floor(MAX_CAPTURE_PX / dpr);
-      if (region.width > maxPx) { region = { ...region, width: maxPx }; truncated = true; }
-      if (region.height > maxPx) { region = { ...region, height: maxPx }; truncated = true; }
-    }
+    if (region !== undefined && expand) ({ region, truncated } = PageController.clampTexture(region, dpr));
     let scale = 1;
     if (o.maxWidth !== undefined) {
       const w = (region !== undefined ? region.width : viewport.width) * dpr;
@@ -1057,6 +1325,16 @@ export class PageController {
     try {
       if (expand && region !== undefined) {
         await this.s('Emulation.setDeviceMetricsOverride', { width: Math.max(Math.ceil(m.cssLayoutViewport.clientWidth), Math.ceil(region.width)), height: Math.max(Math.ceil(viewport.height), Math.ceil(region.height)), deviceScaleFactor: 0, mobile: false });
+        if (elId !== undefined) {
+          // Le viewport agrandi change la mise en page (barre de défilement, largeur) : un élément flottant
+          // se décale. La boîte est relue APRÈS l'agrandissement (sinon : bord gauche rogné).
+          const b = await this.boxOf(elId);
+          const now = await this.s<{ cssVisualViewport: { pageX: number; pageY: number } }>('Page.getLayoutMetrics');
+          if (b !== null) {
+            region = PageController.clampTexture(PageController.pixelBox(b, now.cssVisualViewport), dpr).region;
+            params.clip = { ...region, scale };
+          }
+        }
         // Coin de la zone en haut à gauche du viewport agrandi (défilement borné par le navigateur : la zone,
         // au plus aussi grande que le viewport, reste dedans). `instant` : ignore un scroll-behavior: smooth.
         await this.inIsolatedWorld(`scrollTo({ left: ${Number(region.x)}, top: ${Number(region.y)}, behavior: 'instant' })`);
@@ -1082,6 +1360,24 @@ export class PageController {
     const buf = Buffer.from(data, 'base64');
     const size = imageSize(buf);
     return { data: buf, width: size.width, height: size.height, format, ...(truncated ? { truncated: true } : {}) };
+  }
+
+  /**
+   * Boîte d'un élément en pixels entiers du document : x/y arrondis vers le bas, bords droit et bas vers le
+   * haut — jamais un pixel de l'élément perdu sur une position fractionnaire.
+   */
+  private static pixelBox(b: Box, vv: { pageX: number; pageY: number }): Box {
+    const x = Math.floor(b.x + vv.pageX), y = Math.floor(b.y + vv.pageY);
+    return { x, y, width: Math.ceil(b.x + vv.pageX + b.width) - x, height: Math.ceil(b.y + vv.pageY + b.height) - y };
+  }
+
+  /** Limite de texture mesurée sur la ZONE capturée (le viewport agrandi), pas depuis le haut du document. */
+  private static clampTexture(region: Box, dpr: number): { region: Box; truncated: boolean } {
+    const maxPx = Math.floor(MAX_CAPTURE_PX / dpr);
+    let truncated = false;
+    if (region.width > maxPx) { region = { ...region, width: maxPx }; truncated = true; }
+    if (region.height > maxPx) { region = { ...region, height: maxPx }; truncated = true; }
+    return { region, truncated };
   }
 
   /** Évalue du code FIXE de Grasp dans un monde isolé (jamais une expression de l'agent). */
@@ -1136,10 +1432,16 @@ export class PageController {
   // ---------- Capacités sensibles : désactivées par défaut ----------
 
   async evaluate(expression: string): Promise<unknown> {
+    return (await this.evaluateTyped(expression)).value;
+  }
+
+  /** eval avec le type du résultat : `undefined` (el.click(), form.submit()) n'a pas de valeur JSON. */
+  async evaluateTyped(expression: string): Promise<{ value?: unknown; type: string }> {
     if (!this.policy.allowEval) throw forbidden('eval est désactivé (grasp config set allowEval true pour l\'autoriser)');
-    const r = await this.s<{ result: { value?: unknown }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
+    const r = await this.s<{ result: { value?: unknown; type: string; subtype?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
     if (r.exceptionDetails) throw badRequest(`exception : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
-    return r.result.value;
+    const type = r.result.subtype === 'null' ? 'null' : r.result.type;
+    return 'value' in r.result ? { value: r.result.value, type } : { type };
   }
 
   async cookies(): Promise<unknown[]> {

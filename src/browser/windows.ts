@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures } from './args.js';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -66,14 +67,15 @@ export async function windowsLocalAppData(run: Runner = realRunner): Promise<str
 
 /** Arguments de chrome.exe. Pas de guillemets : l'interop WSL cite elle-même les arguments contenant des espaces. */
 export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless: boolean }): string[] {
-  return [
+  return mergeDisableFeatures([
     `--user-data-dir=${input.userDataDirWin}`,
     '--remote-debugging-port=0',
     '--no-first-run',
     '--no-default-browser-check',
+    ...ANTI_BACKGROUND_ARGS,
     ...(input.headless ? ['--headless=new'] : []),
     'about:blank',
-  ];
+  ], ALWAYS_DISABLED_FEATURES);
 }
 
 /**

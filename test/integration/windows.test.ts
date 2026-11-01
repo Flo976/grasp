@@ -7,6 +7,7 @@ import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
 import { startTestSite } from '../helpers/testsite.js';
 import { DOWNLOAD_JS } from '../helpers/download.js';
+import { decodePng } from '../helpers/png.js';
 import { resolvePaths } from '../../src/core/paths.js';
 import { profileId } from '../../src/core/profiles.js';
 import { windowsLocalAppData, windowsChromeProcesses, toWindowsPath } from '../../src/browser/windows.js';
@@ -71,6 +72,27 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
     assert.match(cons.stdout, /erreur objet/, cons.stderr);
     assert.match(cons.stdout, /absent\.png → 404/);
     assert.match((await runCli(env, ['click', '#absent', '--shot-on-error'])).stderr, /\(capture : \/\S+\.png\)$/m);
+    // Livraison vérifiée des entrées, run, eval undefined et découpe --el sur chrome.exe.
+    const ran = await runCli(env, ['run'], `nav ${site.url}/sonde
+click text:Compter
+press a #vider
+click #muet --snap-diff
+eval "document.getElementById('compter').click()"
+text --scope #compte
+screenshot --el #compter
+`);
+    assert.equal(ran.code, 0, `${ran.stdout}\n${ran.stderr}`);
+    assert.doesNotMatch(ran.stderr, /synthétique|non vérifi/, 'entrée native livrée à chrome.exe');
+    assert.match(ran.stdout, /\[5\] eval .* → OK\nundefined\n/);
+    assert.match(ran.stdout, /\[6\] text --scope #compte → OK\nCompte : 2\n/);
+    assert.match(ran.stdout, /\[7\] screenshot --el #compter → OK\n\/\S+\.png\n/);
+    assert.match(ran.stderr, /7 commandes, 7 OK/);
+    await runCli(env, ['nav', `${site.url}/flottant`]);
+    const info = decodePng(readFileSync((await runCli(env, ['screenshot', '--el', '#info'])).stdout.trim()));
+    assert.ok([0, 1].some((x) => info.at(x, Math.floor(info.height / 2)).every((v) => v < 60)), `bord gauche de #info rogné : ${info.at(0, Math.floor(info.height / 2))}`);
+    const main = (await windowsChromeProcesses()).find((p) => p.commandLine.replaceAll('"', '').toLowerCase().includes(winRoot.toLowerCase()) && !/--type=/.test(p.commandLine));
+    assert.ok(main, 'processus principal de chrome.exe introuvable');
+    for (const a of ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--disable-features=CalculateNativeWinOcclusion']) assert.ok(main.commandLine.includes(a), `${a} absent de ${main.commandLine}`);
     await runCli(env, ['nav', `${site.url}/`]);
     const winFlorent = `${winRoot}\\${profileId('florent')}`;
     const winSooatek = `${winRoot}\\${profileId('sooatek')}`;

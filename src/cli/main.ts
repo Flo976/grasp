@@ -14,6 +14,8 @@ import { runDoctor } from './doctor.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
+import type { RunResult } from '../control/run.js';
+import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -23,31 +25,6 @@ import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/cons
 class CliError extends Error {
   /** Champs supplémentaires du corps d'erreur (ex. entrées console produites pendant l'action). */
   constructor(message: string, readonly extra?: Record<string, unknown>) { super(message); }
-}
-
-interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
-
-const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout']);
-const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
-
-function parseArgs(argv: string[]): Args {
-  const pos: string[] = [];
-  const flags = new Map<string, string | true>();
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === '--') { pos.push(...argv.slice(i + 1)); break; }
-    const m = /^--?([a-z][a-z-]*)(?:=(.*))?$/.exec(a);
-    if (m && !(a.startsWith('-') && !a.startsWith('--') && m[1]!.length > 1)) {
-      const name = ALIASES[m[1]!] ?? m[1]!;
-      if (m[2] !== undefined) flags.set(name, m[2]);
-      else if (VALUE_FLAGS.has(name)) {
-        const v = argv[++i];
-        if (v === undefined) throw new CliError(`--${name} attend une valeur`);
-        flags.set(name, v);
-      } else flags.set(name, true);
-    } else pos.push(a);
-  }
-  return { cmd: pos.shift() ?? 'help', pos, flags };
 }
 
 const out = (s: string) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
@@ -106,26 +83,6 @@ function consoleLosses(c: { since?: unknown; omitted?: unknown; dropped?: unknow
   if (typeof c.omitted === 'number' && c.omitted > 0) hint(`AVERTISSEMENT : ${c.omitted} ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action)${since !== undefined ? ` — grasp console --since ${since} --limit 1000` : ''}`);
 }
 
-const SHOT_FORMATS: Record<string, string> = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp' };
-
-/** Options de capture → paramètres de GET /screenshot. Format déduit de l'extension de -o à défaut de --format. */
-function shotQuery(a: Args, file: string | undefined): URLSearchParams {
-  const q = new URLSearchParams();
-  if (a.flags.has('full')) q.set('full', '1');
-  if (a.flags.has('refs')) q.set('refs', '1');
-  for (const [flag, key] of [['el', 'el'], ['quality', 'quality'], ['max-width', 'maxWidth'], ['format', 'format']] as const) {
-    const v = a.flags.get(flag);
-    if (v === true) throw new CliError(`--${flag} attend une valeur`);
-    if (v !== undefined) q.set(key, v);
-  }
-  if (!q.has('format') && file !== undefined && file !== '-') {
-    const ext = /\.[A-Za-z]+$/.exec(file)?.[0]?.toLowerCase();
-    const f = ext !== undefined ? SHOT_FORMATS[ext] : undefined;
-    if (f !== undefined) q.set('format', f);
-  }
-  return q;
-}
-
 const TRUNCATED_HINT = 'AVERTISSEMENT : capture tronquée (limite de 16384 px de Chrome, en hauteur comme en largeur)';
 
 /** -o fichier : toujours 0600 (fichier existant compris), un lien symbolique est remplacé, jamais suivi. */
@@ -159,17 +116,8 @@ async function screenshot(c: Client, a: Args): Promise<void> {
 }
 
 async function consoleCmd(c: Client, a: Args): Promise<void> {
-  const body: Record<string, unknown> = {};
-  for (const k of ['level', 'since', 'limit'] as const) {
-    const v = a.flags.get(k);
-    if (v === true) throw new CliError(`--${k} attend une valeur`);
-    if (v === '') throw new CliError(`--${k} attend une valeur`);
-    // Transmis tel quel : le bridge valide (« --since abc » est une erreur 400, jamais un filtre ignoré).
-    if (v !== undefined) body[k] = v;
-  }
-  // Par défaut, les 50 dernières lignes : la console d'une page bavarde coûte cher en tokens.
-  if (body.limit === undefined) body.limit = 50;
-  if (a.flags.has('clear')) body.clear = true;
+  // Transmis tel quel : le bridge valide (« --since abc » est une erreur 400, jamais un filtre ignoré).
+  const body = consoleBody(a);
   const r = (await c.call('POST', '/console', body)).json() as ConsoleResult;
   if (a.flags.has('json')) { out(JSON.stringify(r)); return; }
   if (r.dropped > 0) hint(`AVERTISSEMENT : ${r.dropped} entrée(s) perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
@@ -207,33 +155,49 @@ function need(a: Args, n: number, usage: string): string[] {
   return a.pos;
 }
 
-/** --max et --scope de snap / text → paramètres de requête. */
-function readQuery(a: Args): string {
-  const q = new URLSearchParams();
-  for (const k of ['max', 'scope'] as const) {
-    const v = a.flags.get(k);
-    if (v === true) throw new CliError(`--${k} attend une valeur`);
-    if (v !== undefined) q.set(k, v);
-  }
-  return q.size > 0 ? `?${q}` : '';
-}
-
 /** grasp wait [--text T | --sel S | --idle] [--timeout ms] : OK sur stdout, durée sur stderr. */
 async function waitCmd(c: Client, a: Args): Promise<void> {
-  const body: Record<string, unknown> = {};
-  for (const k of ['text', 'sel', 'timeout'] as const) {
-    const v = a.flags.get(k);
-    if (v === true) throw new CliError(`--${k} attend une valeur`);
-    // timeout transmis tel quel : le bridge le valide (une valeur invalide est une erreur, jamais ignorée).
-    if (v !== undefined) body[k] = v;
-  }
-  if (a.flags.has('idle')) body.idle = true;
-  const t = Number(body.timeout);
-  const timeout = Number.isFinite(t) && t > 0 ? t : 60_000;
-  const j = (await c.call('POST', '/wait', body, timeout + 15_000)).json() as { waited: number; condition: string };
+  const w = waitRequest(a);
+  const j = (await c.call('POST', '/wait', w.body, w.timeoutMs)).json() as { waited: number; condition: string };
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   out('OK');
   hint(`attendu ${j.waited} ms (${j.condition})`);
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * grasp run [fichier|-] [--continue] : plusieurs commandes en UN aller-retour HTTP, exécutées côté serveur.
+ * stdout : « [n] commande → OK|ERROR: raison » puis la sortie utile ; stderr : notes numérotées et bilan.
+ */
+async function runCmd(c: Client, a: Args): Promise<number> {
+  if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--json]');
+  const file = a.pos[0];
+  let script: string;
+  if (file === undefined || file === '-') {
+    if (file === undefined && process.stdin.isTTY) throw new CliError('usage : grasp run <fichier> (ou le script sur stdin : grasp run < script.grasp)');
+    script = readFileSync(0, 'utf8');
+  } else {
+    try { script = readFileSync(file, 'utf8'); } catch (e) { throw new CliError(`impossible de lire ${file} : ${(e as Error).message}`); }
+  }
+  const t0 = Date.now();
+  const r = (await c.call('POST', '/run', { script, ...(a.flags.has('continue') ? { continue: true } : {}) }, 60 * 60_000)).json() as RunResult;
+  if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
+  for (const st of r.steps) {
+    out(`[${st.n}] ${st.text} → ${st.ok ? 'OK' : `ERROR: ${st.error ?? 'échec'}`}`);
+    if (st.output !== undefined) out(st.output);
+    if (st.detail !== undefined) hint(`[${st.n}] note: ${st.detail}`);
+  }
+  const failed = r.steps.filter((st) => !st.ok);
+  const notRun = r.total - r.executed;
+  hint(`${plural(r.total, 'commande', 'commandes')}, ${r.steps.length - failed.length} OK${failed.length > 0 ? `, ${failed.length} en échec` : ''}${notRun > 0 ? `, ${notRun} non exécutée${notRun > 1 ? 's' : ''}` : ''} (${Date.now() - t0} ms, un aller-retour)`);
+  if (failed.length === 0) return 0;
+  if (notRun > 0 || !a.flags.has('continue')) {
+    const f = failed[0]!;
+    hint(`ERROR: run: étape ${f.n} (${f.text}) : ${f.error ?? 'échec'}`);
+    if (notRun > 0) hint(`${plural(notRun, 'commande non exécutée', 'commandes non exécutées')} — --continue pour poursuivre`);
+  } else hint(`ERROR: run: ${plural(failed.length, 'étape', 'étapes')} en échec : ${failed.map((f) => f.n).join(', ')}`);
+  return 1;
 }
 
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
@@ -317,15 +281,8 @@ async function main(argv: string[]): Promise<number> {
   const session = typeof a.flags.get('session') === 'string' ? a.flags.get('session') as string : (env.GRASP_SESSION || undefined);
   const c = new Client(paths, session);
   const json = a.flags.has('json');
-  const snapDiff = a.flags.has('snap-diff');
-  // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
-  const max = typeof a.flags.get('max') === 'string' ? a.flags.get('max') as string : undefined;
-  const scope = a.flags.get('scope');
-  const actionBody = (extra: Record<string, unknown>) => ({
-    ...extra, ...(snapDiff ? { snapDiff: true } : {}), ...(max !== undefined ? { max } : {}), ...(typeof scope === 'string' ? { scope } : {}),
-    ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
-  });
-
+  /** Action isolée : même construction de requête que `grasp run`. */
+  const action = async () => { const rq = buildRequest(a); renderAction(await c.call(rq.method, rq.path, rq.body, rq.timeoutMs), a); };
   switch (a.cmd) {
     case 'serve': {
       const port = a.flags.get('port');
@@ -380,23 +337,16 @@ async function main(argv: string[]): Promise<number> {
       }
       throw new CliError('usage : grasp session create [--profile P] | list | close [id]');
     }
-    case 'nav': {
-      const [url] = need(a, 1, 'nav <url>');
-      renderAction(await c.call('POST', '/navigate', actionBody({ url })), a);
-      return 0;
-    }
+    case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': await action(); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
-    case 'text': out((await c.call('GET', `/text${readQuery(a)}`)).text()); return 0;
-    case 'wait': await waitCmd(c, a); return 0;
-    case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); renderAction(await c.call('POST', '/click', actionBody({ target })), a); return 0; }
-    case 'fill': { const [target, value] = need(a, 2, 'fill <sélecteur> <valeur>'); renderAction(await c.call('POST', '/fill', actionBody({ target, value })), a); return 0; }
-    case 'select': { const [target, value] = need(a, 2, 'select <sélecteur> <valeur|libellé>'); renderAction(await c.call('POST', '/select', actionBody({ target, value })), a); return 0; }
-    case 'check': { const [target] = need(a, 1, 'check <sélecteur> [--uncheck]'); renderAction(await c.call('POST', '/check', actionBody({ target, checked: !a.flags.has('uncheck') })), a); return 0; }
-    case 'press': {
-      const [key, target] = need(a, 1, 'press <touche> [sélecteur]');
-      renderAction(await c.call('POST', '/press', actionBody(target !== undefined ? { key, target } : { key })), a);
+    case 'text': {
+      const t = (await c.call('GET', `/text${readQuery(a)}`)).text();
+      if (t !== '') out(t);
+      else { const sc = a.flags.get('scope'); hint(`note: aucun texte visible ${typeof sc === 'string' ? `dans la zone ${sc}` : 'dans la page'}`); }
       return 0;
     }
+    case 'wait': await waitCmd(c, a); return 0;
+    case 'run': return runCmd(c, a);
     case 'profiles': {
       const sub = a.pos[0];
       if (sub === undefined || sub === 'list') {
@@ -450,9 +400,15 @@ async function main(argv: string[]): Promise<number> {
     case 'screenshot': await screenshot(c, a); return 0;
     case 'console': await consoleCmd(c, a); return 0;
     case 'pdf': await binary(c, a, '/pdf', 'pdf'); return 0;
-    case 'eval': { const [expression] = need(a, 1, 'eval <expression>'); out(JSON.stringify((await c.call('POST', '/eval', { expression })).json().value)); return 0; }
+    case 'eval': {
+      const [expression] = need(a, 1, 'eval <expression>');
+      const j = (await c.call('POST', '/eval', { expression })).json() as { value?: unknown; type?: string };
+      // undefined (el.click(), form.submit()) : « undefined », l'expression a bien été exécutée.
+      out(json ? JSON.stringify(j) : renderEval(j));
+      return 0;
+    }
     case 'cookies': out((await c.call('GET', '/cookies')).text()); return 0;
-    case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); renderAction(await c.call('POST', '/upload', { target, files }), a); return 0; }
+    case 'upload': await action(); return 0;
     case 'security': {
       // Lit la politique telle que le garde la voit (/security/effective), jamais le fichier.
       const rep = (await c.call('GET', '/security/effective')).json();
@@ -533,6 +489,8 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
 Lecture      snap [--max octets] [--scope <ref|css>]   budget 12000 octets par défaut (config snapMax)
              text [--max N] [--scope <ref|css>]        4000 caractères par défaut (config textMax)
+               --scope <iframe> : texte du cadre s'il est de même origine, sinon erreur explicite ; zone vide :
+               rien sur stdout, « note: aucun texte visible » sur stderr
                sortie coupée : dernière ligne « … tronqué : N caractères restants — affinez avec --max N / --scope <ref|css> »
                snap : dernière ligne « … élagué : … » si des nœuds sont masqués (liens sans nom, iframes non parcourues)
              pdf [-o f.pdf]
@@ -548,12 +506,22 @@ Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N 
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél]
+             livraison vérifiée : click, check, press et fill au clavier attendent que la page reçoive l'entrée
+               (événement de confiance, délai inputDeliveryMs = 300) ; sinon onglet au premier plan + focus émulé
+               et 2e essai, puis repli synthétique ANNONCÉ (« note: clic synthétique : l'entrée native n'a pas
+               atteint la page ») ; sans effet observable → ERROR (jamais de faux OK)
              --snap-diff  diff du snapshot en un aller-retour, après stabilité du DOM ; 4000 caractères par défaut
                           (config diffMax ; --max N l'élargit, --scope <ref|css> le restreint à une zone)
              --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
                           lignes écartées signalées sur stderr avec la commande pour les relire
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
+Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN aller-retour (stdin par défaut)
+               une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
+               wait eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               analysé en entier avant d'exécuter ; arrêt au premier échec (--continue pour poursuivre) ;
+               stdout « [n] commande → OK|ERROR: raison » + sortie utile (snap, text, diff, console, chemin)
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
+               eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
 Sécurité     security            politique telle que le garde l'applique
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys

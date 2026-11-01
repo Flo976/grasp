@@ -37,12 +37,16 @@ test('windows : un *.exe sous /mnt/ est classé « windows »', () => {
 test('windows : arguments de chrome.exe (chemin Windows avec espaces, un seul argv, sans guillemets)', () => {
   const dir = `${WIN_LOCAL}\\grasp\\profiles\\prof_1a2b3c4d`;
   assert.deepEqual(buildWindowsChromeArgs({ userDataDirWin: dir, headless: false }), [
-    `--user-data-dir=${dir}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', 'about:blank',
+    `--user-data-dir=${dir}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
+    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+    '--disable-features=CalculateNativeWinOcclusion', 'about:blank',
   ]);
   const h = buildWindowsChromeArgs({ userDataDirWin: dir, headless: true });
   assert.ok(h.includes('--headless=new'));
   assert.ok(!h.some((a) => a.includes('"')), 'pas de guillemets manuels : l\'interop WSL cite elle-même');
   assert.ok(!h.includes('--no-sandbox'));
+  assert.equal(h.filter((a) => a.startsWith('--disable-features=')).length, 1);
+  assert.equal(h.at(-1), 'about:blank', 'URL de départ en dernier');
 });
 
 test('windows : conversion de chemins via wslpath (espaces conservés, un seul argument)', async () => {

@@ -17,6 +17,8 @@ import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
 import { reapStaleInstances } from './stale.js';
+import { compileScript, runScript } from './run.js';
+import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 
 export interface Session {
@@ -364,6 +366,33 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     };
   }
 
+  /**
+   * Une étape de `grasp run` : la même route du bridge qu'une commande isolée (mêmes contrôles de politique,
+   * mêmes limites), ou la bascule de profil du control plane. Le bridge est relu à chaque étape (bascule).
+   */
+  async function execStep(s: Session, rq: StepRequest): Promise<unknown> {
+    if (s.closed !== undefined) throw new GraspError(409, `session ${s.id} fermée pendant le script`);
+    if (rq.path === 'profile') return switchProfile(s, String(rq.body?.name ?? ''));
+    if (!SESSION_ROUTES.has(rq.path.split('?')[0]!)) throw new GraspError(400, `route ${rq.path} indisponible dans run`);
+    if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
+    let r;
+    try {
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, rq.body, {}, rq.timeoutMs);
+    } catch (e) { throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`); }
+    const isJson = String(r.headers['content-type'] ?? '').startsWith('application/json');
+    if (r.status >= 400) {
+      let msg = r.text();
+      let extra: Record<string, unknown> | undefined;
+      try {
+        const { error, ...rest } = r.json() as Record<string, unknown>;
+        msg = String(error ?? msg);
+        if (Object.keys(rest).length > 0) extra = rest;
+      } catch { /* texte brut */ }
+      throw new GraspError(r.status, msg, extra);
+    }
+    return isJson ? r.json() : r.text();
+  }
+
   async function proxy(s: Session, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const body = req.method === 'POST' ? await readBody(req) : undefined;
     const qs = new URLSearchParams(url.searchParams);
@@ -442,6 +471,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         if (!s) throw new GraspError(404, `session ${m[1]} inconnue`);
         await closeSession(s);
         return sendJson(res, 200, { ok: true });
+      }
+      if (route === 'POST /run') {
+        // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
+        const body = await readJson(req);
+        const steps = compileScript(str(body, 'script'));
+        const s = pickSession(req, url);
+        return sendJson(res, 200, await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true));
       }
       if (SESSION_ROUTES.has(url.pathname)) {
         const s = pickSession(req, url);

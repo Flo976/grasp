@@ -70,6 +70,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   textMax: { raw: '8000', value: 8000 },
   diffMax: { raw: '6000', value: 6000 },
   stableTimeoutMs: { raw: '0', value: 0 },
+  inputDeliveryMs: { raw: '500', value: 500 },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {

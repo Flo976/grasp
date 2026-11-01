@@ -90,8 +90,8 @@ README dérive du code, `npm test` échoue.
 
 | Processus | Rôle | Source |
 |---|---|---|
-| **CLI** | Client mince : parse, appelle l'API, formate. Aucune logique métier. | `src/cli/main.ts` |
-| **Control plane** | Serveur HTTP local (socket Unix ou TCP loopback), token, sessions, politique. | `src/control/server.ts` |
+| **CLI** | Client mince : parse, appelle l'API, formate. Aucune logique métier. Syntaxe des commandes partagée avec `grasp run` (`src/core/script.ts`). | `src/cli/main.ts` |
+| **Control plane** | Serveur HTTP local (socket Unix ou TCP loopback), token, sessions, politique ; exécute les scripts de `grasp run` étape par étape vers le bridge (`src/control/run.ts`). | `src/control/server.ts` |
 | **Bridge** | Un processus par Chrome. Détient la connexion CDP, le garde, le snapshot, les actions. | `src/bridge/` |
 
 Le control plane ne parle jamais CDP, et le bridge n'a ni token ni config : il reçoit la
@@ -177,7 +177,11 @@ grasp doctor                           # signale le mode windows, démarre chrom
   (chemin Windows remis à chrome.exe). Les droits Unix ne s'appliquent pas sur NTFS :
   Grasp démarre quand même et `doctor` le signale.
 - **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=0
-  --no-first-run --no-default-browser-check [--headless=new]`, lecture de `DevToolsActivePort` via
+  --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows
+  --disable-renderer-backgrounding --disable-background-timer-throttling
+  --disable-features=CalculateNativeWinOcclusion [--headless=new]` (une fenêtre recouverte ou minimisée, un
+  écran éteint ne mettent ni le rendu ni les minuteries en veille ; mêmes drapeaux sous Linux, fusionnés dans
+  l'unique `--disable-features`), lecture de `DevToolsActivePort` via
   `/mnt/c`, connexion à `127.0.0.1:<port>`. **WSL doit être en `networkingMode=mirrored`** ; sinon
   erreur explicite qui le dit.
 - **Cycle de vie** : pas de groupe de processus ni de `PDEATHSIG` au-delà de la frontière WSL. Arrêt
@@ -290,9 +294,9 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
 | `snap [--max octets] [--scope <ref\|css>]` | Snapshot d'accessibilité (12 000 octets par défaut). |
-| `text [--max N] [--scope <ref\|css>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). |
+| `text [--max N] [--scope <ref\|css>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (et donne son URL) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
-| `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément. |
+| `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
 | `check <sél> [--uncheck]` | Coche ou décoche, puis **vérifie l'état**. |
@@ -300,7 +304,8 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
-| `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). |
+| `run [fichier\|-] [--continue]` | Plusieurs commandes en **un** aller-retour. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
+| `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`.
 Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
@@ -326,6 +331,82 @@ grasp click '#absent' --shot-on-error
 **Sorties** : `OK` sur stdout ; conseils et notes sur stderr ; erreurs
 `ERROR: <cmd>: <raison>` sur stderr avec un code non nul ; `--json` pour la sortie structurée.
 `export S=$(grasp session create)` capture uniquement l'identifiant.
+
+### Livraison vérifiée des entrées
+
+`Input.dispatchMouseEvent` répond OK même quand l'événement n'atteint jamais la page : vu en banc sur
+chrome.exe piloté depuis WSL2 (fenêtre visible, écran Windows probablement verrouillé ou éteint : sans
+frames, le routage par hit-test abandonne les événements de CDP), `click`, `check` et `press Enter`
+répondaient OK sans qu'aucun `pointerdown`/`click`/`keydown` n'arrive. Désormais, avant chaque `click`,
+`check`, `press` et `fill` au clavier, Grasp arme dans un **monde isolé** (code fixe, autorisé même si
+`allowEval=false`) un écouteur en capture des événements de **confiance** (`isTrusted`) ; si rien n'arrive
+dans `inputDeliveryMs` (300 ms par défaut) :
+
+1. `Page.bringToFront` + `Emulation.setFocusEmulationEnabled`, puis second essai natif (note
+   `entrée native livrée au 2e essai…`) ;
+2. sinon **repli DOM synthétique** depuis le monde isolé (`isTrusted=false`) : séquence pointeur/souris puis
+   `el.click()` ; pour une touche, `keydown`/`keyup` et l'action par défaut qu'un événement synthétique ne
+   déclenche pas (Entrée = soumission implicite du formulaire ou activation du bouton/lien, Espace =
+   activation) ; pour `fill`, setter natif + `input`. Toujours annoncé :
+   `note: clic synthétique : l'entrée native n'a pas atteint la page (…)` ;
+3. si même le repli ne produit **rien d'observable** (ni mutation du DOM, ni navigation ; pour `check` et
+   `fill`, l'état ou la valeur attendus) : **ERREUR 502** `clic non livré : …` — jamais de faux OK.
+
+Avec `--snap-diff`, `(aucun changement)` reste tel quel après une entrée livrée, mais devient
+`(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, …)` après un repli.
+Coût en temps normal : deux évaluations dans le monde isolé par action (armement, lecture). Une entrée qui part
+vers une iframe n'est pas vérifiable depuis la page : c'est dit en note, sans reprise. Testé en simulant la
+non-livraison pour de vrai (`Input.setIgnoreInputEvents` depuis une autre session CDP : `dispatch*` répond OK,
+la page ne reçoit rien) à chaque étage (`test/integration/delivery.test.ts`).
+
+### grasp run : plusieurs commandes en un appel
+
+Le vrai levier de vitesse d'une CLI pour un agent : un seul processus `grasp`, un seul aller-retour HTTP
+(`POST /run`), les étapes exécutées en séquence côté serveur.
+
+```bash
+grasp run <<'FIN'
+# inscription
+nav http://127.0.0.1:8080/
+snap
+fill e5k2 "Ada Lovelace"          # ref issue du snap ci-dessus
+fill #email ada@example.org
+select text:Pays Madagascar
+check "text:J'accepte les conditions"
+click text:Valider --snap-diff
+eval "document.querySelector('h1').textContent"
+FIN
+```
+
+```
+[1] nav http://127.0.0.1:8080/ → OK
+[2] snap → OK
+page "Inscription" http://127.0.0.1:8080/
+…
+[3] fill e5k2 "Ada Lovelace" → OK
+…
+[7] click text:Valider --snap-diff → OK
+navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
+```
+
+- Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
+  **même syntaxe que la CLI** : `nav snap text click fill select check press wait eval console screenshot
+  cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
+  Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
+  (`click #valider` marche sans guillemets).
+- Le script est **analysé en entier avant d'exécuter** : guillemet non fermé, commande inconnue ou hors run
+  (`serve`, `pdf`, `screenshot -o` : le fichier serait écrit par le serveur…) → `ERROR: run: ligne N : …`, rien
+  n'est exécuté. 500 commandes au plus.
+- Arrêt au **premier échec** (code 1, `ERROR: run: étape N (commande) : raison`, et le nombre de commandes non
+  exécutées) ; `--continue` poursuit et rapporte chaque étape.
+- Sortie compacte : `[n] commande → OK` ou `→ ERROR: raison`, puis **seulement** la sortie utile (snap, text,
+  diff, console, chemin d'une capture, valeur d'eval), avec les mêmes limites de taille qu'en commande isolée ;
+  notes numérotées (`[6] note: sélectionné : Madagascar`) et bilan (`7 commandes, 7 OK (…)`) sur stderr.
+  `--json` : `{ok, total, executed, steps: [{n, line, text, cmd, ok, output?, detail?, status?, error?, result, ms}]}`.
+- Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
+  (`eval` interdit reste interdit, allowlist, console…) et mêmes refs — celles d'un `snap` du script servent aux
+  étapes suivantes. `profile <nom>` bascule la session au milieu du script (le bridge est relu à chaque étape).
 
 ## Captures d'écran
 
@@ -432,6 +513,7 @@ POST /click  {target, snapDiff?, max?, scope?, console?, shotOnError?}   POST /f
 POST /select {target, value, …}               POST /check  {target, checked?, …}
 POST /press  {key, target?, …}
 POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
+POST /run {script, continue?}   → {ok, total, executed, steps[]} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
@@ -549,6 +631,8 @@ serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliq
 Limites de lecture (transmises au bridge à son lancement, à côté de la politique gelée, dont elles ne font
 pas partie) : `snapMax` (octets, 12000), `textMax` (caractères, 4000), `diffMax` (caractères, 4000),
 `stableTimeoutMs` (ms, 5000 ; 0 = pas d'attente de stabilité). `--max` les surcharge à chaque appel.
+`inputDeliveryMs` (ms, 300, de 50 à 10 000) : délai de livraison d'une entrée avant chaque étage de reprise
+(voir [Livraison vérifiée](#livraison-vérifiée-des-entrées)).
 
 ## Tests
 
@@ -580,6 +664,17 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
+- Livraison vérifiée : l'hypothèse « écran Windows verrouillé » n'a pas été reproduite sur la machine réelle
+  (Grasp ne verrouille pas la session de l'utilisateur) ; la non-livraison est simulée par
+  `Input.setIgnoreInputEvents`. La sonde écoute sur `window` en capture : une page qui appelle
+  `stopImmediatePropagation()` dans son propre écouteur de capture sur `window` la rend aveugle, ce qui
+  déclencherait un second essai (double clic possible). Le repli synthétique cible l'élément demandé, pas
+  l'élément éventuellement posé dessus (bandeau) ; la soumission implicite par Entrée est approchée par
+  `requestSubmit()`. `Emulation.setFocusEmulationEnabled` reste actif après une reprise. Sur une page qui mute
+  sans cesse (carrousel), une mutation sans rapport peut passer pour l'effet d'un repli synthétique : la note
+  « clic synthétique » le signale toujours.
+- `grasp run` exécute ses étapes en séquence sur la session : une autre commande lancée en parallèle sur la
+  même session s'intercale entre deux étapes.
 - Une session = un onglet. Les popups sont gardés par l'allowlist mais ne sont pas pilotables.
 - **Profil importé ≠ session Google importée** : validé sous Windows, l'import de « Profile 9 »
   s'est fait sans fichier verrouillé et l'identité (`accountEmail`) est lue, mais
