@@ -1,4 +1,4 @@
-import { badRequest } from './errors.js';
+import { GraspError, badRequest } from './errors.js';
 
 /**
  * Console du navigateur : tampon circulaire par onglet (dans le bridge) et mise en forme compacte
@@ -68,13 +68,16 @@ export class ConsoleBuffer {
   query(q: ConsoleQuery): ConsoleResult {
     if (q.level !== undefined && !isLevel(q.level)) throw badRequest(`niveau inconnu « ${String(q.level)} » (niveaux : ${LEVELS.join(', ')})`);
     const since = q.since !== undefined ? q.since : 0;
+    // Curseur venu d'un autre tampon (bridge relancé, bascule de profil) : sans cette erreur, les entrées
+    // suivantes seraient masquées en silence jusqu'à ce que le compteur rattrape l'ancien seq.
+    if (since > this.last) throw new GraspError(409, `since ${since} dépasse le seq courant ${this.last} : le tampon a été recréé (bascule de profil, bridge relancé) — reprenez avec --since 0`, { seq: this.last });
     const oldest = this.items.length > 0 ? this.items[0]!.seq : this.last + 1;
     const firstWanted = Math.max(since, this.clearedUpTo) + 1;
     const dropped = Math.max(0, Math.min(oldest, this.last + 1) - firstWanted);
     const max = q.level !== undefined ? RANK[q.level] : RANK.debug;
-    // Les repères de navigation restent quel que soit le niveau : ils situent les erreurs.
-    const picked = this.items.filter((e) => e.seq > since && (e.source === 'navigation' || RANK[e.level] <= max));
-    const merged = mergeRuns(picked);
+    // Fusion AVANT le filtre de niveau : ×N ne regroupe que des entrées réellement consécutives dans le
+    // tampon (rien de masqué par --level entre elles). Les repères de navigation restent quel que soit le niveau.
+    const merged = mergeRuns(this.items.filter((e) => e.seq > since)).filter((e) => e.source === 'navigation' || RANK[e.level] <= max);
     const limited = q.limit !== undefined ? merged.slice(-q.limit) : merged;
     return { entries: limited, seq: this.last, dropped, omitted: merged.length - limited.length };
   }
@@ -205,6 +208,13 @@ export function redactUrl(raw: string, max = 150): string {
     s += `?${parts.join('&')}`;
   }
   return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s'"`<>]+/g;
+
+/** Texte rédigé par le navigateur (domaine Log : CSP, contenu mixte…) : chaque URL qu'il recopie est masquée par redactUrl. */
+export function redactUrlsIn(text: string): string {
+  return text.replace(URL_IN_TEXT, (u) => redactUrl(u, 300));
 }
 
 /** Fichier d'une URL pour l'affichage « (fichier:ligne) » : dernier segment du chemin, sinon l'hôte. */

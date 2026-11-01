@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
@@ -158,5 +158,55 @@ test('captures : rotation sous l\'état de Grasp (au-delà de 50, les plus ancie
     assert.equal(existsSync(first), false, 'la plus ancienne a été supprimée');
     const { readdirSync } = await import('node:fs');
     assert.equal(readdirSync(dirname(first)).length, 50);
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});
+
+test('CLI : --since/--limit invalides → erreur (jamais tout le tampon) ; -o en 0600 même sur un fichier existant ou un lien ; --console signale les lignes écartées', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  const srv = await startServer(t.env);
+  try {
+    await runCli(t.env, ['session', 'create']);
+    assert.equal((await runCli(t.env, ['nav', `${site.url}/bavard`])).code, 0);
+    for (const args of [['--since', 'abc'], ['--since', 'e12'], ['--limit', 'dix'], ['--limit', '-3'], ['--since', '']]) {
+      const r = await runCli(t.env, ['console', ...args]);
+      assert.equal(r.code, 1, `${args.join(' ')} accepté : ${r.stdout}`);
+      assert.match(r.stderr, new RegExp(`^ERROR: console: .*${args[0]!.slice(2)}`, 'm'), r.stderr);
+      assert.equal(r.stdout, '');
+    }
+    const ahead = await runCli(t.env, ['console', '--since', '999999']);
+    assert.equal(ahead.code, 1);
+    assert.match(ahead.stderr, /^ERROR: console: .*--since 0/m);
+
+    const flot = await runCli(t.env, ['click', '#flot', '--console']);
+    assert.equal(flot.code, 0, flot.stderr);
+    assert.equal(flot.stdout.trim().split('\n').length, 201, 'OK + 200 lignes');
+    const since = Number(/--since (\d+)/.exec(flot.stderr)?.[1]);
+    assert.match(flot.stderr, /AVERTISSEMENT : 50 ligne\(s\) console plus ancienne\(s\) non jointe\(s\)/);
+    assert.ok(Number.isInteger(since), flot.stderr);
+    const rest = await runCli(t.env, ['console', '--since', String(since), '--limit', '1000']);
+    assert.match(rest.stdout, /erreur n°0\b/, 'la commande proposée relit les lignes écartées');
+
+    const file = join(t.root, 'shot.png');
+    writeFileSync(file, 'ancien', { mode: 0o644 });
+    chmodSync(file, 0o644);
+    assert.equal((await runCli(t.env, ['screenshot', '-o', file])).code, 0);
+    assert.equal(statSync(file).mode & 0o777, 0o600, 'fichier existant : mode 0600 imposé');
+    assert.equal(readFileSync(file).subarray(1, 4).toString(), 'PNG');
+    const victim = join(t.root, 'victime');
+    writeFileSync(victim, 'intact', { mode: 0o644 });
+    const link = join(t.root, 'lien.png');
+    symlinkSync(victim, link);
+    assert.equal((await runCli(t.env, ['screenshot', '-o', link])).code, 0);
+    assert.equal(readFileSync(victim, 'utf8'), 'intact', 'le lien n\'est pas suivi');
+    assert.equal(lstatSync(link).isSymbolicLink(), false);
+    assert.equal(statSync(link).mode & 0o777, 0o600);
+    const pdf = join(t.root, 'page.pdf');
+    writeFileSync(pdf, 'ancien', { mode: 0o644 });
+    assert.equal((await runCli(t.env, ['pdf', '-o', pdf])).code, 0);
+    assert.equal(statSync(pdf).mode & 0o777, 0o600, 'pdf -o : 0600 aussi');
+    const nowhere = await runCli(t.env, ['screenshot', '-o', join(t.root, 'absent', 'x.png')]);
+    assert.equal(nowhere.code, 1);
+    assert.match(nowhere.stderr, /^ERROR: screenshot: .*absent\/x\.png/m);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });

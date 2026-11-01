@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
@@ -12,6 +12,7 @@ import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
 import { killWindowsChrome } from '../browser/windows.js';
+import { writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 
 /**
@@ -85,14 +86,24 @@ class Client {
 
 /** Rend le résultat d'une action mutante : OK (ou le diff si --snap-diff), puis la console si --console. */
 function renderAction(r: HttpResult, a: Args): void {
-  const j = r.json() as { diff?: string; detail?: string; console?: { entries: ConsoleEntry[]; seq: number } };
+  const j = r.json() as { diff?: string; detail?: string; console?: ActionConsole };
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   if (j.detail) hint(`note: ${j.detail}`);
   out(j.diff !== undefined ? j.diff : 'OK');
   if (j.console !== undefined) {
     if (j.console.entries.length > 0) out(j.console.entries.map(formatEntry).join('\n'));
+    consoleLosses(j.console);
     hint(`console : ${j.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${j.console.seq}`);
   }
+}
+
+interface ActionConsole { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+
+/** --console : lignes écartées (au-delà de 200) et entrées perdues par le tampon, jamais tues. */
+function consoleLosses(c: { since?: unknown; omitted?: unknown; dropped?: unknown }): void {
+  const since = typeof c.since === 'number' ? c.since : undefined;
+  if (typeof c.dropped === 'number' && c.dropped > 0) hint(`AVERTISSEMENT : ${c.dropped} entrée(s) console perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
+  if (typeof c.omitted === 'number' && c.omitted > 0) hint(`AVERTISSEMENT : ${c.omitted} ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action)${since !== undefined ? ` — grasp console --since ${since} --limit 1000` : ''}`);
 }
 
 const SHOT_FORMATS: Record<string, string> = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp' };
@@ -115,6 +126,13 @@ function shotQuery(a: Args, file: string | undefined): URLSearchParams {
   return q;
 }
 
+const TRUNCATED_HINT = 'AVERTISSEMENT : capture tronquée (limite de 16384 px de Chrome, en hauteur comme en largeur)';
+
+/** -o fichier : toujours 0600 (fichier existant compris), un lien symbolique est remplacé, jamais suivi. */
+function writeOutput(file: string, data: Buffer): void {
+  try { writePrivateFile(file, data); } catch (e) { throw new CliError(`impossible d'écrire ${file} : ${(e as Error).message}`); }
+}
+
 async function screenshot(c: Client, a: Args): Promise<void> {
   const file = a.flags.get('output');
   if (file === true) throw new CliError('-o attend un fichier (ou - pour stdout)');
@@ -125,7 +143,7 @@ async function screenshot(c: Client, a: Args): Promise<void> {
     q.set('save', '1');
     const j = (await c.call('GET', `/screenshot?${q}`)).json() as { path: string; width: number; height: number; bytes: number; format: string; truncated?: boolean };
     out(json ? JSON.stringify({ path: j.path, width: j.width, height: j.height, bytes: j.bytes, format: j.format, ...(j.truncated === true ? { truncated: true } : {}) }) : j.path);
-    if (j.truncated === true) hint('AVERTISSEMENT : page tronquée en hauteur (limite de 16384 px de Chrome)');
+    if (j.truncated === true) hint(TRUNCATED_HINT);
     return;
   }
   const r = await c.call('GET', `/screenshot?${q}`);
@@ -134,10 +152,10 @@ async function screenshot(c: Client, a: Args): Promise<void> {
     process.stdout.write(r.body);
     return;
   }
-  writeFileSync(file, r.body, { mode: 0o600 });
+  writeOutput(file, r.body);
   const truncated = r.headers['x-grasp-truncated'] === '1';
   out(json ? JSON.stringify({ path: resolvePath(file), width: Number(r.headers['x-grasp-width']), height: Number(r.headers['x-grasp-height']), bytes: r.body.length, format: String(r.headers['x-grasp-format']), ...(truncated ? { truncated: true } : {}) }) : 'OK');
-  if (truncated) hint('AVERTISSEMENT : page tronquée en hauteur (limite de 16384 px de Chrome)');
+  if (truncated) hint(TRUNCATED_HINT);
 }
 
 async function consoleCmd(c: Client, a: Args): Promise<void> {
@@ -145,7 +163,9 @@ async function consoleCmd(c: Client, a: Args): Promise<void> {
   for (const k of ['level', 'since', 'limit'] as const) {
     const v = a.flags.get(k);
     if (v === true) throw new CliError(`--${k} attend une valeur`);
-    if (v !== undefined) body[k] = k === 'level' ? v : Number(v);
+    if (v === '') throw new CliError(`--${k} attend une valeur`);
+    // Transmis tel quel : le bridge valide (« --since abc » est une erreur 400, jamais un filtre ignoré).
+    if (v !== undefined) body[k] = v;
   }
   // Par défaut, les 50 dernières lignes : la console d'une page bavarde coûte cher en tokens.
   if (body.limit === undefined) body.limit = 50;
@@ -219,7 +239,7 @@ async function waitCmd(c: Client, a: Args): Promise<void> {
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
   const r = await c.call('GET', path);
   const file = a.flags.get('output');
-  if (typeof file === 'string') { writeFileSync(file, r.body); out(a.flags.has('json') ? JSON.stringify({ ok: true, file, bytes: r.body.length }) : 'OK'); return; }
+  if (typeof file === 'string') { writeOutput(file, r.body); out(a.flags.has('json') ? JSON.stringify({ ok: true, file, bytes: r.body.length }) : 'OK'); return; }
   if (process.stdout.isTTY) throw new CliError(`sortie binaire : utilisez -o fichier.${ext} ou redirigez stdout`);
   process.stdout.write(r.body);
 }
@@ -521,14 +541,17 @@ Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, 
                nav et --snap-diff attendent déjà le load puis 400 ms sans mutation du DOM (plafond stableTimeoutMs, 5000)
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
+               -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
                --full page entière · --el découpe sur un élément · --max-width réduit l'échelle · --refs dessine les refs
 Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
+               --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél]
              --snap-diff  diff du snapshot en un aller-retour, après stabilité du DOM ; 4000 caractères par défaut
                           (config diffMax ; --max N l'élargit, --scope <ref|css> le restreint à une zone)
-             --console    entrées console produites pendant l'action (combinable avec --snap-diff)
+             --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
+                          lignes écartées signalées sur stderr avec la commande pour les relire
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
@@ -536,8 +559,9 @@ Sécurité     security            politique telle que le garde l'applique
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 
 Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
-               ref disparue (re-rendu) : retrouvée par (rôle, nom) si c'est sans ambiguïté, sinon erreur avec
-               les 3 candidats les plus proches ; text: introuvable : noms proches proposés
+               ref disparue : retrouvée seulement si c'est le même élément (même nœud DOM, rang décalé) ; élément
+               retiré ou remplacé → 409 avec les homonymes (jamais de clic sur l'un d'eux), sinon 404 avec les
+               3 candidats les plus proches ; ref d'une page précédente → 404 ; text: introuvable : noms proches
 Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une session
 Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
 
@@ -548,5 +572,6 @@ main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve') re
   // --console sur une action en échec : les entrées produites pendant l'action suivent l'erreur.
   const entries = e instanceof CliError ? e.extra?.console : undefined;
   if (Array.isArray(entries) && entries.length > 0) process.stderr.write(`${(entries as ConsoleEntry[]).map(formatEntry).join('\n')}\n`);
+  if (e instanceof CliError && e.extra !== undefined) consoleLosses({ since: e.extra.consoleSince, omitted: e.extra.consoleOmitted, dropped: e.extra.consoleDropped });
   process.exit(1);
 });

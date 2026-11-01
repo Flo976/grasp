@@ -1,4 +1,6 @@
-import { statSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { statSync, mkdirSync, chmodSync, existsSync, openSync, writeFileSync, fsyncSync, closeSync, renameSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 
 export interface PermTarget { path: string; kind: 'file' | 'dir' }
 
@@ -24,4 +26,23 @@ export function checkPermissions(targets: PermTarget[]): void {
 export function ensurePrivateDir(path: string): void {
   if (!existsSync(path)) mkdirSync(path, { recursive: true, mode: 0o700 });
   chmodSync(path, 0o700);
+}
+
+/**
+ * Écrit `data` dans `path` en 0600, quel que soit l'état antérieur : fichier temporaire créé en exclusif
+ * (O_EXCL, qui ne suit jamais un lien) dans le même répertoire, puis renommé par-dessus la cible. Un fichier
+ * existant (même en 0644) est remplacé par un fichier 0600 ; un lien symbolique est remplacé, sa cible
+ * n'est jamais écrite. Un échec lève et ne laisse pas de fichier temporaire.
+ */
+export function writePrivateFile(path: string, data: Buffer): void {
+  const tmp = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`);
+  const fd = openSync(tmp, 'wx', 0o600);
+  try {
+    try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }

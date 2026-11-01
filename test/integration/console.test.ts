@@ -179,3 +179,42 @@ test('allowConsole=false : lecture refusée (403), --console refusé, et Runtime
     for (const m of ['Runtime.enable', 'Log.enable', 'Network.enable']) assert.ok(on.methods.includes(m), `${m} attendu avec la console`);
   } finally { await on.close(); }
 });
+
+test('console : l\'URL du cadre (champ frame) est masquée comme les autres, même origine et hors processus', async () => {
+  const both = await openPage({ allowedDomains: ['127.0.0.1', 'localhost'] });
+  try {
+    await both.page.navigate(`${site.url}/cadres-secrets`);
+    const es = await waitFor(both.page, (x) => x.filter((e) => e.text === 'depuis le cadre').length >= 2);
+    const frames = es.filter((e) => e.text === 'depuis le cadre').map((e) => e.frame ?? '');
+    assert.ok(frames.some((f) => /^http:\/\/127\.0\.0\.1:\d+\/console-frame\?token=\*\*\*&code=\*\*\*$/.test(f)), frames.join('\n'));
+    assert.ok(frames.some((f) => /^http:\/\/localhost:\d+\/console-frame\?session=\*\*\*$/.test(f)), frames.join('\n'));
+    const all = JSON.stringify(await both.page.consoleQuery({ limit: 1000 }));
+    for (const secret of ['SECRET_MEME', 'CODE_OAUTH', 'SECRET_XO']) assert.ok(!all.includes(secret), `${secret} divulgué : ${all}`);
+  } finally { await both.close(); }
+});
+
+test('console : les URL recopiées par Chrome dans les messages du domaine Log (CSP) sont masquées', async () => {
+  await fx.page.navigate(`${site.url}/csp`);
+  const es = await waitFor(fx.page, (x) => x.some((e) => e.source === 'security' && /pix\.png/.test(e.text)));
+  const csp = es.find((e) => e.source === 'security' && /pix\.png/.test(e.text))!;
+  assert.match(csp.text, /pix\.png\?token=\*\*\*&w=2/);
+  assert.ok(!JSON.stringify(await fx.page.consoleQuery({ limit: 1000 })).includes('SECRET_CSP'), 'jeton CSP divulgué');
+});
+
+test('--console sur une action bavarde : les lignes écartées (au-delà de 200) sont comptées, jamais tues', async () => {
+  await fx.page.navigate(`${site.url}/bavard`);
+  const s0 = (await fx.page.consoleQuery({})).seq;
+  const r = await fx.page.click('#flot', { console: true });
+  const c = r.console!;
+  assert.equal(c.entries.length, 200);
+  assert.equal(c.entries[0]!.text, 'erreur n°50', 'les plus récentes sont gardées');
+  assert.equal(c.omitted, 50);
+  assert.equal(c.dropped, 0);
+  assert.equal(c.since, s0, 'seq de départ, pour relire tout avec --since');
+  assert.equal(c.seq, (await fx.page.consoleQuery({})).seq);
+  await assert.rejects(fx.page.click('#absent', { console: true }), (e: GraspError) => {
+    assert.equal(typeof e.extra?.consoleOmitted, 'number');
+    assert.equal(typeof e.extra?.consoleDropped, 'number');
+    return true;
+  });
+});

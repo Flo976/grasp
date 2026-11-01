@@ -115,3 +115,35 @@ test('--refs : refs dessinées sur les éléments interactifs visibles, retirée
   // page entière avec refs : fonctionne aussi
   assert.ok(countColor(decodePng((await fx.page.capture({ full: true, refs: true })).data), MAGENTA) > 50);
 });
+
+test('--full sur une page plus large que le viewport : toute la largeur est rendue (pas de moitié blanche)', async () => {
+  await fx.page.navigate(`${site.url}/large`);
+  const vp = await fx.page.capture({});
+  const s = await fx.page.capture({ full: true });
+  const px = decodePng(s.data);
+  assert.equal(px.width, 3000, `largeur ${px.width}`);
+  assert.equal(s.truncated, undefined);
+  for (const x of [100, 1400]) assert.ok(near(px.at(x, 100), RED), `x=${x} : ${px.at(x, 100)}`);
+  for (const x of [1600, 2000, 2900]) assert.ok(near(px.at(x, 100), GREEN), `x=${x} attendu vert, reçu ${px.at(x, 100)}`);
+  const after = decodePng((await fx.page.capture({})).data);
+  assert.deepEqual([after.width, after.height], [vp.width, vp.height], 'viewport restauré');
+});
+
+test('--el sur un élément plus haut que le viewport, loin dans le document : capturé en entier (pas 1 px)', async () => {
+  await fx.page.navigate(`${site.url}/haute`);
+  const vp = await fx.page.capture({});
+  const s = await fx.page.capture({ el: '#grand' });
+  const px = decodePng(s.data);
+  assert.equal(px.height, 3000, `hauteur ${px.height}`);
+  assert.equal(s.truncated, undefined, 'non tronqué : 3000 px tiennent dans la limite de texture');
+  for (const y of [2, 1500, 2997]) assert.ok(near(px.at(5, y), RED), `y=${y} : ${px.at(5, y)}`);
+  // Plus haut que la limite de texture : tronqué À PARTIR DU HAUT DE L'ÉLÉMENT, et signalé.
+  const big = await fx.page.capture({ el: '#enorme' });
+  const bp = decodePng(big.data);
+  assert.equal(big.truncated, true);
+  assert.equal(bp.height, 16_384, `hauteur ${bp.height}`);
+  assert.ok(near(bp.at(5, 50), [255, 255, 0]), `haut de #enorme jaune, reçu ${bp.at(5, 50)}`);
+  assert.ok(near(bp.at(5, 16_000), BLUE), `bas bleu, reçu ${bp.at(5, 16_000)}`);
+  const after = decodePng((await fx.page.capture({})).data);
+  assert.deepEqual([after.width, after.height], [vp.width, vp.height], 'viewport restauré');
+});

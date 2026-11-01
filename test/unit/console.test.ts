@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConsoleBuffer, formatArgs, formatEntry, mergeRuns, redactUrl, levelOfConsoleType, levelOfLog, type ConsoleEntry } from '../../src/core/console.js';
+import { ConsoleBuffer, formatArgs, formatEntry, mergeRuns, redactUrl, redactUrlsIn, levelOfConsoleType, levelOfLog, type ConsoleEntry } from '../../src/core/console.js';
 
 const push = (b: ConsoleBuffer, level: ConsoleEntry['level'], text: string, extra: Partial<ConsoleEntry> = {}) => b.push({ level, source: 'console', text, ...extra });
 
@@ -110,4 +110,36 @@ test('formatEntry : « #seq niveau source texte (fichier:ligne) ×N », repère 
   assert.ok(long.length < 400, `ligne de ${long.length} car.`);
   assert.match(long, /… \(\+\d+ car\.\)$/);
   assert.doesNotMatch(formatEntry({ seq: 5, at: 0, level: 'info', source: 'console', text: 'a\nb' }), /\n/, 'une ligne par entrée');
+});
+
+test('--since au-delà du dernier seq (tampon recréé) : erreur 409 explicite, jamais un résultat vide silencieux', () => {
+  const b = new ConsoleBuffer();
+  for (let i = 0; i < 3; i++) push(b, 'info', `m${i}`);
+  assert.throws(() => b.query({ since: 500 }), (e: Error & { status?: number }) => {
+    assert.equal(e.status, 409);
+    assert.match(e.message, /since 500.*seq courant 3/);
+    assert.match(e.message, /--since 0/);
+    return true;
+  });
+  assert.equal(b.query({ since: 3 }).entries.length, 0, 'since = dernier seq : rien de nouveau, pas une erreur');
+});
+
+test('fusion ×N sur les entrées consécutives DU TAMPON, avant le filtre --level', () => {
+  const b = new ConsoleBuffer();
+  push(b, 'error', 'X');
+  push(b, 'info', 'Y');
+  push(b, 'error', 'X');
+  assert.deepEqual(b.query({ level: 'error' }).entries.map((e) => [e.seq, e.text, e.count]), [[1, 'X', 1], [3, 'X', 1]]);
+  push(b, 'error', 'X');
+  // #3 et #4 sont réellement consécutifs : fusionnés, même filtrés.
+  assert.deepEqual(b.query({ level: 'error' }).entries.map((e) => [e.seq, e.count]), [[1, 1], [3, 2]]);
+});
+
+test('redactUrlsIn : URL contenues dans un texte du navigateur (CSP…) masquées comme les autres', () => {
+  assert.equal(
+    redactUrlsIn("Loading the image 'http://127.0.0.1:4000/pix.png?token=SECRET&w=2' violates the following directive: \"img-src 'none'\"."),
+    "Loading the image 'http://127.0.0.1:4000/pix.png?token=***&w=2' violates the following directive: \"img-src 'none'\".",
+  );
+  assert.equal(redactUrlsIn('Mixed Content: https://a.test/x?session=S and wss://b.test/s?jwt=J'), 'Mixed Content: https://a.test/x?session=*** and wss://b.test/s?jwt=***');
+  assert.equal(redactUrlsIn('aucune url ici'), 'aucune url ici');
 });

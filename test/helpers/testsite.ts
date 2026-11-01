@@ -119,6 +119,40 @@ export function refsPage(n: number): string {
 </body></html>`;
 }
 
+/** Page plus large que le viewport (3000 px) : rouge sur 0-1500 px, vert au-delà (capture --full en largeur). */
+export const LARGE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Large</title>
+<style>html,body{margin:0;background:#fff} #bande{width:3000px;height:300px;background:linear-gradient(to right,rgb(255,0,0) 0,rgb(255,0,0) 1500px,rgb(0,160,0) 1500px)}</style></head>
+<body><div id="bande"></div></body></html>`;
+
+/**
+ * Éléments plus hauts que le viewport, loin dans le document : #grand (3000 px, rouge) à y=20000,
+ * #enorme (17000 px, haut jaune) à y=23500, au-delà de la limite de texture de Chrome.
+ */
+export const HAUTE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Haute</title>
+<style>html,body{margin:0;background:#fff} #avant{height:20000px;background:rgb(0,0,255)} #grand{height:3000px;background:rgb(255,0,0)}
+#apres{height:500px;background:rgb(0,160,0)} #enorme{height:17000px;background:linear-gradient(rgb(255,255,0) 0,rgb(255,255,0) 100px,rgb(0,0,255) 100px)}</style></head>
+<body><div id="avant"></div><div id="grand"></div><div id="apres"></div><div id="enorme"></div></body></html>`;
+
+/** Iframes dont l'URL porte des secrets (même origine, et localhost hors processus) qui loguent. */
+export const CADRES_SECRETS_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Cadres secrets</title></head><body>
+<iframe src="/console-frame?token=SECRET_MEME&amp;code=CODE_OAUTH" title="même origine"></iframe>
+<iframe id="xo" title="autre origine"></iframe>
+<script>document.getElementById('xo').src = 'http://localhost:' + location.port + '/console-frame?session=SECRET_XO';</script>
+</body></html>`;
+
+/** CSP qui bloque une image dont l'URL porte un jeton : Chrome recopie l'URL dans le message du domaine Log. */
+export const CSP_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="img-src 'none'"><title>CSP</title></head>
+<body><img src="/pix.png?token=SECRET_CSP&amp;w=2" alt="pixel"></body></html>`;
+
+/** Une action qui produit 250 erreurs distinctes (au-delà des 200 jointes à une action --console). */
+export const BAVARD_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Bavard</title></head>
+<body><button id="flot" onclick="for (let i = 0; i < 250; i++) console.error('erreur n°' + i)">Flot</button></body></html>`;
+
 /** Élagage : trois liens sans nom, deux iframes (contenu jamais parcouru par le snapshot). */
 export const ELAGUE_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Élagage</title>
@@ -169,6 +203,11 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/tardif') { res.end(TARDIF_PAGE); return; }
     if (u.pathname === '/refs') { res.end(refsPage(Number(u.searchParams.get('n') ?? '3'))); return; }
     if (u.pathname === '/elague') { res.end(ELAGUE_PAGE); return; }
+    if (u.pathname === '/large') { res.end(LARGE_PAGE); return; }
+    if (u.pathname === '/haute') { res.end(HAUTE_PAGE); return; }
+    if (u.pathname === '/cadres-secrets') { res.end(CADRES_SECRETS_PAGE); return; }
+    if (u.pathname === '/csp') { res.end(CSP_PAGE); return; }
+    if (u.pathname === '/bavard') { res.end(BAVARD_PAGE); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');
       res.end(`<!doctype html><title>Gros</title><ul>${items}</ul>`); return;

@@ -221,20 +221,28 @@ grasp doctor                           # signale le mode windows, démarre chrom
   n'est pas un index positionnel : insérer un élément en haut de page ne décale aucune ref, et une
   ref change seulement si le rôle ou le nom du nœud change. C'est ce qui rend `--snap-diff`
   lisible au lieu d'un bruit total.
-- **Refs résilientes** : le bridge mémorise (rôle, nom) de chaque ref remise à l'agent (50 000 au plus).
-  Une ref absente du snapshot courant (re-rendu qui décale le rang d'un homonyme, nom qui change) est
-  recherchée par **(rôle, nom exacts)** dans un snapshot recalculé :
-  - un seul élément correspond → il est utilisé, et c'est signalé (`note: ref e1erc retrouvée → eu02h
-    (button "Supprimer") après re-rendu`) ;
-  - plusieurs → 409, aucun clic : `ref e1erc (button "Supprimer") n'est plus dans la page et 2 éléments ont
-    ce rôle et ce nom : evu3y button "Supprimer", eu02h button "Supprimer" — choisissez une ref` ;
-  - aucun → 404 avec les **3 candidats les plus proches** (même rôle favorisé, similarité des noms
+- **Refs résilientes** : le bridge mémorise, pour chaque ref remise à l'agent (50 000 au plus), le rôle, le
+  nom, le **nœud DOM** désigné et le **document** (chaque navigation du cadre principal en ouvre un nouveau).
+  Une ref absente du snapshot courant n'est relocalisée que si c'est **le même élément** :
+  - son nœud DOM est toujours dans la page avec le même rôle et le même nom (seul son rang parmi les
+    homonymes a changé, parce qu'un homonyme placé avant a disparu) → il est utilisé, et c'est signalé
+    (`note: ref e1erc retrouvée → eu02h (button "Supprimer") : même élément, rang décalé parmi les homonymes`) ;
+  - son élément a été retiré ou remplacé et des homonymes subsistent → **409, aucun clic**, même s'il n'en
+    reste qu'un : Grasp ne peut pas distinguer « re-rendu » de « supprimé, un voisin homonyme subsiste », et un
+    re-clic sur la ref d'une ligne supprimée ne doit jamais supprimer la ligne voisine (``ref eu02h (button
+    "Supprimer") n'est plus dans la page : son élément a été retiré ou remplacé, et un autre élément a ce rôle
+    et ce nom : evu3y button "Supprimer" — Grasp ne clique pas un homonyme à votre place : refaites `snap` et
+    choisissez une ref``) ;
+  - aucun homonyme → 404 avec les **3 candidats les plus proches** (même rôle favorisé, similarité des noms
     insensible à la casse et aux accents) : `ref e9yo0 (button "Panier (1)") n'est plus dans la page ;
-    candidats les plus proches : e2k1m button "Panier (2)", …`.
+    candidats les plus proches : e2k1m button "Panier (2)", …` (un nom qui change n'est jamais deviné) ;
+  - ref remise sur une **page précédente** (navigation depuis) → 404 « vient d'une page précédente — refaites
+    `snap` », jamais relocalisée sur le nouveau document.
 
   Le corps d'erreur JSON porte aussi `candidates: [{ref, role, name}]`. Un `text:` introuvable propose de
   même les noms proches (`aucun élément nommé « Supprmer » — noms proches : evu3y button "Supprimer", …`).
-  Une ref jamais vue dans cette session → 404 « refaites `snap` ».
+  Une ref jamais vue dans cette session → 404 « refaites `snap` ». `wait --sel <ref>` : une ref dont
+  l'élément a disparu est absente, même si un homonyme subsiste.
 
 `--snap-diff` sur une action mutante renvoie `+` (apparu), `-` (disparu), `~` (modifié), **calculé sur un
 DOM stable** (voir ci-dessous). Si l'action a déclenché une navigation : `navigation → <url>` puis le
@@ -300,7 +308,10 @@ Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire
 
 - `--snap-diff` : diff du snapshot dans le même aller-retour, après stabilité du DOM, borné à 4000
   caractères (`--max N`), restreint à une zone avec `--scope <ref|css>` ;
-- `--console` : entrées console produites **pendant** l'action, après `OK` (ou le diff) ;
+- `--console` : entrées console produites **pendant** l'action, après `OK` (ou le diff) ; 200 lignes au plus
+  (les plus récentes) : les lignes écartées et les entrées perdues par le tampon sont signalées sur stderr
+  (`AVERTISSEMENT : 50 ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action) — grasp console
+  --since 812 --limit 1000`) et dans le JSON (`console.since`, `console.omitted`, `console.dropped`) ;
 - `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur.
 
 ```
@@ -326,10 +337,15 @@ grasp screenshot [-o f|-] [--full] [--el <sélecteur>] [--format png|jpeg|webp] 
   démarrage ; les 50 plus récentes sont gardées, les plus anciennes supprimées), et **seulement le chemin**
   sur stdout : l'agent n'ouvre l'image que s'il en a besoin. `--json` :
   `{"path", "width", "height", "bytes", "format"}` (dimensions lues dans l'image produite).
-  `-o fichier` écrit là (format déduit de l'extension à défaut de `--format`) ; `-o -` envoie le binaire
+  `-o fichier` écrit là (format déduit de l'extension à défaut de `--format`), **toujours en `0600`** : fichier
+  temporaire exclusif renommé par-dessus la cible, si bien qu'un fichier existant en `0644` devient `0600` et
+  qu'un lien symbolique est remplacé, jamais suivi (de même pour `pdf -o`) ; `-o -` envoie le binaire
   sur stdout redirigé.
-- **`--full`** : page entière. **`--el`** : découpe sur la boîte de l'élément (ref, CSS ou `text:`), après
-  `scrollIntoView`. **`--max-width`** : réduit l'échelle (jamais agrandie) pour économiser les tokens
+- **`--full`** : page entière, en hauteur **et en largeur** (une page plus large que le viewport est rendue
+  sur toute sa largeur). **`--el`** : découpe sur la boîte de l'élément (ref, CSS ou `text:`), après
+  `scrollIntoView`, même plus haut que le viewport et loin dans le document. Au-delà de 16 384 px (limite de
+  texture de Chrome, divisée par le `devicePixelRatio`) **de la zone capturée**, la capture est coupée
+  (à partir du haut ou de la gauche de la zone) et marquée `truncated`. **`--max-width`** : réduit l'échelle (jamais agrandie) pour économiser les tokens
   image. **`--format`/`--quality`** : jpeg et webp (1-100) ; `--quality` sur du png → 400.
 - **`--refs`** : dessine en magenta les refs du snapshot (stables, donc celles de `snap`) sur les éléments
   interactifs visibles dans la zone capturée. L'overlay est un hôte `<grasp-overlay>` (shadow root fermé,
@@ -338,8 +354,9 @@ grasp screenshot [-o f|-] [--full] [--el <sélecteur>] [--format png|jpeg|webp] 
   expression de l'agent.
 - **Pas d'effet de bord** : `captureBeyondViewport` de Chrome fait disparaître la barre de défilement
   jusqu'au rechargement (la page se remet en page sur une autre largeur). Grasp ne l'utilise pas : une
-  zone qui déborde du viewport est capturée en agrandissant temporairement le viewport
-  (`Emulation.setDeviceMetricsOverride`, puis retour attendu et défilement restauré). Testé.
+  zone qui déborde du viewport est capturée en agrandissant temporairement le viewport à la taille de la
+  zone et en y faisant défiler la page (`Emulation.setDeviceMetricsOverride`, `scrollTo`, puis retour
+  attendu et défilement restauré). Testé.
 - **Mode Windows et attach** : tout passe par CDP, le fichier est écrit côté Linux par le bridge.
 - `GET /screenshot` sans `save=1` renvoie toujours le binaire (en-têtes `x-grasp-width`, `x-grasp-height`,
   `x-grasp-format`).
@@ -369,11 +386,14 @@ grasp console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--cle
 seq courant : 12 — suite : grasp console --since 12        (stderr)
 ```
 
-- Une ligne par entrée : `#seq niveau source texte (fichier:ligne)`, doublons consécutifs fusionnés
-  `×N`, texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error (les repères
+- Une ligne par entrée : `#seq niveau source texte (fichier:ligne)`, doublons consécutifs **dans le
+  tampon** fusionnés `×N` (la fusion précède le filtre `--level` : deux erreurs séparées par une info ne sont
+  pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error (les repères
   de navigation restent). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
   écartées et les entrées perdues par le tampon sont signalées sur stderr. `--clear` vide le tampon
-  après lecture (le `seq` continue).
+  après lecture (le `seq` continue). Un `--since` **supérieur au seq courant** (curseur d'un tampon recréé :
+  bascule de profil, bridge relancé) → 409 « reprenez avec --since 0 », jamais un résultat vide silencieux ;
+  `--since`/`--limit` non entiers → erreur.
 - **Sensibilité — décision** : la lecture console est **autorisée par défaut** (`allowConsole=true`). Elle
   n'exécute rien et ne donne rien de plus que ce que la page affiche ou envoie déjà à l'agent par `text` et
   `snap`. Mais les arguments de `console.*` peuvent contenir des données de la page (jetons loggués par
@@ -381,7 +401,10 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
   corps de requête ou de réponse, **jamais** d'en-têtes (`Cookie`, `Authorization` ni aucun autre) — Grasp
   n'active même pas le tampon des corps réseau (`maxTotalBufferSize: 0`) ; identifiants d'URL retirés et
   valeurs des paramètres sensibles masquées (`token`, `key`, `secret`, `pass`, `auth`, `session`, `sig`,
-  `jwt`, `code`…). Testé avec un `Authorization: Bearer …`, un corps et un `?token=` sur une réponse 401.
+  `jwt`, `code`…), dans les champs `url` et `frame` (URL de l'iframe) et dans les URL que Chrome recopie
+  dans les messages du domaine `Log` (CSP, contenu mixte). Testé avec un `Authorization: Bearer …`, un corps
+  et un `?token=` sur une réponse 401, une iframe `?token=…&code=…` (même origine et hors processus) et une
+  image bloquée par CSP. Le texte de `console.*` est celui de la page : il n'est pas réécrit.
 - **`allowConsole=false`** : `console` et `--console` → 403, et Grasp n'appelle **jamais** `Runtime.enable`,
   `Log.enable` ni `Network.enable` (vérifié par espion CDP). `Runtime.enable` est un vecteur connu de
   détection de l'automatisation par les protections anti-bot ; à couper sur les sites qui y sont sensibles.
@@ -413,7 +436,8 @@ POST /eval {expression}   GET /cookies   POST /upload {target, files[]}
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
 incohérent ou pas de session · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
-`screenshot` (chemin, avec `shotOnError`), `console`/`consoleSeq` (avec `console`) et `candidates`
+`screenshot` (chemin, avec `shotOnError`), `console`/`consoleSeq`/`consoleSince`/`consoleOmitted`/`consoleDropped`
+(avec `console`) et `candidates`
 (ref disparue ou `text:` introuvable). Pour les actions, `max` est la limite du diff en caractères.
 
 ## Sécurité
@@ -545,10 +569,14 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
   toutes les < 400 ms) coûte `stableTimeoutMs` à chaque `nav` (note sur stderr) ; une animation qui ne
   touche que `style`/`class` n'est pas vue, de même qu'un contenu qui n'apparaît qu'après plus de 400 ms de
   calme (`grasp wait --text` est fait pour ça). Chaque `nav` coûte au moins 400 ms de plus qu'avant.
-- Refs résilientes : la mémoire (rôle, nom) vit dans le bridge, elle est perdue à la bascule de profil ; la
-  relocalisation exige le même rôle et le même nom exact (un nom qui change n'est jamais deviné : il est
-  proposé en candidat). Le défaut d'origine du hash par rang demeure : si le 1er de deux homonymes disparaît,
-  la ref du 1er désigne désormais le 2e (elle existe toujours, aucune relocalisation n'a lieu).
+- Refs résilientes : la mémoire vit dans le bridge, elle est perdue à la bascule de profil. La relocalisation
+  n'a lieu que pour le même nœud DOM : une liste re-rendue (nœuds remplacés) **et** dont un homonyme a disparu
+  donne un 409, pas une relocalisation. Le défaut d'origine du hash par rang demeure, car il ne passe pas par la
+  relocalisation : si le 1er de deux homonymes disparaît, la ref du 1er désigne désormais le 2e (elle existe
+  toujours) ; de même, une ref d'une page précédente dont le hash (rôle, nom, rang) existe sur la nouvelle
+  page désigne l'élément de la nouvelle page. Seule une ref **absente** est protégée.
+- Console : un curseur `--since` d'un tampon recréé n'est détecté que tant qu'il dépasse le seq courant ; si
+  le nouveau tampon a déjà dépassé l'ancien seq, les entrées antérieures au curseur ne sont pas montrées.
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
@@ -572,7 +600,9 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
 - Console : les messages des workers (service workers, workers dédiés) ne sont pas capturés ; une requête
   annulée (navigation qui part, `AbortController`) n'est pas signalée ; les URL sont tronquées à 150
   caractères. Le tampon est perdu à la bascule de profil (le navigateur est relancé).
-- Captures : page entière tronquée à 16 384 px de haut (limite de texture de Chrome, signalée) ;
+- Captures : zone tronquée à 16 384 px de haut ou de large (limite de texture de Chrome, signalée) ; une
+  page plus large que le viewport est capturée avec un viewport élargi, si bien qu'une mise en page fluide
+  peut s'y redistribuer le temps de la capture ;
   l'overlay `--refs` est un élément du DOM le temps de la capture (un `MutationObserver` de la page peut
   le voir passer) et ne couvre que le cadre principal ; en mode attach avec une fenêtre visible, un onglet
   en arrière-plan ou une fenêtre minimisée peut empêcher la capture (erreur 504 explicite après 30 s, non

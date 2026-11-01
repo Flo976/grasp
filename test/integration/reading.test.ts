@@ -153,7 +153,7 @@ test('wait --text survit à une navigation pendant l\'attente', async () => {
 
 // ---------- 3. Refs résilientes ----------
 
-test('ref disparue après un re-rendu : retrouvée par (rôle, nom) quand c\'est sans ambiguïté', async () => {
+test('ref disparue (rang décalé : un homonyme placé avant a été supprimé) : le même élément est retrouvé', async () => {
   await fx.page.navigate(`${site.url}/refs?n=2`);
   const s = await fx.page.snapshot();
   const alpha = refOf(s.text, /button "Supprimer"/, 0);
@@ -164,18 +164,63 @@ test('ref disparue après un re-rendu : retrouvée par (rôle, nom) quand c\'est
   assert.match(await fx.page.text(), /supprimé : Beta/);
 });
 
-test('ref disparue et ambiguë : 409 avec les candidats (ref, rôle, nom), pas de clic arbitraire', async () => {
+test('rang décalé parmi plusieurs homonymes : le MÊME nœud DOM est retrouvé (pas de 409 inutile)', async () => {
   await fx.page.navigate(`${site.url}/refs?n=3`);
   const s = await fx.page.snapshot();
   const gamma = refOf(s.text, /button "Supprimer"/, 2);
   await fx.page.click(refOf(s.text, /button "Supprimer"/, 0));
+  const r = await fx.page.click(gamma); // 2 homonymes restent, mais le nœud de Gamma est toujours là
+  assert.match(r.detail ?? '', new RegExp(`ref ${gamma} retrouvée → e[0-9a-z]+ \\(button "Supprimer"\\)`));
+  assert.match(await fx.page.text(), /supprimé : Gamma/);
+});
+
+test('élément de la ref supprimé, 2 homonymes restants : 409 avec les candidats, aucun clic', async () => {
+  await fx.page.navigate(`${site.url}/refs?n=3`);
+  const gamma = refOf((await fx.page.snapshot()).text, /button "Supprimer"/, 2);
+  await fx.page.click(gamma);
   await assert.rejects(fx.page.click(gamma), (e: GraspError) => {
     assert.equal(e.status, 409, e.message);
     assert.match(e.message, /e[0-9a-z]+ button "Supprimer".*e[0-9a-z]+ button "Supprimer"/);
     assert.equal((e.extra?.candidates as unknown[]).length, 2);
     return true;
   });
-  assert.match(await fx.page.text(), /supprimé : Alpha/, 'aucun autre clic n\'a eu lieu');
+  const t = await fx.page.text();
+  assert.match(t, /supprimé : Gamma/, 'aucun autre clic n\'a eu lieu');
+  assert.match(t, /Alpha/);
+  assert.match(t, /Beta/);
+});
+
+test('élément de la ref supprimé, UN homonyme restant (re-clic après coup) : refus 409, l\'homonyme n\'est pas cliqué', async () => {
+  await fx.page.navigate(`${site.url}/refs?n=2`);
+  const beta = refOf((await fx.page.snapshot()).text, /button "Supprimer"/, 1);
+  await fx.page.click(beta);
+  assert.match(await fx.page.text(), /supprimé : Beta/);
+  await assert.rejects(fx.page.click(beta), (e: GraspError) => {
+    assert.equal(e.status, 409, e.message);
+    assert.match(e.message, new RegExp(`ref ${beta} \\(button "Supprimer"\\) n'est plus dans la page`));
+    assert.match(e.message, /retiré ou remplacé/);
+    const c = e.extra?.candidates as Array<{ role: string; name: string }>;
+    assert.deepEqual(c.map((x) => [x.role, x.name]), [['button', 'Supprimer']]);
+    return true;
+  });
+  const t = await fx.page.text();
+  assert.match(t, /supprimé : Beta/, 'Alpha n\'a pas été supprimé');
+  assert.match(t, /Alpha/);
+  // wait --sel sur cette ref : son élément est absent, l'homonyme ne compte pas.
+  await assert.rejects(fx.page.wait({ sel: beta, timeout: 300 }), (e: GraspError) => e.status === 504);
+});
+
+test('ref remise sur une page précédente : jamais relocalisée sur le nouveau document (404 « refaites snap »)', async () => {
+  await fx.page.navigate(`${site.url}/refs?n=3`);
+  const gamma = refOf((await fx.page.snapshot()).text, /button "Supprimer"/, 2);
+  await fx.page.navigate(`${site.url}/refs?n=1`);
+  await assert.rejects(fx.page.click(gamma), (e: GraspError) => {
+    assert.equal(e.status, 404, e.message);
+    assert.match(e.message, /page précédente/);
+    assert.match(e.message, /refaites `snap`/);
+    return true;
+  });
+  assert.match(await fx.page.text(), /aucun/, 'Alpha n\'a pas été supprimé');
 });
 
 test('ref introuvable (nom changé) : 404 avec les 3 candidats les plus proches, au lieu de « refaites snap »', async () => {

@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
 import { checkUrl, type EffectivePolicy } from '../core/policy.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
-import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
+import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type Snapshot } from './snapshot.js';
@@ -21,7 +21,11 @@ export interface ActionOptions {
   /** En cas d'échec, capture du viewport ; son chemin est ajouté au message d'erreur. */
   shotOnError?: boolean | undefined;
 }
-export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number }
+/**
+ * Console d'une action (--console) : `since` = seq de départ, `omitted` = lignes plus anciennes écartées
+ * (200 au plus sont jointes), `dropped` = entrées tombées du tampon circulaire. Jamais de perte silencieuse.
+ */
+export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number; since: number; omitted: number; dropped: number }
 export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice }
 export interface Blocked { url: string; reason: string; at: number }
 
@@ -141,8 +145,14 @@ export class PageController {
   /** Sessions CDP des iframes hors processus (OOPIF) de l'onglet : gardées et écoutées comme lui. */
   private readonly children = new Set<string>();
   private limits: Limits = { ...DEFAULT_LIMITS };
-  /** ref → (rôle, nom) de chaque ref vue dans un snapshot : base de la résolution d'une ref disparue. */
-  private readonly knownRefs = new Map<string, { role: string; name: string }>();
+  /**
+   * ref → (rôle, nom, nœud DOM, document) de chaque ref vue dans un snapshot : base de la résolution d'une
+   * ref disparue. Le nœud dit si l'élément est encore là ; `doc` (compteur de documents du cadre principal)
+   * empêche qu'une ref d'une page précédente désigne un élément du document courant.
+   */
+  private readonly knownRefs = new Map<string, { role: string; name: string; id: number | undefined; doc: number }>();
+  /** Documents chargés dans le cadre principal (incrémenté à chaque Page.frameNavigated du cadre principal). */
+  private docGen = 0;
   /** Monde isolé « grasp-lecture » du document courant (invalidé à chaque navigation du cadre principal). */
   private isoCtx: number | undefined;
   /** Navigations du cadre principal : une action qui navigue attend aussi la stabilité. */
@@ -273,7 +283,8 @@ export class PageController {
         const en = p.entry ?? {};
         // Erreurs réseau et CORS : rapportées (sans doublon) par les événements Network ci-dessous.
         if ((en.source === 'network' && en.networkRequestId !== undefined) || en.category === 'cors') return;
-        this.log({ level: levelOfLog(en.level), source: String(en.source ?? 'other'), text: String(en.text ?? ''), ...PageController.where(en.url !== undefined ? { url: en.url, lineNumber: en.lineNumber } : en.stackTrace?.callFrames?.[0]) });
+        // Texte rédigé par Chrome, qui y recopie l'URL complète de la ressource (CSP, contenu mixte…).
+        this.log({ level: levelOfLog(en.level), source: String(en.source ?? 'other'), text: redactUrlsIn(String(en.text ?? '')), ...PageController.where(en.url !== undefined ? { url: en.url, lineNumber: en.lineNumber } : en.stackTrace?.callFrames?.[0]) });
         return;
       }
       case 'Network.requestWillBeSent': {
@@ -303,7 +314,8 @@ export class PageController {
       }
       case 'Page.frameNavigated': {
         const f = p.frame ?? {};
-        if (typeof f.id === 'string') this.frames.set(f.id, String(f.url ?? ''));
+        // URL de cadre masquée dès le stockage : elle sort telle quelle dans le champ `frame` des entrées.
+        if (typeof f.id === 'string') this.frames.set(f.id, redactUrl(String(f.url ?? ''), 300));
         if (e.sessionId === this.sessionId && f.parentId === undefined) this.log({ level: 'info', source: 'navigation', text: redactUrl(String(f.url ?? ''), 300) });
         return;
       }
@@ -326,7 +338,8 @@ export class PageController {
   }
 
   private consoleSince(seq: number): ConsoleSlice {
-    return { entries: this.consoleBuf.query({ since: seq, limit: ACTION_CONSOLE_LIMIT }).entries, seq: this.consoleBuf.seq };
+    const r = this.consoleBuf.query({ since: seq, limit: ACTION_CONSOLE_LIMIT });
+    return { entries: r.entries, seq: r.seq, since: seq, omitted: r.omitted, dropped: r.dropped };
   }
 
   /** Enrichit l'erreur d'une action : chemin d'une capture (--shot-on-error), entrées console (--console). */
@@ -346,6 +359,9 @@ export class PageController {
       const c = this.consoleSince(seq);
       extra.console = c.entries;
       extra.consoleSeq = c.seq;
+      extra.consoleSince = c.since;
+      extra.consoleOmitted = c.omitted;
+      extra.consoleDropped = c.dropped;
     }
     return new GraspError(base.status, msg, extra);
   }
@@ -405,7 +421,7 @@ export class PageController {
         // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
         case 'Page.navigatedWithinDocument': if (main) { this.pendingNavAt = 0; this.navCount++; } break;
         case 'Page.frameNavigated':
-          if (e.params.frame?.parentId === undefined) { this.navCount++; this.isoCtx = undefined; }
+          if (e.params.frame?.parentId === undefined) { this.navCount++; this.docGen++; this.isoCtx = undefined; }
           break;
         case 'Page.javascriptDialogOpening': {
           // Un dialogue bloque tout l'onglet : on le ferme et on le signale.
@@ -425,7 +441,7 @@ export class PageController {
     try {
       if (info.type === 'iframe') {
         this.children.add(sid);
-        this.frames.set(info.targetId, info.url);
+        this.frames.set(info.targetId, redactUrl(String(info.url ?? ''), 300));
         await this.guard(sid);
         if (this.policy.allowConsole) {
           await this.cdp.send('Page.enable', {}, sid);
@@ -554,7 +570,7 @@ export class PageController {
 
   /** Mémorise (rôle, nom) de chaque ref remise à l'agent ; borné, les plus anciennes sortent d'abord. */
   private remember(snap: Snapshot): void {
-    for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, m); }
+    for (const [ref, m] of snap.meta) { this.knownRefs.delete(ref); this.knownRefs.set(ref, { role: m.role, name: m.name, id: snap.refs.get(ref), doc: this.docGen }); }
     for (const k of this.knownRefs.keys()) {
       if (this.knownRefs.size <= KNOWN_REFS_MAX) break;
       this.knownRefs.delete(k);
@@ -700,9 +716,10 @@ export class PageController {
 
   private async hasSel(sel: string): Promise<'ok' | 'absent' | 'hidden'> {
     if (REF_RE.test(sel) || sel.startsWith('text:')) {
-      // Ref ou texte accessible : présent dans le snapshot (une ambiguïté veut dire « présent »).
+      // Ref ou texte accessible : présent dans le snapshot. Une ambiguïté de text: veut dire « présent » ; un
+      // 409 sur une ref veut dire que SON élément n'est plus là (seuls des homonymes subsistent) : absent.
       try { await this.resolve(sel); return 'ok'; } catch (e) {
-        if (e instanceof GraspError && e.status === 409) return 'ok';
+        if (e instanceof GraspError && e.status === 409) return REF_RE.test(sel) ? 'absent' : 'ok';
         if (e instanceof GraspError && e.status === 404) return 'absent';
         throw e;
       }
@@ -742,24 +759,30 @@ export class PageController {
   }
 
   /**
-   * Ref absente du snapshot courant (re-rendu, rang parmi les homonymes décalé, nom changé) : on retrouve
-   * l'élément par (rôle, nom) mémorisés quand la ref a été remise. Unique → utilisé (et signalé) ;
-   * ambigu → 409, introuvable → 404, avec les 3 candidats les plus proches (ref, rôle, nom).
+   * Ref absente du snapshot courant. Elle n'est relocalisée que si c'est **le même élément** : son nœud DOM
+   * (mémorisé quand la ref a été remise) est toujours dans la page, avec le même rôle et le même nom — seul
+   * son rang parmi les homonymes a changé. Sinon l'élément a été retiré ou remplacé, et Grasp ne peut pas
+   * distinguer « re-rendu » de « supprimé, un homonyme subsiste » : jamais de clic sur un homonyme.
+   * Homonymes présents → 409 avec les candidats ; aucun → 404 avec les 3 plus proches. Une ref remise sur un
+   * document précédent (navigation depuis) → 404 « refaites `snap` ».
    */
   private relocate(ref: string, snap: Snapshot): number {
     const prev = this.knownRefs.get(ref);
     if (prev === undefined) throw notFound(`ref ${ref} inconnue : elle ne vient d'aucun snapshot de cette session — refaites \`snap\``);
     const what = `${prev.role}${prev.name !== '' ? ` "${prev.name}"` : ''}`;
+    if (prev.doc !== this.docGen) throw notFound(`ref ${ref} (${what}) vient d'une page précédente : la page a changé depuis le snapshot qui l'a remise — refaites \`snap\``);
     const all = PageController.candidates(snap);
     const strip = (c: Candidate): Candidate => ({ ref: c.ref, role: c.role, name: c.name });
-    const same = all.filter((c) => c.role === prev.role && c.name === prev.name);
-    if (same.length === 1) {
-      this.notes?.push(`ref ${ref} retrouvée → ${same[0]!.ref} (${what}) après re-rendu`);
-      return same[0]!.id;
+    const self = prev.id !== undefined ? all.find((c) => c.id === prev.id) : undefined;
+    if (self !== undefined && self.role === prev.role && self.name === prev.name) {
+      this.notes?.push(`ref ${ref} retrouvée → ${self.ref} (${what}) : même élément, rang décalé parmi les homonymes`);
+      return self.id;
     }
-    if (same.length > 1) {
+    const same = all.filter((c) => c.role === prev.role && c.name === prev.name);
+    if (same.length > 0) {
       const c = same.slice(0, 3).map(strip);
-      throw new GraspError(409, `ref ${ref} (${what}) n'est plus dans la page et ${same.length} éléments ont ce rôle et ce nom : ${c.map(fmtCandidate).join(', ')}${same.length > 3 ? ', …' : ''} — choisissez une ref`, { candidates: c });
+      const who = same.length === 1 ? 'un autre élément a' : `${same.length} autres éléments ont`;
+      throw new GraspError(409, `ref ${ref} (${what}) n'est plus dans la page : son élément a été retiré ou remplacé, et ${who} ce rôle et ce nom : ${c.map(fmtCandidate).join(', ')}${same.length > 3 ? ', …' : ''} — Grasp ne clique pas un homonyme à votre place : refaites \`snap\` et choisissez une ref`, { candidates: c });
     }
     const near = nearest(prev, all, 3).map(strip);
     throw new GraspError(404, `ref ${ref} (${what}) n'est plus dans la page ; ${near.length > 0 ? `candidats les plus proches : ${near.map(fmtCandidate).join(', ')}` : 'aucun candidat — refaites `snap`'}`, { candidates: near });
@@ -996,7 +1019,8 @@ export class PageController {
     const inViewport = (r: Box) => r.x >= viewport.x - 0.5 && r.y >= viewport.y - 0.5 && r.x + r.width <= viewport.x + viewport.width + 0.5 && r.y + r.height <= viewport.y + viewport.height + 0.5;
 
     // Zone en coordonnées du document. `expand` : la zone déborde du viewport, on l'agrandit le temps
-    // de la capture (setDeviceMetricsOverride puis clear). Pas de captureBeyondViewport : Chrome y fait
+    // de la capture à la TAILLE DE LA ZONE (largeur et hauteur), puis on fait défiler jusqu'à son coin
+    // (setDeviceMetricsOverride, scrollTo, puis clear). Pas de captureBeyondViewport : Chrome y fait
     // disparaître la barre de défilement jusqu'au rechargement (reflow de la page), ce qui l'altère.
     let region: Box | undefined;
     let expand = false;
@@ -1014,8 +1038,10 @@ export class PageController {
       region = { x: vv.pageX, y: vv.pageY, width: surface.width, height: surface.height };
     }
     if (region !== undefined && expand) {
-      const maxH = Math.floor(MAX_CAPTURE_PX / dpr);
-      if (region.y + region.height > maxH) { region = { ...region, height: Math.max(1, maxH - region.y) }; truncated = true; }
+      // Limite de texture mesurée sur la ZONE capturée (le viewport agrandi), pas depuis le haut du document.
+      const maxPx = Math.floor(MAX_CAPTURE_PX / dpr);
+      if (region.width > maxPx) { region = { ...region, width: maxPx }; truncated = true; }
+      if (region.height > maxPx) { region = { ...region, height: maxPx }; truncated = true; }
     }
     let scale = 1;
     if (o.maxWidth !== undefined) {
@@ -1030,7 +1056,10 @@ export class PageController {
     let data: string;
     try {
       if (expand && region !== undefined) {
-        await this.s('Emulation.setDeviceMetricsOverride', { width: Math.ceil(m.cssLayoutViewport.clientWidth), height: Math.max(Math.ceil(region.y + region.height), Math.ceil(viewport.height)), deviceScaleFactor: 0, mobile: false });
+        await this.s('Emulation.setDeviceMetricsOverride', { width: Math.max(Math.ceil(m.cssLayoutViewport.clientWidth), Math.ceil(region.width)), height: Math.max(Math.ceil(viewport.height), Math.ceil(region.height)), deviceScaleFactor: 0, mobile: false });
+        // Coin de la zone en haut à gauche du viewport agrandi (défilement borné par le navigateur : la zone,
+        // au plus aussi grande que le viewport, reste dedans). `instant` : ignore un scroll-behavior: smooth.
+        await this.inIsolatedWorld(`scrollTo({ left: ${Number(region.x)}, top: ${Number(region.y)}, behavior: 'instant' })`);
       }
       data = await new Promise<string>((resolve, reject) => {
         const t = setTimeout(() => reject(new GraspError(504, 'capture : délai dépassé (onglet en arrière-plan ou fenêtre minimisée ?)')), 30_000);
@@ -1046,7 +1075,7 @@ export class PageController {
           if (cur === undefined || (Math.abs(cur.cssVisualViewport.clientHeight - vv.clientHeight) < 1 && Math.abs(cur.cssVisualViewport.clientWidth - vv.clientWidth) < 1)) break;
           await sleep(25);
         }
-        await this.inIsolatedWorld(`scrollTo(${Number(vv.pageX)}, ${Number(vv.pageY)})`).catch(() => undefined);
+        await this.inIsolatedWorld(`scrollTo({ left: ${Number(vv.pageX)}, top: ${Number(vv.pageY)}, behavior: 'instant' })`).catch(() => undefined);
       }
       if (removeOverlay !== undefined) await removeOverlay();
     }
