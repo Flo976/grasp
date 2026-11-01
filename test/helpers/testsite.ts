@@ -332,6 +332,90 @@ $('enregistrer').addEventListener('click', () => {
 </script>
 </body></html>`;
 
+/**
+ * Rendu du snapshot (défauts relevés sur le banc multi-sites et l'édition d'un profil Malt) :
+ * nœuds texte invisibles (espaces de largeur nulle), libellés répétés, text-transform, croix de
+ * suppression de tags sans nom, listes déroulantes (select natif, combobox ARIA à aria-owns),
+ * option « Créer … » composée de plusieurs spans.
+ */
+export const SNAP_V3_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Snapshot v3</title>
+<style>.maj{text-transform:uppercase} .cap{text-transform:capitalize} .chip{display:inline-flex;gap:4px;border:1px solid #888;margin:2px;padding:2px}
+.chip button{width:16px;height:16px} .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}</style></head>
+<body>
+<h1>Profil</h1>
+<p>Avant le vide</p><span>\u200b</span><div>&#8203;</div><span>&#xFEFF;</span><div>\u200b \u200c</div>
+<p>Après le vide</p>
+<div><label for="heures">Heures</label><label for="heures" class="sr">Heures</label><input id="heures" type="number" value="35"></div>
+<div><span id="dispo-l">Disponibilité</span><input id="dispo" aria-labelledby="dispo-l dispo-l"></div>
+<h2 class="maj">Mes compétences</h2>
+<button class="maj" id="enreg">Enregistrer le profil</button>
+<p class="cap">texte libre en minuscules</p>
+<ul id="tags" aria-label="Compétences">
+  <li class="chip"><span>PHP</span><button type="button" onclick="this.closest('li').remove()"><svg width="10" height="10" aria-hidden="true"><path d="M0 0L10 10"/></svg></button></li>
+  <li class="chip"><span>Symfony</span><button type="button" onclick="this.closest('li').remove()"><svg width="10" height="10" aria-hidden="true"><path d="M0 0L10 10"/></svg></button></li>
+  <li class="chip"><span>Laravel</span><button type="button" onclick="this.closest('li').remove()"><svg width="10" height="10" aria-hidden="true"><path d="M0 0L10 10"/></svg></button></li>
+</ul>
+<label for="pays">Pays</label>
+<select id="pays">${Array.from({ length: 25 }, (_, i) => `<option value="p${i}"${i === 2 ? ' selected' : ''}>Pays ${i}</option>`).join('')}</select>
+<label for="unite">Unité</label>
+<select id="unite"><option>Jour</option><option selected>Heure</option></select>
+<div>
+  <label for="saisie">Ajouter une compétence</label>
+  <input id="saisie" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-owns="sugg" aria-controls="sugg" value="Laravel">
+  <ul id="sugg" role="listbox" aria-label="Suggestions">
+    <li role="option" id="o1"><span>Laravel</span> <span class="hint">10</span></li>
+    <li role="option" id="o2" aria-selected="true"><span>Laravel</span> <span>Livewire</span></li>
+    <li role="option" id="o3"><span class="ico">+</span> <span>Créer</span> <strong>« Laravel »</strong></li>
+  </ul>
+</div>
+<div role="listbox" aria-label="Villes" id="villes">${Array.from({ length: 30 }, (_, i) => `<div role="option"${i === 3 ? ' aria-selected="true"' : ''}>Ville ${i}</div>`).join('')}</div>
+</body></html>`;
+
+/**
+ * Validité : radios required d'un groupe vierge, case à cocher required, champ texte required : aucune
+ * erreur affichée tant que rien n'est touché ni soumis. Après soumission : :user-invalid.
+ */
+export const RADIOS_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Radios</title></head><body>
+<form id="f" onsubmit="event.preventDefault(); document.getElementById('etat').textContent = 'Envoyé'">
+  <fieldset><legend>Rythme</legend>
+    <label><input type="radio" name="rythme" value="j" required> Jour</label>
+    <label><input type="radio" name="rythme" value="h"> Heure</label>
+  </fieldset>
+  <label><input type="checkbox" id="cgu" required> J'accepte</label>
+  <label for="ville">Ville</label><input id="ville" required>
+  <button id="envoyer">Envoyer</button>
+</form>
+<p id="etat">Rien</p>
+</body></html>`;
+
+/**
+ * Fenêtres modales ouvertes à la demande, sous leurs deux formes courantes : `<dialog>` ouvert par
+ * showModal() (le reste de la page devient inerte), et div aria-modal dont la bibliothèque pose
+ * aria-hidden="true" sur le fond (modales Vue/React). Un bouton « Fermer » existe hors de la modale ET
+ * dans la modale (homonymes), plus un bouton « Supprimer » hors de la modale.
+ */
+export const MODALE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Modale</title></head><body>
+<div id="fond">
+<h1>Liste</h1>
+<button id="fermer-page">Fermer</button>
+<button id="supprimer" onclick="document.getElementById('etat').textContent = 'Supprimé'">Supprimer</button>
+<button id="ouvrir" onclick="document.getElementById('modale').showModal()">Ouvrir</button>
+<button id="ouvrir-aria" onclick="document.getElementById('fond').setAttribute('aria-hidden', 'true'); document.getElementById('modale-aria').hidden = false; document.getElementById('fermer-aria').focus()">Ouvrir ARIA</button>
+<p id="etat">Rien</p>
+</div>
+<dialog aria-label="Confirmation" id="modale">
+  <p>Confirmer ?</p>
+  <button id="fermer-modale" onclick="document.getElementById('modale').close()">Fermer</button>
+  <button id="valider" onclick="document.getElementById('etat').textContent = 'Validé'">Valider</button>
+</dialog>
+<div role="dialog" aria-modal="true" aria-label="Confirmation ARIA" id="modale-aria" hidden>
+  <button id="fermer-aria" onclick="document.getElementById('modale-aria').hidden = true; document.getElementById('fond').removeAttribute('aria-hidden')">Fermer</button>
+</div>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -371,6 +455,9 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
     if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
     if (u.pathname === '/erreurs') { res.end(ERREURS_PAGE); return; }
+    if (u.pathname === '/snap-v3') { res.end(SNAP_V3_PAGE); return; }
+    if (u.pathname === '/radios') { res.end(RADIOS_PAGE); return; }
+    if (u.pathname === '/modale') { res.end(MODALE_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

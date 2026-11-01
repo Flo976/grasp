@@ -171,11 +171,21 @@ test('erreurs du DOM (message hors arbre d\'accessibilité, balisage Malt) : rat
   assert.ok((lineOf(long.text, /Intitulé du poste/) ?? '').length < 260);
 });
 
+test('erreurs : avec le relevé DOM, l\'invalidité de l\'arbre seule (radio required jamais touché) n\'est pas affichée', () => {
+  const nodes = flatten(ax('RootWebArea', 'R', [ax('radio', 'Jour', [], { properties: [prop('invalid', 'true')] })]));
+  assert.match(buildSnapshot(nodes, { url: 'http://h/', title: 'R' }).text, /\[invalide\]/, 'sans relevé : l\'arbre fait foi');
+  const s = buildSnapshot(nodes, { url: 'http://h/', title: 'R', formErrors: { fields: new Map(), alerts: [] } });
+  assert.doesNotMatch(s.text, /invalide/, s.text);
+  assert.deepEqual(s.invalid, []);
+});
+
 test('diff : apparition et disparition des erreurs (champ, alerte hors arbre, bandeau role=alert)', () => {
   const before = buildSnapshot(errorTree({ invalid: false }), { url: 'http://h/', title: 'T' });
   const bad = errorTree({ alertText: '2 erreur(s) dans le formulaire' });
   const poste = bad.find((n) => n.name?.value === 'Intitulé du poste')!;
-  const after = buildSnapshot(bad, { url: 'http://h/', title: 'T', formErrors: { fields: new Map([[poste.backendDOMNodeId!, 'Doit compter au maximum 50 caractères']]), alerts: ['Session expirée'] } });
+  // Le relevé DOM voit Code postal (aria-invalid, message pris dans la description AX).
+  const cp = bad.find((n) => n.name?.value === 'Code postal')!;
+  const after = buildSnapshot(bad, { url: 'http://h/', title: 'T', formErrors: { fields: new Map([[poste.backendDOMNodeId!, 'Doit compter au maximum 50 caractères'], [cp.backendDOMNodeId!, '']]), alerts: ['Session expirée'] } });
   const d = diffSnapshots(before, after);
   assert.match(d, /^~ e[0-9a-z]+:textbox "Code postal"="75" \[invalide: Code postal à 5 chiffres\]$/m, d);
   assert.match(d, /^~ e[0-9a-z]+:textbox "Intitulé du poste"=.* \[invalide: Doit compter au maximum 50 caractères\]$/m, d);

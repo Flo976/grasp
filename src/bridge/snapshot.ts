@@ -20,6 +20,7 @@ export interface AXNode {
   childIds?: string[];
   parentId?: string;
   backendDOMNodeId?: number;
+  ignoredReasons?: Array<{ name: string }>;
 }
 
 export interface Snapshot {
@@ -41,6 +42,8 @@ export interface Snapshot {
   scopeFound?: boolean;
   /** Champs invalides de toute la page (même hors zone), dans l'ordre du document ; message '' s'il n'y en a pas. */
   invalid: Array<{ ref: string; backendId: number | undefined; line: string; message: string }>;
+  /** Fenêtre modale ouverte qui masque le reste de la page : son nom accessible ('' sans nom). */
+  modal?: string;
 }
 
 /**
@@ -61,14 +64,25 @@ export interface SnapshotOptions {
    * mais seules les lignes du sous-arbre sont émises.
    */
   scopeBackendId?: number;
+  /**
+   * Relevé DOM des erreurs de formulaire. Fourni, il fait foi : un champ que l'arbre d'accessibilité dit
+   * invalide (validité native d'un radio required jamais touché…) sans erreur exposée dans le DOM
+   * (aria-invalid, :user-invalid, message visible relié) n'est pas marqué [invalide].
+   */
   formErrors?: FormErrors;
+  /**
+   * Texte source des nœuds texte mis en forme par CSS (text-transform) : backendDOMNodeId du nœud texte →
+   * texte du DOM. L'arbre d'accessibilité donne le texte transformé (« ENREGISTRER ») ; l'agent doit voir
+   * et taper le texte d'origine.
+   */
+  sourceTexts?: Map<number, string>;
 }
 
 /** Budget par défaut (octets) ; le bridge applique `snapMax` de la config (12 000 par défaut). */
 export const DEFAULT_MAX_BYTES = 12_000;
 
 /** Conteneurs traversés sans être émis. */
-const PASS_THROUGH = new Set(['generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak', 'LabelText', 'paragraph', 'RootWebArea', 'Section', 'div', 'MenuListPopup', 'ListMarker', 'Abbr', 'emphasis', 'strong', 'superscript', 'subscript', 'time', 'mark', 'code']);
+const PASS_THROUGH = new Set(['generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak', 'LabelText', 'Legend', 'paragraph', 'RootWebArea', 'Section', 'div', 'MenuListPopup', 'ListMarker', 'Abbr', 'emphasis', 'strong', 'superscript', 'subscript', 'time', 'mark', 'code']);
 /** Conteneurs émis seulement s'ils ont un nom. */
 const NAMED_ONLY = new Set(['group', 'region', 'listitem', 'article', 'figure', 'cell', 'row', 'rowgroup', 'blockquote', 'contentinfo', 'banner', 'term', 'definition', 'Iframe', 'image']);
 export const INTERACTIVE = new Set(['button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'switch', 'slider', 'spinbutton', 'treeitem']);
@@ -79,10 +93,52 @@ const FIELD_ROLES = new Set([...VALUE_ROLES, 'checkbox', 'radio', 'switch', 'lis
 const LIVE_ROLES = new Set(['alert', 'status', 'log', 'alertdialog']);
 /** Longueur maximale d'un message d'erreur rendu. */
 const ERROR_MAX = 120;
+/** Options rendues par liste (select natif, listbox) ; les suivantes sont comptées, leurs refs restent résolubles. */
+const OPTIONS_MAX = 20;
+/** Rôles sans nom auxquels on donne un nom de contexte (texte voisin) : croix de suppression d'un tag, etc. */
+const CONTEXT_ROLES = new Set(['button', 'checkbox', 'radio', 'switch', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'treeitem']);
+/** Enfants d'une combobox ouverte qui portent ses options (le reste est son texte interne, déjà rendu en =valeur). */
+const POPUP_ROLES = new Set(['MenuListPopup', 'listbox', 'tree', 'grid', 'dialog', 'group', 'option']);
+/** Raisons Chrome d'un nœud masqué par une modale, un fond aria-hidden ou inerte. */
+const MASKED_REASONS = new Set(['activeModalDialog', 'ariaHiddenElement', 'ariaHiddenSubtree', 'inertElement', 'inertSubtree']);
 
 const listOf = <T>(xs: T[] | undefined): T[] => (xs === undefined ? [] : xs);
 const str = (v: AXValue | undefined): string => (v?.value === undefined || v.value === null ? '' : String(v.value));
-const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+/** Caractères invisibles (espaces de largeur nulle, BOM, césure conditionnelle) : jamais rendus. */
+const INVISIBLE = /[\u200b-\u200d\u2060\ufeff\u00ad]/g;
+const norm = (s: string) => s.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Nom répété (« Heures Heures ») : champ à deux <label>, ou aria-labelledby qui cite deux fois le même
+ * texte. Si le nom est exactement k fois la même suite de mots, on n'en garde qu'une.
+ */
+function dedupeName(s: string): string {
+  const w = s.split(' ');
+  for (let k = 1; k <= w.length / 2; k++) {
+    if (w.length % k !== 0) continue;
+    const head = w.slice(0, k).join(' ');
+    let same = true;
+    for (let i = k; i < w.length && same; i += k) same = w.slice(i, i + k).join(' ') === head;
+    if (same) return head;
+  }
+  return s;
+}
+
+/**
+ * Restaure le texte source dans un nom calculé à partir de textes transformés : même suite de caractères
+ * hors blancs, remplacée caractère pour caractère (les blancs du nom sont gardés). undefined si ça ne
+ * colle pas (nom venu d'aria-label, transformation qui change la longueur : ß → SS).
+ */
+function restoreSource(name: string, transformed: string, source: string): string | undefined {
+  const t = Array.from(transformed.replace(/\s+/g, ''));
+  const o = Array.from(source.replace(/\s+/g, ''));
+  const n = Array.from(name);
+  if (t.length !== o.length || n.filter((c) => !/\s/.test(c)).join('') !== t.join('')) return undefined;
+  let k = 0;
+  return n.map((c) => (/\s/.test(c) ? c : o[k++]!)).join('');
+}
+
+const hasProp = (n: AXNode, name: string, value: unknown) => listOf(n.properties).some((p) => p.name === name && p.value.value === value);
 
 function quote(s: string, max: number): string {
   const t = norm(s);
@@ -129,11 +185,11 @@ function axInvalid(node: AXNode): boolean {
 }
 
 /** Texte des descendants StaticText (régions annoncées sans nom). */
-function liveText(node: AXNode, byId: Map<string, AXNode>): string {
+function liveText(node: AXNode, byId: Map<string, AXNode>, nameOf: (n: AXNode) => string): string {
   const parts: string[] = [];
   const walk = (n: AXNode) => {
     if (n.ignored) return;
-    if (str(n.role) === 'StaticText') { parts.push(str(n.name)); return; }
+    if (str(n.role) === 'StaticText') { parts.push(nameOf(n)); return; }
     for (const id of listOf(n.childIds)) { const c = byId.get(id); if (c) walk(c); }
   };
   walk(node);
@@ -150,20 +206,78 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const root = nodes.find((n) => n.parentId === undefined || !byId.has(n.parentId)) ?? nodes[0];
 
+  // Texte source sous text-transform : nœuds texte transformés (par backendDOMNodeId), ancêtres dont le nom
+  // en dérive (restauré caractère pour caractère), et table exacte transformé → source pour les noms venus
+  // d'un <label> (null : plusieurs sources possibles, on ne choisit pas).
+  const sources = opts.sourceTexts ?? new Map<number, string>();
+  const sourceOf = (n: AXNode) => (n.backendDOMNodeId !== undefined ? sources.get(n.backendDOMNodeId) : undefined);
+  const transformedAbove = new Set<string>();
+  const exactSource = new Map<string, string | null>();
+  if (sources.size > 0) {
+    for (const n of nodes) {
+      const src = str(n.role) === 'StaticText' ? sourceOf(n) : undefined;
+      if (src === undefined) continue;
+      const t = norm(str(n.name));
+      const o = norm(src);
+      if (t === o || t === '') continue;
+      const prev = exactSource.get(t);
+      exactSource.set(t, prev === undefined || prev === o ? o : null);
+      for (let p = n.parentId; p !== undefined && !transformedAbove.has(p); p = byId.get(p)?.parentId) transformedAbove.add(p);
+    }
+  }
+  const collectTexts = (n: AXNode, t: string[], o: string[]) => {
+    for (const id of listOf(n.childIds)) {
+      const c = byId.get(id);
+      if (!c) continue;
+      if (str(c.role) === 'StaticText') {
+        if (!c.ignored) { t.push(norm(str(c.name))); o.push(norm(sourceOf(c) ?? str(c.name))); }
+      } else collectTexts(c, t, o);
+    }
+  };
+  /** Nom rendu d'un nœud : sans caractères invisibles, texte source restauré, libellé répété dédupliqué. */
+  const names = new Map<string, string>();
+  const nameOf = (n: AXNode): string => {
+    const cached = names.get(n.nodeId);
+    if (cached !== undefined) return cached;
+    const role = str(n.role);
+    let name = norm(str(n.name));
+    if (FIELD_ROLES.has(role)) name = dedupeName(name);
+    if (name !== '' && sources.size > 0) {
+      const src = role === 'StaticText' ? sourceOf(n) : undefined;
+      if (src !== undefined) name = norm(src);
+      else if (role !== 'StaticText') {
+        let fixed: string | undefined;
+        if (transformedAbove.has(n.nodeId)) {
+          const t: string[] = [];
+          const o: string[] = [];
+          collectTexts(n, t, o);
+          fixed = restoreSource(name, t.join(' '), o.join(' '));
+        }
+        fixed ??= exactSource.get(name) ?? undefined;
+        if (fixed !== undefined) name = fixed;
+      }
+    }
+    names.set(n.nodeId, name);
+    return name;
+  };
+
   // Passe 1 : noms des nœuds émis, pour ne pas répéter leur texte en texte brut.
   const namedTexts = new Set<string>();
   for (const n of nodes) {
     const role = str(n.role);
     if (n.ignored || PASS_THROUGH.has(role) || role === 'StaticText') continue;
-    const name = norm(str(n.name));
+    const name = nameOf(n);
     if (name) namedTexts.add(name);
   }
 
-  // Message d'erreur d'un champ : rendu sur la ligne du champ, pas répété en texte brut.
+  // Message d'erreur d'un champ : rendu sur la ligne du champ, pas répété en texte brut. Avec le relevé
+  // DOM, l'invalidité native seule (radio required d'un groupe jamais touché) ne suffit pas : il faut une
+  // erreur exposée (aria-invalid, :user-invalid, message relié ou visible).
   const fieldErrors = opts.formErrors?.fields ?? new Map<number, string>();
   const invalidMsg = (n: AXNode): string | undefined => {
     const dom = n.backendDOMNodeId !== undefined ? fieldErrors.get(n.backendDOMNodeId) : undefined;
     if (dom !== undefined) return dom || (axInvalid(n) ? norm(str(n.description)) : '');
+    if (opts.formErrors !== undefined) return undefined;
     return axInvalid(n) ? norm(str(n.description)) : undefined;
   };
   for (const n of nodes) {
@@ -187,8 +301,27 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   let namelessLinks = 0;
   let iframes = 0;
 
-  const makeRef = (role: string, name: string): string => {
-    const key = `${role}\u0000${name}`;
+  // Fenêtres modales ouvertes. Leur sous-arbre a ses propres refs : quand la modale masque le fond (showModal,
+  // fond aria-hidden), les homonymes du fond disparaissent de l'arbre, et sans cette séparation la ref du
+  // « Fermer » du fond glisserait sur le « Fermer » de la modale.
+  const isModal = (n: AXNode) => !n.ignored && (str(n.role) === 'dialog' || str(n.role) === 'alertdialog') && hasProp(n, 'modal', true);
+  const modals = nodes.filter(isModal);
+  let modal: string | undefined;
+  if (modals.length > 0) {
+    const inModal = new Set<string>();
+    const mark = (n: AXNode) => { inModal.add(n.nodeId); for (const id of listOf(n.childIds)) { const c = byId.get(id); if (c && !inModal.has(c.nodeId)) mark(c); } };
+    for (const m of modals) mark(m);
+    const reasons = (n: AXNode) => listOf(n.ignoredReasons).map((r) => r.name);
+    // Fond masqué : Chrome l'a retiré (showModal), ou il est aria-hidden/inerte et plus rien d'actionnable
+    // ne reste hors de la modale.
+    const pruned = nodes.some((n) => n.ignored && reasons(n).includes('activeModalDialog'));
+    const hiddenBg = nodes.some((n) => n.ignored && !inModal.has(n.nodeId) && reasons(n).some((r) => MASKED_REASONS.has(r)))
+      && !nodes.some((n) => !n.ignored && !inModal.has(n.nodeId) && (INTERACTIVE.has(str(n.role)) || str(n.role) === 'heading'));
+    if (pruned || hiddenBg) modal = nameOf(modals[modals.length - 1]!);
+  }
+
+  const makeRef = (role: string, name: string, zone = ''): string => {
+    const key = `${role}\u0000${name}${zone}`;
     const k = occurrences.get(key) ?? 0;
     occurrences.set(key, k + 1);
     for (let salt = 0; ; salt++) {
@@ -196,10 +329,51 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       if (!refs.has(ref)) return ref;
     }
   };
+  /** Ref résoluble mais non rendue (option au-delà du budget, select fermé). */
+  const register = (n: AXNode, role: string, name: string, zone: string) => {
+    const ref = makeRef(role, name, zone);
+    if (n.backendDOMNodeId !== undefined) refs.set(ref, n.backendDOMNodeId);
+    meta.set(ref, { role, name });
+  };
 
-  const walk = (node: AXNode, depth: number, ancestorNames: string[], inScopeAbove: boolean) => {
+  /** Texte visible d'un sous-arbre (StaticText non ignorés, à travers les nœuds ignorés), borné. */
+  const textOf = (n: AXNode, acc: string[] = []): string[] => {
+    if (str(n.role) === 'StaticText') { if (!n.ignored) { const t = nameOf(n); if (t) acc.push(t); } return acc; }
+    for (const id of listOf(n.childIds)) {
+      if (acc.join(' ').length > 60) break;
+      const c = byId.get(id);
+      if (c) textOf(c, acc);
+    }
+    return acc;
+  };
+  /**
+   * Contexte d'un élément sans nom : texte du frère le plus proche (avant, puis après), sinon de ceux du
+   * parent, jusqu'à 3 niveaux. Croix d'un tag « PHP » → « PHP » ; c'est aussi ce qui distingue sa ref.
+   */
+  const contextOf = (node: AXNode): string => {
+    let cur = node;
+    for (let up = 0; up < 3 && cur.parentId !== undefined; up++) {
+      const parent = byId.get(cur.parentId);
+      if (!parent) break;
+      const sibs = listOf(parent.childIds);
+      const i = sibs.indexOf(cur.nodeId);
+      for (const id of [...sibs.slice(0, i).reverse(), ...sibs.slice(i + 1)]) {
+        const c = byId.get(id);
+        const t = c ? norm(textOf(c).join(' ')) : '';
+        if (t) return t.length > 40 ? `${t.slice(0, 39)}…` : t;
+      }
+      cur = parent;
+    }
+    return '';
+  };
+
+  /** Options d'une liste : rendues jusqu'à OPTIONS_MAX (les sélectionnées toujours), les autres comptées. */
+  interface OptionBudget { shown: number; hidden: number }
+
+  const walk = (node: AXNode, depth: number, ancestorNames: string[], inScopeAbove: boolean, zoneAbove: string, budget?: OptionBudget) => {
     const role = str(node.role);
-    const name = norm(str(node.name));
+    const name = nameOf(node);
+    const zone = isModal(node) ? '\u0002modale' : zoneAbove;
     let emitted = false;
     // Région annoncée sans nom : son texte sur sa ligne (la ref reste celle du rôle seul).
     let live = '';
@@ -209,8 +383,10 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     const inScope = !scoped || inScopeAbove || isScopeRoot;
     if (!node.ignored) {
       if (role === 'StaticText') {
-        const text = norm(name);
-        if (text && !namedTexts.has(text) && !ancestorNames.some((a) => a.includes(text))) {
+        const text = name;
+        // Puce de liste (« • ») ou ponctuation de pseudo-élément (sans nœud DOM) : du bruit.
+        const marker = !/[\p{L}\p{N}]/u.test(text) && (node.backendDOMNodeId === undefined || (node.parentId !== undefined && str(byId.get(node.parentId)?.role) === 'ListMarker'));
+        if (text && !marker && !namedTexts.has(text) && !ancestorNames.some((a) => a.includes(text))) {
           if (node.backendDOMNodeId !== undefined) textNodes.push({ text, backendNodeId: node.backendDOMNodeId });
           if (inScope) {
             texts.push(text);
@@ -219,24 +395,36 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         }
         return; // InlineTextBox enfants : inutiles
       }
+      // Option au-delà du budget de sa liste : résoluble, pas rendue.
+      if (role === 'option' && budget !== undefined) {
+        if (budget.shown >= OPTIONS_MAX && !hasProp(node, 'selected', true)) {
+          register(node, role, name, zone);
+          budget.hidden++;
+          return;
+        }
+        budget.shown++;
+      }
       if (role === 'Iframe' && inScope) iframes++; // le contenu d'un cadre n'est jamais parcouru
       // Lien sans nom : du bruit pour l'agent (rien ne dit où il mène). Masqué mais compté, et sa ref
       // reste résoluble (screenshot --refs la dessine).
       const nameless = role === 'link' && !name;
       const skip = PASS_THROUGH.has(role) || (NAMED_ONLY.has(role) && !name) || nameless;
       if (nameless) {
-        const ref = makeRef(role, name);
-        if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
-        meta.set(ref, { role, name });
+        register(node, role, name, zone);
         if (inScope) namelessLinks++;
       }
       if (!skip && role) {
-        const ref = makeRef(role, name);
+        // Bouton sans nom (croix d'un tag…) : nommé par son contexte, qui entre dans sa ref pour qu'elle
+        // ne glisse pas vers la croix voisine quand un tag est supprimé. Son nom (meta) reste vide : text:PHP
+        // ne doit jamais désigner la croix du tag PHP.
+        const ctx = !name && CONTEXT_ROLES.has(role) ? contextOf(node) : '';
+        const ref = makeRef(role, ctx ? `\u0001${ctx}` : name, zone);
         const val = VALUE_ROLES.has(role) ? norm(str(node.value)) : '';
         const err = FIELD_ROLES.has(role) ? invalidMsg(node) : undefined;
-        if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId);
+        if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId, nameOf);
         const shown = name || live;
-        const line = `${ref}:${role}${level(node)}${shown ? ` ${quote(shown, live ? 100 : 80)}` : ''}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
+        const label = shown ? ` ${quote(shown, live ? 100 : 80)}` : ctx ? ` (sans nom, près de ${quote(ctx, 40)})` : '';
+        const line = `${ref}:${role}${level(node)}${label}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
         if (err !== undefined) invalid.push({ ref, backendId: node.backendDOMNodeId, line, message: err });
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
         meta.set(ref, { role, name });
@@ -247,40 +435,56 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         emitted = true;
       }
     }
-    // Les options d'un <select> fermé ne sont pas utiles dans le snapshot : `select` les résout côté DOM.
-    if (role === 'combobox' && !node.properties?.some((p) => p.name === 'expanded' && p.value.value === true)) {
-      // on enregistre quand même les options comme refs résolubles
-      registerHidden(node);
-      return;
-    }
-    // Le texte interne d'un champ (sa valeur) est déjà rendu par `=valeur` : on ne descend pas.
-    if (emitted && VALUE_ROLES.has(role)) return;
     const ownName = name || live;
     const nextNames = emitted && ownName ? [...ancestorNames, ownName] : ancestorNames;
     // Hors zone, la profondeur n'a pas d'importance : rien n'est émis.
     const nextDepth = emitted && inScope ? depth + 1 : depth;
+    if (role === 'combobox') {
+      // <select> fermé : ses options sur une ligne compacte (sélection marquée), refs résolubles.
+      if (!hasProp(node, 'expanded', true)) {
+        const opts: string[] = [];
+        collectOptions(node, zone, opts);
+        if (emitted && inScope && opts.length > 0) {
+          const more = opts.length - OPTIONS_MAX;
+          out.push({ depth: nextDepth, line: `options : ${opts.slice(0, OPTIONS_MAX).join(' | ')}${more > 0 ? ` | … +${more}` : ''}` });
+        }
+        return;
+      }
+      // Ouverte : seulement ses listes d'options (aria-owns, popup du <select>) ; son texte interne est sa valeur.
+      const b: OptionBudget = { shown: 0, hidden: 0 };
+      for (const id of listOf(node.childIds)) {
+        const c = byId.get(id);
+        if (c && POPUP_ROLES.has(str(c.role))) walk(c, nextDepth, nextNames, inScope, zone, str(c.role) === 'listbox' ? undefined : b);
+      }
+      if (b.hidden > 0 && emitted && inScope) out.push({ depth: nextDepth, line: `… +${b.hidden} options` });
+      return;
+    }
+    // Le texte interne d'un champ (sa valeur) est déjà rendu par `=valeur` : on ne descend pas.
+    if (emitted && VALUE_ROLES.has(role)) return;
+    const own = role === 'listbox' ? { shown: 0, hidden: 0 } : undefined;
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
-      if (c) walk(c, nextDepth, nextNames, inScope);
+      if (c) walk(c, nextDepth, nextNames, inScope, zone, own ?? budget);
     }
+    if (own !== undefined && own.hidden > 0 && inScope) out.push({ depth: nextDepth, line: `… +${own.hidden} options` });
   };
 
-  const registerHidden = (node: AXNode) => {
+  const collectOptions = (node: AXNode, zone: string, acc: string[]) => {
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
       if (!c) continue;
       const role = str(c.role);
       if (role === 'option' && !c.ignored) {
-        const name = norm(str(c.name));
-        const ref = makeRef(role, name);
-        if (c.backendDOMNodeId !== undefined) refs.set(ref, c.backendDOMNodeId);
-        meta.set(ref, { role, name });
+        const name = nameOf(c);
+        register(c, role, name, zone);
+        acc.push(`${quote(name, 40)}${hasProp(c, 'selected', true) ? ' [x]' : ''}`);
       }
-      registerHidden(c);
+      collectOptions(c, zone, acc);
     }
   };
 
-  if (root) walk(root, 0, [], false);
+
+  if (root) walk(root, 0, [], false, '');
   // Messages d'erreur hors de l'arbre d'accessibilité (aria-hidden), rattachés à aucun champ.
   const alertSeen = new Map<string, number>();
   for (const a of listOf(opts.formErrors?.alerts)) {
@@ -295,6 +499,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   const pruned = [
     namelessLinks > 0 ? `${namelessLinks} lien${namelessLinks > 1 ? 's' : ''} sans nom (refs visibles avec screenshot --refs)` : '',
     iframes > 0 ? `${iframes} iframe${iframes > 1 ? 's' : ''} non parcourue${iframes > 1 ? 's' : ''}` : '',
+    modal !== undefined ? `reste de la page masqué par la fenêtre modale${modal ? ` ${quote(modal, 60)}` : ''}` : '',
   ].filter((x) => x !== '');
   const summary = pruned.length > 0 ? `… élagué : ${pruned.join(', ')}` : undefined;
   const lines = [header];
@@ -312,7 +517,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   }
   if (summary !== undefined) lines.push(summary);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}) };
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */
