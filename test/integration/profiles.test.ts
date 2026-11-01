@@ -147,6 +147,11 @@ test('profils : import d\'un profil (--profile-directory) puis session dessus', 
     assert.deepEqual(list.map((p: Record<string, unknown>) => [p.name, p.source, p.accountEmail]), [['imp', 'imported', 'florent@sooatek.example']]);
     const id = (await runCli(t.env, ['session', 'create', '--profile', 'imp'])).stdout.trim();
     assert.match(id, /^s[0-9a-f]{12}$/);
+    // Source chiffrée par Chrome Windows (clé DPAPI) dans un serveur Linux : avertissement sur stderr.
+    writeFileSync(join(src, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'RFBBUEkBAAAA' }, profile: { info_cache: {} } }));
+    const dpapi = await runCli(t.env, ['profiles', 'import', 'imp-win', src, '--profile-directory', 'Profile 9']);
+    assert.equal(dpapi.code, 0, dpapi.stderr);
+    assert.match(dpapi.stderr, /^AVERTISSEMENT : .*DPAPI.*déconnecté/m);
     const nonChrome = await runCli(t.env, ['profiles', 'import', 'x', t.root]);
     assert.match(nonChrome.stderr, /^ERROR: profiles: .*profil Chrome/m);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); t.cleanup(); }

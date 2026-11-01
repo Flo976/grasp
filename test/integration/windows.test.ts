@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
 import { startTestSite } from '../helpers/testsite.js';
+import { DOWNLOAD_JS } from '../helpers/download.js';
 import { resolvePaths } from '../../src/core/paths.js';
 import { profileId } from '../../src/core/profiles.js';
 import { windowsLocalAppData, windowsChromeProcesses, toWindowsPath } from '../../src/browser/windows.js';
@@ -34,7 +35,7 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
   const site = await startTestSite();
   const paths = resolvePaths(t.env, t.env.HOME);
   mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
-  writeFileSync(paths.configFile, JSON.stringify({ chromePath: EXE, headless: true, allowEval: true, allowedDomains: ['127.0.0.1'], windowsProfilesDir: root }), { mode: 0o600 });
+  writeFileSync(paths.configFile, JSON.stringify({ chromePath: EXE, headless: true, allowEval: true, allowDownload: true, allowedDomains: ['127.0.0.1'], windowsProfilesDir: root }), { mode: 0o600 });
   const srv = await startServer(t.env);
   try {
     assert.match(srv.stderr(), /windows/);
@@ -50,6 +51,13 @@ test('windows (réel) : profils côté Windows, bascule, cookies isolés, aucun 
     assert.match((await runCli(env, ['snap'])).stdout, /textbox "Nom"/);
     await runCli(env, ['eval', "document.cookie = 'qui=florent; max-age=3600'"]);
     assert.equal(JSON.parse((await runCli(env, ['eval', 'document.cookie'])).stdout), 'qui=florent');
+    // Téléchargement : chrome.exe reçoit un chemin Windows, le fichier arrive côté Windows sous la racine des profils.
+    assert.equal((await runCli(env, ['eval', DOWNLOAD_JS])).code, 0);
+    const dl = join(root, '.downloads', id, 'grasp-dl.txt');
+    let got = false;
+    for (let i = 0; i < 20 && !got; i++) { await new Promise((r) => setTimeout(r, 500)); got = existsSync(dl); }
+    assert.ok(got, `${dl} absent : le dossier de téléchargement transmis à chrome.exe est faux`);
+    assert.equal(readFileSync(dl, 'utf8'), 'contenu grasp');
     const winFlorent = `${winRoot}\\${profileId('florent')}`;
     const winSooatek = `${winRoot}\\${profileId('sooatek')}`;
     assert.ok(await ours(winFlorent) > 0, 'chrome.exe tourne sur le profil florent');

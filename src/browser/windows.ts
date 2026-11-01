@@ -47,6 +47,14 @@ export async function toWslPath(win: string, run: Runner = realRunner): Promise<
   return out;
 }
 
+/**
+ * Chemin de téléchargement à remettre à Chrome (Browser.setDownloadBehavior) : chrome.exe ne comprend
+ * qu'un chemin Windows, le dossier (sous /mnt/<lecteur>/) est donc traduit par wslpath -w.
+ */
+export async function chromeDownloadPath(dir: string, kind: string, run: Runner = realRunner): Promise<string> {
+  return kind === 'windows' ? toWindowsPath(dir, run) : dir;
+}
+
 /** %LOCALAPPDATA% de l'utilisateur Windows, en chemin WSL (/mnt/c/Users/<nom>/AppData/Local). */
 export async function windowsLocalAppData(run: Runner = realRunner): Promise<string> {
   const r = await run('cmd.exe', ['/c', 'echo', '%LOCALAPPDATA%'], { timeoutMs: 15_000 });

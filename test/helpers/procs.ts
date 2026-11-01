@@ -48,3 +48,15 @@ export async function waitUntil(cond: () => boolean, timeoutMs: number, stepMs =
   }
   return cond();
 }
+
+/** Processus vivants dont la ligne de commande porte ce --user-data-dir (Chrome et ses enfants). */
+export function procsOnUserDataDir(dir: string): number[] {
+  const out: number[] = [];
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      if (readFileSync(`/proc/${name}/cmdline`, 'utf8').includes(`--user-data-dir=${dir}`) && isAlive(Number(name))) out.push(Number(name));
+    } catch { /* processus disparu entre-temps */ }
+  }
+  return out;
+}

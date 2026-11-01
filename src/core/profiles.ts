@@ -3,6 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readF
 import { chmod, copyFile, lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { GraspError } from './errors.js';
+import { isWindowsDrivePath } from '../browser/windows.js';
 
 /**
  * Magasin de profils (modèle pinchtab) : un profil = un --user-data-dir complet possédé par Grasp,
@@ -32,7 +33,7 @@ export interface ProfileInfo extends ProfileMeta {
 }
 
 export interface ImportOptions { profileDirectory?: string | undefined; skipLocked?: boolean | undefined }
-export interface ImportResult { profile: ProfileInfo; skipped: string[] }
+export interface ImportResult { profile: ProfileInfo; skipped: string[]; warnings: string[] }
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -70,6 +71,16 @@ export function readIdentity(dir: string): { accountEmail: string | null; accoun
   const cache = obj(obj(obj(readJsonFile(join(dir, 'Local State'))).profile).info_cache);
   const entry = obj(cache.Default ?? Object.values(cache)[0]);
   return { accountEmail: email ?? text(entry.user_name), accountName: name ?? text(entry.gaia_name) };
+}
+
+/**
+ * Source chiffrée par Chrome Windows : sur un disque Windows, ou Local State avec une clé os_crypt
+ * DPAPI (« DPAPI… » en base64 : RFBBUEk…) ou app-bound. Seul chrome.exe, sous ce compte Windows, la relit.
+ */
+export function windowsEncryptedSource(src: string, localState: unknown): boolean {
+  if (isWindowsDrivePath(src)) return true;
+  const c = obj(obj(localState).os_crypt);
+  return (typeof c.encrypted_key === 'string' && c.encrypted_key.startsWith('RFBBUEk')) || c.app_bound_encrypted_key !== undefined;
 }
 
 /** Caches et verrous : régénérés par Chrome, inutiles (ou nuisibles) dans une copie. */
@@ -204,6 +215,9 @@ export class ProfileStore {
     const pd = opts.profileDirectory;
     let copyFrom = src;
     let localState: Record<string, unknown> | undefined;
+    const warnings: string[] = [];
+    const lsFile = join(src, 'Local State');
+    const sourceLs = existsSync(lsFile) ? readJsonFile(lsFile) : undefined;
     if (pd !== undefined) {
       if (pd === '' || pd === '.' || pd === '..' || /[\\/]/.test(pd)) throw new GraspError(400, `--profile-directory invalide : ${JSON.stringify(pd)} (un nom de sous-dossier, ex. "Profile 9")`);
       copyFrom = join(src, pd);
@@ -212,7 +226,6 @@ export class ProfileStore {
         const avail = readdirSync(src).filter((n) => isProfileDir(join(src, n)));
         throw new GraspError(400, `« ${pd} » n'est pas un profil Chrome de ${src} (pas de Preferences) ; profils disponibles : ${avail.join(', ') || '(aucun)'}`);
       }
-      const lsFile = join(src, 'Local State');
       if (existsSync(lsFile)) {
         let ls: unknown;
         try { ls = JSON.parse(readFileSync(lsFile, 'utf8')); } catch (e) { throw new GraspError(400, `${lsFile} illisible : ${(e as Error).message}`); }
@@ -222,6 +235,8 @@ export class ProfileStore {
           ...(full.os_crypt !== undefined ? { os_crypt: full.os_crypt } : {}),
           profile: { info_cache: { Default: entry }, last_used: 'Default', profiles_order: ['Default'] },
         };
+      } else if (!this.posix) {
+        warnings.push(`${src} n'a pas de « Local State » : la clé de chiffrement (os_crypt) n'est pas copiée, chrome.exe ne pourra pas déchiffrer les cookies ni les identifiants importés — le profil s'ouvrira déconnecté de tous les sites. Importez depuis le répertoire « User Data » complet d'origine.`);
       }
     } else {
       const profiles = readdirSync(src).filter((n) => isProfileDir(join(src, n)));
@@ -247,7 +262,11 @@ export class ProfileStore {
       };
       this.writeMeta(tmp, meta);
       await rename(tmp, dir);
-      return { profile: this.info(dir, meta), skipped: locked };
+      const profile = this.info(dir, meta);
+      if (this.posix && windowsEncryptedSource(src, sourceLs)) {
+        warnings.push(`${src} vient de Chrome Windows : cookies et identifiants sont chiffrés par DPAPI (clé app-bound), illisibles par le Chrome Linux — le profil s'ouvrira déconnecté de tous les sites${profile.accountEmail !== null ? `, même si le compte ${profile.accountEmail} est affiché` : ''}. Pour garder les connexions, utilisez le mode Windows (chromePath = chrome.exe sous WSL2).`);
+      }
+      return { profile, skipped: locked, warnings };
     } catch (e) {
       await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
       if (e instanceof GraspError) throw e;

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProfileStore, profileId, validateProfileName, readIdentity } from '../../src/core/profiles.js';
+import { ProfileStore, profileId, validateProfileName, readIdentity, windowsEncryptedSource } from '../../src/core/profiles.js';
 import { GraspError } from '../../src/core/errors.js';
 
 function tmp(): { root: string; cleanup(): void } {
@@ -223,4 +223,49 @@ test('profils sans droits POSIX (NTFS via /mnt/c) : aucune vérification ni chmo
     assert.ok(existsSync(join(p.path, 'profile.json')));
     assert.equal(store.posix, false);
   } finally { t.cleanup(); }
+});
+
+test('import : source chiffrée par Windows (DPAPI / app-bound) dans un magasin Linux → avertissement explicite (cookies illisibles)', async () => {
+  const t = tmp();
+  try {
+    const src = join(t.root, 'User Data');
+    fakeUserData(src); // os_crypt.encrypted_key « DPAPI… » + app_bound_encrypted_key : profil de chrome.exe
+    const store = new ProfileStore(join(t.root, 'profiles'), true);
+    const r = await store.importProfile('win', src, { profileDirectory: 'Profile 9' });
+    assert.equal(r.warnings.length, 1, JSON.stringify(r.warnings));
+    assert.match(r.warnings[0]!, /DPAPI/);
+    assert.match(r.warnings[0]!, /déconnecté/);
+    assert.match(r.warnings[0]!, /florent@sooatek\.example/, 'le compte affiché ne prouve pas une connexion');
+    const full = await store.importProfile('win-complet', src, {});
+    assert.equal(full.warnings.length, 1);
+    // Magasin Windows (chrome.exe) : la même source est lisible, aucun avertissement.
+    const wstore = new ProfileStore(join(t.root, 'wprofiles'), false);
+    assert.deepEqual((await wstore.importProfile('win', src, { profileDirectory: 'Profile 9' })).warnings, []);
+  } finally { t.cleanup(); }
+});
+
+test('import --profile-directory sans « Local State » : magasin Windows → avertissement (clé os_crypt absente), Linux → rien', async () => {
+  const t = tmp();
+  try {
+    const src = join(t.root, 'User Data');
+    fakeUserData(src);
+    rmSync(join(src, 'Local State'));
+    const wstore = new ProfileStore(join(t.root, 'wprofiles'), false);
+    const r = await wstore.importProfile('sans-ls', src, { profileDirectory: 'Profile 9' });
+    assert.equal(r.warnings.length, 1, JSON.stringify(r.warnings));
+    assert.match(r.warnings[0]!, /Local State/);
+    assert.match(r.warnings[0]!, /os_crypt/);
+    assert.equal(existsSync(join(r.profile.path, 'Local State')), false);
+    // Chrome Linux (--password-store=basic) : la clé ne vit pas dans Local State.
+    const lstore = new ProfileStore(join(t.root, 'profiles'), true);
+    assert.deepEqual((await lstore.importProfile('sans-ls', src, { profileDirectory: 'Profile 9' })).warnings, []);
+  } finally { t.cleanup(); }
+});
+
+test('import : détection d\'une source chiffrée par Windows (disque Windows ou clé DPAPI/app-bound)', () => {
+  assert.equal(windowsEncryptedSource('/mnt/c/Users/x/AppData/Local/Google/Chrome/User Data', undefined), true);
+  assert.equal(windowsEncryptedSource('/home/u/copie', { os_crypt: { encrypted_key: 'RFBBUEkBAAAA0Iyd' } }), true);
+  assert.equal(windowsEncryptedSource('/home/u/copie', { os_crypt: { app_bound_encrypted_key: 'QVBQQg==' } }), true);
+  assert.equal(windowsEncryptedSource('/home/u/.config/google-chrome', { os_crypt: { portal: {} } }), false);
+  assert.equal(windowsEncryptedSource('/home/u/.config/google-chrome', undefined), false);
 });

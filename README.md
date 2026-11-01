@@ -145,6 +145,10 @@ grasp profiles import sooatek "/mnt/c/Users/<vous>/AppData/Local/Google/Chrome/U
 - **Fichier verrouillé** (Chrome source ouvert : sous Windows, `Network/Cookies` d'un profil ouvert
   est illisible) : échec 409 qui liste les fichiers et conseille de fermer Chrome ; `--skip-locked`
   importe sans eux et les liste en avertissement.
+- **Avertissements** (sur stderr, et `warnings` dans la réponse JSON) : source chiffrée par Chrome
+  Windows (disque `/mnt/<lecteur>/`, clé `os_crypt` DPAPI ou app-bound) importée dans un Grasp en
+  mode Linux — cookies et identifiants illisibles, le profil s'ouvrira déconnecté même si le compte
+  est affiché ; `--profile-directory` sans `Local State` en mode Windows — clé `os_crypt` absente.
 - Un profil importé n'emporte pas forcément ses connexions : voir les limites ci-dessous.
 
 ## Mode Windows (chrome.exe depuis WSL2)
@@ -164,7 +168,8 @@ grasp doctor                           # signale le mode windows, démarre chrom
 - **Profils côté Windows** : le chiffrement DPAPI des cookies exige que chrome.exe lise lui-même ses
   profils. Racine par défaut `%LOCALAPPDATA%\grasp\profiles` (résolu par `cmd.exe /c echo
   %LOCALAPPDATA%` + `wslpath`), surchargeable par `windowsProfilesDir` (`/mnt/c/…` ou `C:\…`).
-  Sessions éphémères dans `<racine>\.tmp\<id>`. Les droits Unix ne s'appliquent pas sur NTFS :
+  Sessions éphémères dans `<racine>\.tmp\<id>`, téléchargements dans `<racine>\.downloads\<id>`
+  (chemin Windows remis à chrome.exe). Les droits Unix ne s'appliquent pas sur NTFS :
   Grasp démarre quand même et `doctor` le signale.
 - **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=0
   --no-first-run --no-default-browser-check [--headless=new]`, lecture de `DevToolsActivePort` via
@@ -174,9 +179,12 @@ grasp doctor                           # signale le mode windows, démarre chrom
   par CDP `Browser.close` ; à défaut, PowerShell (`Get-CimInstance Win32_Process`) retrouve les
   `chrome.exe` dont la ligne de commande porte **exactement ce `--user-data-dir`** et les tue. Le
   Chrome habituel de l'utilisateur n'est jamais visé (son `User Data` est explicitement refusé). Le
-  control plane ferme ses navigateurs à l'arrêt ; un bridge qui meurt (même par `SIGKILL`) voit son
-  chrome.exe tué par le control plane ; un control plane tué par `SIGKILL` laisse ses bridges fermer
-  leurs navigateurs ; `grasp stop` forcé vise aussi les `chrome.exe` connus (`instances.json`).
+  control plane ferme ses navigateurs à l'arrêt ; un bridge qui meurt (même par `SIGKILL`) ou qui
+  s'arrête en erreur (chien de garde, Stop-Process en échec) voit son chrome.exe tué par le control
+  plane, et le profil n'est libéré qu'après ; un control plane tué par `SIGKILL` laisse ses bridges
+  fermer leurs navigateurs ; `grasp stop` forcé vise aussi les `chrome.exe` connus (`instances.json`),
+  et un nouveau `grasp serve` (redémarrage systemd compris) relit `instances.json` avant de
+  l'écraser : navigateurs orphelins tués, profils éphémères supprimés.
 
 ## Snapshot
 
@@ -377,8 +385,9 @@ L'intégration démarre un `node:http` local qui sert la page de test (`test/hel
   à l'appareil et au profil d'origine). Le chemin fiable : créer un profil Grasp, l'ouvrir avec
   `headless=false` et s'y connecter une fois à la main ; la connexion persiste ensuite.
 - **chrome.exe orphelin** si le control plane **et** le bridge sont tués par `SIGKILL` en même temps
-  (rien ne reste pour appeler `Browser.close` ou PowerShell). `grasp stop` forcé le rattrape via
-  `instances.json` ; sinon, fermez la fenêtre ou tuez le processus dont la ligne de commande contient
-  `\grasp\profiles\`.
-- La bascule de profil relance le navigateur : la page courante n'est pas conservée.
+  (rien ne reste pour appeler `Browser.close` ou PowerShell) : il tourne jusqu'au prochain
+  `grasp serve` (ou redémarrage systemd), qui le retrouve via `instances.json` et le tue.
+- La bascule de profil relance le navigateur : la page courante n'est pas conservée. Pendant la
+  bascule, les deux profils sont réservés (création de session ou suppression → 409) ; une session
+  fermée pendant la bascule l'interrompt (409) sans laisser de navigateur.
 - macOS : non testé (pas de `/proc`, pas de `setpriv` ; le control plane tue alors les groupes Chrome).

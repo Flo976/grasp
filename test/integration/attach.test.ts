@@ -32,6 +32,20 @@ test('mode attach : pilote un navigateur déjà ouvert (cdpUrl) sans jamais le t
     // la garde s'applique aussi au navigateur externe
     assert.notEqual((await runCli(env, ['nav', 'https://example.com'])).code, 0);
 
+    // Profils sans objet en mode attach : refus explicite (400), la session reste intacte.
+    const withProfile = await runCli(t.env, ['session', 'create', '--profile', 'florent']);
+    assert.notEqual(withProfile.code, 0);
+    assert.match(withProfile.stderr, /^ERROR: session: .*mode attach.*--profile est sans effet/m);
+    assert.equal((await srv.api('POST', '/sessions', { profile: 'florent' })).status, 400);
+    const sw = await srv.api('POST', `/sessions/${id}/profile`, { name: 'florent' });
+    assert.equal(sw.status, 400, sw.text());
+    assert.match(sw.text(), /mode attach.*bascule est sans effet/);
+    const sw2 = await runCli(env, ['profile', 'florent']);
+    assert.notEqual(sw2.code, 0);
+    assert.match(sw2.stderr, /bascule est sans effet/);
+    assert.deepEqual((await srv.api('GET', '/sessions')).json().map((s: { id: string; profile: string | null }) => [s.id, s.profile]), [[id, null]]);
+    assert.match((await runCli(env, ['text'])).stdout, /Nom : Ada/, 'session toujours pilotable');
+
     // Fermer la session puis arrêter le serveur ne doit PAS tuer le navigateur externe.
     assert.equal((await runCli(t.env, ['session', 'close', id])).stdout, 'OK\n');
     srv.proc.kill('SIGTERM');

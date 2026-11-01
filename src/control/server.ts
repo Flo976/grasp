@@ -15,7 +15,8 @@ import { discoverChrome, profileRootsFor, realProbe, type DiscoveredBrowser, typ
 import { assertSupportedVersion, browserVersion } from '../browser/launch.js';
 import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
-import { spawnBridge, type BridgeHandle } from './bridges.js';
+import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
+import { reapStaleInstances } from './stale.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 
 export interface Session {
@@ -27,6 +28,10 @@ export interface Session {
   bridge: BridgeHandle;
   /** Bascule de profil en cours : le bridge est relancé, les requêtes reçoivent un 409 explicite. */
   switching: boolean;
+  /** Fin de la bascule en cours (une fermeture l'attend avant d'arrêter le bridge). */
+  switchDone?: Promise<void> | undefined;
+  /** Session fermée (retirée de la table) : une bascule en vol doit abandonner. */
+  closed?: Promise<void> | undefined;
 }
 
 export interface ControlPlaneOptions {
@@ -87,6 +92,11 @@ function socketInUse(path: string): Promise<boolean> {
   });
 }
 
+/** Dossier de téléchargement d'une session. chrome.exe : côté Windows (caché sous la racine des profils). */
+export function downloadDirFor(browser: DiscoveredBrowser | undefined, roots: ProfileRoots, paths: Pick<GraspPaths, 'dataDir'>, id: string): string {
+  return browser?.kind === 'windows' ? join(roots.profiles, '.downloads', id) : join(paths.dataDir, 'downloads', id);
+}
+
 /** Racines des profils ; chrome.exe : %LOCALAPPDATA%\\grasp\\profiles côté Windows, ou windowsProfilesDir. */
 export async function resolveProfileRoots(browser: DiscoveredBrowser | undefined, config: ResolvedConfig, paths: GraspPaths, home: string): Promise<ProfileRoots> {
   if (browser?.kind !== 'windows') return profileRootsFor(browser, paths, home, {});
@@ -140,10 +150,28 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   if (process.getuid?.() === 0) log('AVERTISSEMENT : GRASP_ALLOW_NO_SANDBOX=1 — Chrome sans sandbox.');
 
   const sessions = new Map<string, Session>();
+  let closing: Promise<void> | undefined;
   const persistInstances = () => writePrivate(paths.instancesFile, JSON.stringify([...sessions.values()].map((s) => ({
-    id: s.id, bridgePid: s.bridge.pid, chromePgid: s.bridge.chromePgid,
+    id: s.id, bridgePid: s.bridge.pid, chromePgid: s.bridge.chromePgid, userDataDir: s.userDataDir, ephemeral: s.ephemeral,
     ...(s.bridge.windowsUserDataDir !== undefined ? { windowsUserDataDir: s.bridge.windowsUserDataDir } : {}),
   })), null, 2));
+
+  /**
+   * Réservations de profils pendant les await (création, bascule, fermeture) : un profil n'est libre
+   * que si aucune session ne l'affiche ET qu'aucune opération en vol ne le tient.
+   */
+  interface Reservation { name: string; label: string }
+  const reservations: Reservation[] = [];
+  function reserve(name: string, label: string): () => void {
+    const r = { name, label };
+    reservations.push(r);
+    return () => { const i = reservations.indexOf(r); if (i >= 0) reservations.splice(i, 1); };
+  }
+  function holderOf(name: string): string | undefined {
+    const s = [...sessions.values()].find((x) => x.profile === name);
+    if (s !== undefined) return `la session ${s.id}${s.switching ? ' (bascule en cours)' : ''}`;
+    return reservations.find((r) => r.name === name)?.label;
+  }
 
   /** Lance le bridge d'une session sur son --user-data-dir courant. */
   async function startBridge(s: Omit<Session, 'bridge'>): Promise<BridgeHandle> {
@@ -153,7 +181,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       ...(browser !== undefined ? { browser } : {}),
       ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}),
       socketPath: bridgeSocketPath(paths, s.id),
-      downloadDir: join(paths.dataDir, 'downloads', s.id),
+      downloadDir: downloadDirFor(browser, roots, paths, s.id),
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
     }, {
       log,
@@ -163,6 +191,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         if (cur === undefined || handle === undefined || cur.bridge !== handle || cur.switching) return;
         log(`session ${s.id} : bridge arrêté (code ${code}) — groupe Chrome ${handle.chromePgid} tué`);
         sessions.delete(s.id);
+        cur.closed ??= Promise.resolve();
         persistInstances();
         if (cur.ephemeral) removeDir(cur.userDataDir);
       },
@@ -175,31 +204,45 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { log(`AVERTISSEMENT : ${dir} non supprimé : ${(e as Error).message}`); }
   }
 
-  /** Profil nommé : choisi AVANT le lancement, créé à la volée s'il n'existe pas. */
-  function profileFor(name: string, why: string): { profile: ProfileInfo; created: boolean } {
+  /**
+   * Profil nommé : choisi AVANT le lancement, créé à la volée s'il n'existe pas, et réservé
+   * jusqu'à l'appel de release() (la session, une fois dans la table, le tient d'elle-même).
+   */
+  function profileFor(name: string, why: string, label: string): { profile: ProfileInfo; created: boolean; release: () => void } {
     if (config.cdpUrl !== null) throw new GraspError(400, `mode attach : le profil est celui du navigateur existant, ${why} est sans effet`);
     validateProfileName(name);
-    const holder = [...sessions.values()].find((x) => x.profile === name);
-    if (holder !== undefined) throw new GraspError(409, `le profil « ${name} » est déjà utilisé par la session ${holder.id}`);
-    return store.ensure(name);
+    const holder = holderOf(name);
+    if (holder !== undefined) throw new GraspError(409, `le profil « ${name} » est déjà utilisé par ${holder}`);
+    const release = reserve(name, label);
+    try { return { ...store.ensure(name), release }; } catch (e) { release(); throw e; }
   }
 
   async function createSession(profile: string | undefined): Promise<{ session: Session; profileCreated: boolean }> {
     const id = `s${randomBytes(6).toString('hex')}`;
-    const p = profile !== undefined ? profileFor(profile, '--profile') : undefined;
-    const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false };
-    const bridge = await startBridge(base);
-    const s: Session = { ...base, bridge };
-    sessions.set(id, s);
-    persistInstances();
-    if (profile !== undefined) store.touch(profile);
-    log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${profile !== undefined ? `, profil ${profile}` : ''})`);
-    return { session: s, profileCreated: p?.created === true };
+    const p = profile !== undefined ? profileFor(profile, '--profile', `la session ${id} (en cours de création)`) : undefined;
+    try {
+      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false };
+      const bridge = await startBridge(base);
+      if (closing !== undefined) {
+        // Arrêt du serveur pendant le démarrage : la liste des sessions à fermer est déjà prise.
+        await bridge.stop();
+        if (base.ephemeral) removeDir(base.userDataDir);
+        throw new GraspError(503, 'serveur en cours d\'arrêt');
+      }
+      const s: Session = { ...base, bridge };
+      sessions.set(id, s);
+      persistInstances();
+      if (profile !== undefined) store.touch(profile);
+      log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${profile !== undefined ? `, profil ${profile}` : ''})`);
+      return { session: s, profileCreated: p?.created === true };
+    } finally { p?.release(); }
   }
 
   /**
    * Bascule de profil : arrêt du bridge et de son navigateur, relance sur le --user-data-dir du
    * nouveau profil, MÊME identifiant de session. En cas d'échec, on rouvre l'ancien profil.
+   * Les deux profils restent réservés pendant toute la bascule. Si la session est fermée entre-temps
+   * (DELETE, arrêt du serveur), la bascule abandonne et n'abandonne aucun navigateur derrière elle.
    */
   async function switchProfile(s: Session, name: string): Promise<{ profile: string; previous: string | null; unchanged: boolean }> {
     validateProfileName(name);
@@ -210,41 +253,73 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       const names = store.list().map((p) => p.name);
       throw new GraspError(404, `profil « ${name} » inconnu (profils : ${names.join(', ') || 'aucun'}) — \`grasp profiles create ${name}\` d'abord`);
     }
-    const { profile: target } = profileFor(name, 'la bascule');
+    const label = `la session ${s.id} (bascule en cours)`;
+    const { profile: target, release } = profileFor(name, 'la bascule', label);
     const prev = { profile: s.profile, userDataDir: s.userDataDir, ephemeral: s.ephemeral };
+    const releasePrev = prev.profile !== null ? reserve(prev.profile, label) : () => undefined;
+    const aborted = () => new GraspError(409, `session ${s.id} fermée pendant la bascule de profil vers « ${name} »`);
+    /** Fermée pendant un await : on arrête ce qu'on vient de lancer et on rend l'état d'avant (fichiers éphémères compris). */
+    const abandon = async (): Promise<never> => {
+      const code = await s.bridge.stop();
+      if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+      Object.assign(s, prev);
+      log(`session ${s.id} fermée pendant la bascule vers ${name} : bascule abandonnée`);
+      throw aborted();
+    };
+    let done!: () => void;
+    s.switchDone = new Promise<void>((r) => { done = r; });
     s.switching = true;
     try {
       const code = await s.bridge.stop();
       if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+      if (s.closed !== undefined) { Object.assign(s, prev); throw aborted(); }
       Object.assign(s, { profile: name, userDataDir: target.path, ephemeral: false });
       try {
         s.bridge = await startBridge(s);
       } catch (e) {
         Object.assign(s, prev);
+        if (s.closed !== undefined) throw aborted();
         try {
           s.bridge = await startBridge(s);
         } catch (e2) {
-          sessions.delete(s.id);
+          if (sessions.get(s.id) === s) sessions.delete(s.id);
+          s.closed ??= Promise.resolve();
           persistInstances();
           throw new GraspError(502, `bascule vers « ${name} » impossible (${(e as Error).message}) et réouverture de l'ancien profil impossible (${(e2 as Error).message}) : session ${s.id} fermée`);
         }
+        if (s.closed !== undefined) await abandon();
         persistInstances();
         throw new GraspError(502, `bascule vers « ${name} » impossible : ${(e as Error).message} — session ${s.id} restée sur ${prev.profile ?? 'un profil éphémère'}`);
       }
+      if (s.closed !== undefined) await abandon();
       if (prev.ephemeral) removeDir(prev.userDataDir);
       store.touch(name);
       persistInstances();
       log(`session ${s.id} : profil ${prev.profile ?? '(éphémère)'} → ${name} (bridge ${s.bridge.pid}, Chrome ${s.bridge.chromePid})`);
       return { profile: name, previous: prev.profile, unchanged: false };
-    } finally { s.switching = false; }
+    } finally {
+      s.switching = false;
+      release();
+      releasePrev();
+      done();
+    }
   }
 
-  async function closeSession(s: Session): Promise<void> {
-    sessions.delete(s.id);
+  /** Idempotent. Attend une bascule en vol (elle abandonne), puis arrête le bridge ; le profil reste réservé jusque-là. */
+  function closeSession(s: Session): Promise<void> {
+    if (s.closed !== undefined) return s.closed;
+    if (sessions.get(s.id) === s) sessions.delete(s.id);
+    const release = s.profile !== null ? reserve(s.profile, `la session ${s.id} (fermeture en cours)`) : () => undefined;
     persistInstances();
-    const code = await s.bridge.stop();
-    if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
-    if (s.ephemeral) removeDir(s.userDataDir);
+    s.closed = (async () => {
+      try {
+        await s.switchDone;
+        const code = await s.bridge.stop();
+        if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+        if (s.ephemeral) removeDir(s.userDataDir);
+      } finally { release(); }
+    })();
+    return s.closed;
   }
 
   function profilesReport(current: Session | undefined): Record<string, unknown> {
@@ -331,6 +406,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (route === 'POST /profiles/import') {
         const body = await readJson(req);
         const r = await store.importProfile(str(body, 'name'), str(body, 'sourcePath'), { profileDirectory: optStr(body, 'profileDirectory'), skipLocked: optBool(body, 'skipLocked') });
+        for (const w of r.warnings) log(`AVERTISSEMENT : import « ${r.profile.name} » : ${w}`);
         if (r.skipped.length) log(`AVERTISSEMENT : import « ${r.profile.name} » : ${r.skipped.length} fichier(s) verrouillé(s) ignoré(s) : ${r.skipped.join(', ')}`);
         log(`profil « ${r.profile.name} » importé depuis ${r.profile.importedFrom}`);
         return sendJson(res, 201, r);
@@ -341,6 +417,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         validateProfileName(name);
         const holder = [...sessions.values()].find((x) => x.profile === name);
         if (holder !== undefined) throw new GraspError(409, `le profil « ${name} » est utilisé par la session ${holder.id} : \`grasp session close ${holder.id}\` d'abord`);
+        const busy = holderOf(name);
+        if (busy !== undefined) throw new GraspError(409, `le profil « ${name} » est utilisé par ${busy} : réessayez une fois l'opération terminée`);
         store.remove(name);
         log(`profil « ${name} » supprimé`);
         return sendJson(res, 200, { ok: true });
@@ -387,11 +465,17 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     endpoint = { transport: 'tcp', host: '127.0.0.1', port: (server.address() as AddressInfo).port };
   }
   writePrivate(paths.pidFile, `${process.pid}\n`);
+  // Navigateurs laissés par un serveur tué : retrouvés AVANT d'écraser instances.json.
+  await reapStaleInstances(paths.instancesFile, {
+    log,
+    reapWindows: (d) => reapWindows(d, log),
+    // Garde-fou : seuls les profils éphémères sous la racine temporaire sont supprimés.
+    removeDir: (d) => { if (d.startsWith(`${roots.tmp}/`)) removeDir(d); },
+  });
   persistInstances();
   writePrivate(paths.endpointFile, JSON.stringify(endpoint));
   log(`à l'écoute sur ${endpoint.transport === 'unix' ? endpoint.socketPath : `${endpoint.host}:${endpoint.port}`} (pid ${process.pid})`);
 
-  let closing: Promise<void> | undefined;
   const close = () => {
     closing ??= (async () => {
       server.close();

@@ -59,14 +59,34 @@ function killGroupNow(pgid: number): void {
   try { process.kill(-pgid, 'SIGKILL'); } catch { /* groupe déjà vide */ }
 }
 
-export function spawnBridge(init: BridgeInit, opts: { reapOnExit?: boolean; startTimeoutMs?: number; onExit?: (code: number | null) => void; log?: (m: string) => void } = {}): Promise<BridgeHandle> {
+export interface SpawnBridgeOptions {
+  reapOnExit?: boolean;
+  startTimeoutMs?: number;
+  onExit?: (code: number | null) => void;
+  log?: (m: string) => void;
+  /** Tests : processus bridge à lancer, et ramassage de chrome.exe (par défaut PowerShell). */
+  bridgeMain?: string;
+  reap?: (winDir: string, log: (m: string) => void) => Promise<void>;
+}
+
+export function spawnBridge(init: BridgeInit, opts: SpawnBridgeOptions = {}): Promise<BridgeHandle> {
   try { checkSocketPath(init.socketPath, 'du bridge'); } catch (e) { return Promise.reject(e); }
-  const child = spawn(process.execPath, [BRIDGE_MAIN], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], env: process.env });
+  const child = spawn(process.execPath, [opts.bridgeMain ?? BRIDGE_MAIN], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], env: process.env });
+  const log = opts.log ?? (() => undefined);
+  const reap = opts.reap ?? ((d: string, l: (m: string) => void) => reapWindows(d, l));
   return new Promise((resolve, reject) => {
     let settled = false;
     let chromePgid: number | undefined;
     let windowsUserDataDir: string | undefined;
     let stopping: Promise<number | null> | undefined;
+    let reaping: Promise<void> | undefined;
+    /** Un seul ramassage de chrome.exe par bridge, partagé par stop() et le gestionnaire de sortie. */
+    const reapOnce = (): Promise<void> => {
+      if (windowsUserDataDir === undefined) return Promise.resolve();
+      const dir = windowsUserDataDir;
+      reaping ??= reap(dir, log).catch((e: Error) => log(`ERREUR : impossible de tuer chrome.exe (${dir}) : ${e.message}`));
+      return reaping;
+    };
     const timer = setTimeout(() => fail(new Error(`le bridge n'a pas démarré en ${opts.startTimeoutMs ?? 45_000} ms`)), opts.startTimeoutMs ?? 45_000);
     const fail = (e: Error) => {
       if (settled) return;
@@ -89,15 +109,24 @@ export function spawnBridge(init: BridgeInit, opts: { reapOnExit?: boolean; star
         ...(win !== undefined ? { windowsUserDataDir: win } : {}),
         stop(timeoutMs = win !== undefined ? 30_000 : 10_000) {
           stopping ??= (async () => {
-            if (child.exitCode !== null || child.signalCode !== null) { killGroupNow(m.chromePgid); return child.exitCode; }
-            child.kill('SIGTERM');
-            const r = await waitExit(child, timeoutMs);
-            if (r !== 'timeout') return r;
-            child.kill('SIGKILL');
-            killGroupNow(m.chromePgid);
-            await reapWindows(win, opts.log);
-            await waitExit(child, 3000);
-            return null;
+            let code: number | null;
+            if (child.exitCode !== null || child.signalCode !== null) {
+              killGroupNow(m.chromePgid);
+              code = child.exitCode;
+            } else {
+              child.kill('SIGTERM');
+              const r = await waitExit(child, timeoutMs);
+              if (r === 'timeout') {
+                child.kill('SIGKILL');
+                killGroupNow(m.chromePgid);
+                await waitExit(child, 3000);
+                code = null;
+              } else code = r;
+            }
+            // chrome.exe ne meurt pas avec le groupe Linux : tout arrêt non propre du bridge (SIGKILL,
+            // chien de garde, échec de Stop-Process…) peut le laisser vivant → on le vise par son --user-data-dir.
+            if (code !== 0) await reapOnce();
+            return code;
           })();
           return stopping;
         },
@@ -107,9 +136,14 @@ export function spawnBridge(init: BridgeInit, opts: { reapOnExit?: boolean; star
     child.once('exit', (code) => {
       // Ceinture et bretelles : si le bridge meurt, on tue le groupe Chrome qu'il détenait.
       if (opts.reapOnExit !== false && chromePgid !== undefined) killGroupNow(chromePgid);
-      // Mort inattendue (pas un stop demandé) : le chrome.exe du bridge serait orphelin côté Windows.
-      if (opts.reapOnExit !== false && stopping === undefined && code !== 0) void reapWindows(windowsUserDataDir, opts.log);
       if (!settled) fail(new Error(`le bridge s'est arrêté au démarrage (code ${code})`));
+      // Mort inattendue (pas un stop demandé) : chrome.exe serait orphelin côté Windows. Le profil n'est
+      // libéré (onExit) qu'une fois chrome.exe tué, sinon une nouvelle session sur ce profil serait
+      // tuée par le Stop-Process différé (il vise tout ce --user-data-dir).
+      if (opts.reapOnExit !== false && stopping === undefined && code !== 0 && windowsUserDataDir !== undefined) {
+        void reapOnce().finally(() => opts.onExit?.(code));
+        return;
+      }
       opts.onExit?.(code);
     });
     child.send({ type: 'init', init });

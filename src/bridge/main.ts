@@ -4,6 +4,7 @@ import { chmodSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { launchChrome, assertSupportedVersion, type ChromeProcess } from '../browser/launch.js';
 import { CdpClient } from '../browser/cdp.js';
+import { chromeDownloadPath } from '../browser/windows.js';
 import { PageController } from './page.js';
 import { bridgeHandler } from './server.js';
 import type { BridgeInit } from '../control/bridges.js';
@@ -96,7 +97,9 @@ async function main(): Promise<void> {
     info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version, ...(chrome.windowsUserDataDir !== undefined ? { windowsUserDataDir: chrome.windowsUserDataDir } : {}) };
   }
   cdp.once('close', () => { if (!stopping) void shutdown(1, 'connexion CDP perdue'); });
-  page = await PageController.attach(cdp, policy, { downloadDir: init.downloadDir ?? join(init.userDataDir, 'downloads'), newTab: attached });
+  const downloadDir = init.downloadDir ?? join(init.userDataDir, 'downloads');
+  if (init.browser?.kind === 'windows') mkdirSync(downloadDir, { recursive: true });
+  page = await PageController.attach(cdp, policy, { downloadDir: await chromeDownloadPath(downloadDir, init.browser?.kind ?? 'attach'), newTab: attached });
 
   const c = info;
   server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached })));

@@ -206,11 +206,20 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
   };
 }
 
-/** Fermeture propre par CDP (Browser.close), attend la sortie du processus navigateur. */
-async function closeViaCdp(wsUrl: string, gone: () => boolean, timeoutMs: number): Promise<boolean> {
+/**
+ * Fermeture propre par CDP (Browser.close), attend la sortie du processus navigateur.
+ * Chaque étape est bornée par timeoutMs : un navigateur gelé ne répond jamais à Browser.close,
+ * et l'arrêt doit pouvoir passer au repli (groupe, Stop-Process) avant le chien de garde du bridge.
+ */
+export async function closeViaCdp(wsUrl: string, gone: () => boolean, timeoutMs: number): Promise<boolean> {
   try {
-    const c = await CdpClient.connect(wsUrl);
-    await c.send('Browser.close').catch(() => undefined);
+    const c = await CdpClient.connect(wsUrl, timeoutMs);
+    let t: NodeJS.Timeout | undefined;
+    await Promise.race([
+      c.send('Browser.close').catch(() => undefined),
+      new Promise<void>((r) => { t = setTimeout(r, timeoutMs); }),
+    ]);
+    clearTimeout(t);
     c.close();
   } catch { return gone(); }
   const end = Date.now() + timeoutMs;

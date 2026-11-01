@@ -297,8 +297,9 @@ async function main(argv: string[]): Promise<number> {
         const pd = a.flags.get('profile-directory');
         const body = { name, sourcePath: resolvePath(src), ...(typeof pd === 'string' ? { profileDirectory: pd } : {}), ...(a.flags.has('skip-locked') ? { skipLocked: true } : {}) };
         const r = await c.call('POST', '/profiles/import', body, 30 * 60_000);
-        const j = r.json() as { profile: { name: string; path: string; accountEmail: string | null }; skipped: string[] };
+        const j = r.json() as { profile: { name: string; path: string; accountEmail: string | null }; skipped: string[]; warnings: string[] };
         out(json ? r.text() : 'OK');
+        for (const w of j.warnings) hint(`AVERTISSEMENT : ${w}`);
         if (j.skipped.length) hint(`AVERTISSEMENT : ${j.skipped.length} fichier(s) verrouillé(s) non importé(s) : ${j.skipped.join(', ')}`);
         if (!json) hint(`profil « ${j.profile.name} » importé dans ${j.profile.path}${j.profile.accountEmail ? ` (compte ${j.profile.accountEmail})` : ''}`);
         return 0;
