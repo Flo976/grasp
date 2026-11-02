@@ -64,9 +64,10 @@ export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel
 /**
  * Résultat d'une attente de stabilité (DOM et réseau). `error` : l'attente elle-même a échoué (jamais
  * silencieux). `requests` : requêtes encore en vol au plafond. `challenge` : page de challenge anti-bot
- * toujours affichée (aucune redirection dans le plafond).
+ * toujours affichée (aucune redirection dans le plafond). `ongoing` : stable « suffisamment » — le document est
+ * chargé, le réseau calme, seules des mutations de faible ampleur continuent (carrousel, minuterie).
  */
-interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean }
+interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean; ongoing?: boolean }
 /**
  * Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent ;
  * `until` (action) = fin de la fenêtre d'attribution : une requête partie après ne compte que si elle
@@ -138,17 +139,60 @@ const KNOWN_REFS_MAX = 50_000;
  * résout quand aucune mutation n'a eu lieu pendant `quiet` ms, ou au plafond `cap`. Seules les mutations
  * qui changent l'arbre d'accessibilité comptent (structure, texte, attributs ARIA/visibilité) : les
  * animations (style, class) d'un carrousel ne doivent pas faire attendre 5 s à chaque page.
+ *
+ * Stabilité « suffisante » (`lenient` ms, 0 = jamais) : une page qui ne se tait jamais (carrousels, minuteries
+ * d'Amazon) rend la main après `lenient` ms si le document est chargé et que la dernière seconde n'a vu que des
+ * mutations de faible ampleur : au plus LENIENT_ADDED éléments ajoutés (descendants compris) et LENIENT_TARGETS
+ * cibles distinctes, et soit un poids (nœuds touchés) d'au plus LENIENT_TINY, soit d'au plus LENIENT_WEIGHT
+ * dont 80 % sur des cibles déjà touchées (une animation qui tourne, pas un rendu qui avance). Un gros contenu
+ * ajouté (liste rendue, résultats) dépasse ces seuils : il est attendu. Résultat `ongoing: true`.
  */
-const STABLE_FN = `function (quiet, cap) {
+const LENIENT_ADDED = 10;
+const LENIENT_TARGETS = 30;
+const LENIENT_TINY = 40;
+const LENIENT_WEIGHT = 200;
+/** Délai (depuis le début de l'observation du DOM) après lequel la stabilité « suffisante » est admise. */
+const STABLE_LENIENT_MS = 1000;
+/** Note d'une stabilité « suffisante » : courte, la page est utilisable. */
+const ONGOING_NOTE = 'animations continues ignorées';
+const STABLE_FN = `function (quiet, cap, lenient) {
   return new Promise((resolve) => {
     const t0 = performance.now();
     let last = t0, n = 0;
-    const obs = new MutationObserver((recs) => { n += recs.length; last = performance.now(); });
+    const log = [];
+    const seen = new Set();
+    const obs = new MutationObserver((recs) => {
+      n += recs.length; last = performance.now();
+      if (!lenient) return;
+      for (const r of recs) {
+        let w = 1, added = 0;
+        if (r.type === 'childList') {
+          w = r.addedNodes.length + r.removedNodes.length;
+          for (const a of r.addedNodes) if (a.nodeType === 1) added += 1 + Math.min(1000, a.getElementsByTagName('*').length);
+        }
+        const t = r.type === 'characterData' ? r.target.parentNode : r.target;
+        log.push({ at: last, t, w: w + added, added, seen: seen.has(t) });
+        seen.add(t);
+      }
+      while (log.length > 2000) log.shift();
+    });
     obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
       attributeFilter: ['hidden', 'aria-hidden', 'aria-expanded', 'aria-label', 'aria-busy', 'aria-checked', 'aria-selected', 'role', 'disabled', 'open'] });
+    const minor = (now) => {
+      if (document.readyState !== 'complete') return false;
+      let w = 0, added = 0, again = 0;
+      const targets = new Set();
+      for (const e of log) {
+        if (e.at < now - 1000) continue;
+        w += e.w; added += e.added; targets.add(e.t); if (e.seen) again += e.w;
+      }
+      if (added > ${LENIENT_ADDED} || targets.size > ${LENIENT_TARGETS}) return false;
+      return w <= ${LENIENT_TINY} || (w <= ${LENIENT_WEIGHT} && again >= 0.8 * w);
+    };
     const tick = () => {
       const now = performance.now();
       if (now - last >= quiet) { obs.disconnect(); resolve({ stable: true, mutations: n }); }
+      else if (lenient > 0 && now - t0 >= lenient && minor(now)) { obs.disconnect(); resolve({ stable: true, mutations: n, ongoing: true }); }
       else if (now - t0 >= cap) { obs.disconnect(); resolve({ stable: false, mutations: n }); }
       else setTimeout(tick, Math.max(10, Math.min(50, quiet - (now - last))));
     };
@@ -1158,6 +1202,7 @@ export class PageController {
       const { loc, stab } = await this.navigateStable(url);
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
       if (!stab.stable) out.detail = PageController.unstableNote(stab);
+      else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
@@ -1532,10 +1577,10 @@ export class PageController {
       if (this.activeRequests(o) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
       const left = capMs - elapsed();
       let timer: NodeJS.Timeout | undefined;
-      let r: { stable: boolean; mutations: number };
+      let r: { stable: boolean; mutations: number; ongoing?: boolean };
       try {
         r = await Promise.race([
-          this.evalIsolated<{ stable: boolean; mutations: number }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left})`, true),
+          this.evalIsolated<{ stable: boolean; mutations: number; ongoing?: boolean }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left}, ${STABLE_LENIENT_MS})`, true),
           new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('le navigateur ne répond pas')), left + 3000); }),
         ]);
       } catch (e) {
@@ -1562,7 +1607,7 @@ export class PageController {
         if (ch === 'strong') return unstable({ challenge: true });
         weakDone = true;
       }
-      return { stable: true, ms: elapsed(), mutations };
+      return { stable: true, ms: elapsed(), mutations, ...(r.ongoing === true ? { ongoing: true } : {}) };
     }
   }
 
@@ -1848,7 +1893,7 @@ export class PageController {
       // toutes ses requêtes comptent (comme `nav`), pas seulement celles de la fenêtre de l'action.
       const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, this.docGen !== doc0 ? { since: t0 } : win) : undefined;
       const res: ActionResult = { ok: true };
-      const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);

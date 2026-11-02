@@ -85,10 +85,13 @@ test('nav sur une page à carrousel perpétuel : main rendue en < 1,5 s, sans no
   const ms = Date.now() - t0;
   assert.ok(ms < 1500, `nav en ${ms} ms`);
   assert.doesNotMatch(r.detail ?? '', /instable/, r.detail);
+  assert.equal(r.detail, 'animations continues ignorées');
 });
 
 test('nav : un gros contenu ajouté à 800 ms est attendu, même avec un carrousel qui tourne', async () => {
+  const t0 = Date.now();
   await fx.page.nav(`${site.url}/carrousel?gros=1`);
+  assert.ok(Date.now() - t0 >= 800, `${Date.now() - t0} ms`);
   const s = await fx.page.snapshot({ maxBytes: 100_000 });
   assert.match(s.text, /"Article n°299"/);
 });

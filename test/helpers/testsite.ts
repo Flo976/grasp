@@ -84,9 +84,18 @@ addEventListener('load', () => {
 </script></body></html>`;
 
 /** DOM qui ne se stabilise jamais (compteur toutes les 80 ms). */
+/**
+ * DOM qui ne se stabilise jamais, et pas seulement par une animation de faible ampleur (celle-ci est ignorée,
+ * voir /carrousel) : toutes les 80 ms, un compteur change ET 5 nouveaux éléments sont ajoutés.
+ */
 export const AGITE_PAGE = `<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Agitée</title></head><body><h1>Agitée</h1><p id="n">0</p>
-<script>let i = 0; setInterval(() => { document.getElementById('n').textContent = String(++i); }, 80);</script></body></html>`;
+<html lang="fr"><head><meta charset="utf-8"><title>Agitée</title></head><body><h1>Agitée</h1><p id="n">0</p><div id="flux"></div>
+<script>let i = 0; setInterval(() => {
+  document.getElementById('n').textContent = String(++i);
+  const f = document.getElementById('flux');
+  for (let k = 0; k < 5; k++) { const s = document.createElement('span'); s.textContent = 'x'; f.append(s); }
+  while (f.childElementCount > 200) f.firstElementChild.remove();
+}, 80);</script></body></html>`;
 
 /** Contenu tardif (wait) et transition en plusieurs étapes (--snap-diff après stabilité). */
 export const TARDIF_PAGE = `<!doctype html>
