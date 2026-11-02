@@ -1244,7 +1244,7 @@ export class PageController {
    * Snapshot d'accessibilité. `maxBytes` : budget en octets (défaut `snapMax`). `scope` (ref, CSS, text:) :
    * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
    */
-  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<Snapshot> {
+  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<Snapshot> {
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     // Arbre, historique (URL) et monde isolé en un aller-retour ; puis les deux relevés DOM en parallèle.
@@ -1734,6 +1734,8 @@ export class PageController {
       all.filter((c) => is(c, (n) => n === t)),
       all.filter((c) => is(c, (n) => n.toLowerCase() === lower)),
       all.filter((c) => INTERACTIVE.has(c.role) && is(c, (n) => n.toLowerCase().includes(lower))),
+      // Case à cocher sans nom suivie de son texte (« [ ] checkbox 2 ») : ce texte est son libellé naturel.
+      all.filter((c) => c.near !== undefined && c.near.toLowerCase() === lower),
     ];
     for (const tier of tiers) {
       const hits = tier.filter((c) => c.id !== undefined);

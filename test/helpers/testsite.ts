@@ -534,6 +534,89 @@ export const POLLING_PAGE = `<!doctype html>
 <script>setInterval(() => { fetch('/api/data').catch(() => {}); }, 300);</script>
 </body></html>`;
 
+/**
+ * Banc v4. Cases à cocher sans <label> (the-internet.herokuapp.com/checkboxes) : le texte qui SUIT la case
+ * est son libellé naturel ; radios en ligne ; croix de tag sans nom (texte qui précède) pour comparaison.
+ */
+export const CASES_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Cases</title></head><body>
+<h3>Checkboxes</h3>
+<form id="checkboxes"><input type="checkbox"> checkbox 1<br><input type="checkbox" checked> checkbox 2</form>
+<p>Livraison : <input type="radio" name="liv"> Domicile <input type="radio" name="liv"> Relais</p>
+<span class="tag">Rust <button type="button" class="croix" onclick="this.parentNode.remove()"></button></span>
+</body></html>`;
+
+/**
+ * Champ de recherche remplacé à la première saisie (Wikipédia : le searchbox devient un combobox Vue) :
+ * nouveau nœud, même nom, valeur et focus conservés. `?role=combobox` : le remplaçant change de rôle.
+ * Entrée soumet le formulaire (→ « Recherche : <valeur> »).
+ */
+export const REMPLACE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Remplacement</title></head><body>
+<form id="f" onsubmit="event.preventDefault(); document.getElementById('etat').textContent = 'Recherche : ' + document.getElementById('q').value">
+<input id="q" type="search" aria-label="Rechercher" autocomplete="off"></form>
+<p id="etat">Prêt</p>
+<script>
+const role = new URLSearchParams(location.search).get('role');
+document.getElementById('q').addEventListener('input', function once() {
+  const old = this;
+  old.removeEventListener('input', once);
+  setTimeout(() => {
+    const n = document.createElement('input');
+    n.id = 'q'; n.type = 'search'; n.setAttribute('aria-label', 'Rechercher'); n.autocomplete = 'off';
+    if (role) { n.setAttribute('role', role); n.setAttribute('aria-expanded', 'false'); }
+    n.value = old.value;
+    old.replaceWith(n);
+    n.focus();
+    n.setSelectionRange(n.value.length, n.value.length);
+  }, 30);
+});
+</script>
+</body></html>`;
+
+/** Carrousel : un petit nœud modifié toutes les 200 ms, sans fin (Amazon). `?gros=1` : 300 articles ajoutés à 800 ms. */
+export const CARROUSEL_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Carrousel</title></head><body>
+<h1>Boutique</h1>
+<div id="car"><span id="slide">Diapo 0</span></div>
+<ul id="liste"></ul>
+<script>
+let i = 0;
+setInterval(() => { document.getElementById('slide').textContent = 'Diapo ' + (++i % 5); }, 200);
+if (new URLSearchParams(location.search).get('gros')) setTimeout(() => {
+  document.getElementById('liste').innerHTML = Array.from({ length: 300 }, (_, k) => '<li>Article n°' + k + '</li>').join('');
+}, 800);
+</script>
+</body></html>`;
+
+/** Titres de livres longs (liens) : troncature des noms dans le snapshot. */
+export const LIVRES_TITRES = [
+  "Le Seigneur des anneaux : La Communauté de l'anneau, édition illustrée intégrale avec cartes et annexes de l'auteur",
+  "Histoire de la Grande Île : Madagascar des origines à nos jours, des royaumes merina à l'indépendance de 1960",
+  'Court',
+];
+export const LIVRES_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Livres</title></head><body>
+<h1>Catalogue</h1><ul>${LIVRES_TITRES.map((t, i) => `<li><a href="/livre/${i}">${t}</a></li>`).join('')}</ul>
+</body></html>`;
+
+/** Console : 60 history.replaceState (repères « même document ») et 3 erreurs. */
+export const CONSOLE_SPA_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Console SPA</title></head><body>
+<h1>SPA</h1>
+<script>
+for (let k = 0; k < 60; k++) history.replaceState(null, '', '?etape=' + k);
+console.error('erreur A'); console.error('erreur B'); console.error('erreur C');
+console.info('info 1');
+</script>
+</body></html>`;
+
+/** Console : 30 erreurs au chargement (à vider avec --clear). */
+export const CONSOLE_BRUIT_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Console bruit</title></head><body>
+<script>for (let k = 0; k < 30; k++) console.error('ancienne ' + k);</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -590,6 +673,12 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
     if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
     if (u.pathname === '/erreurs') { res.end(ERREURS_PAGE); return; }
+    if (u.pathname === '/cases') { res.end(CASES_PAGE); return; }
+    if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }
+    if (u.pathname === '/carrousel') { res.end(CARROUSEL_PAGE); return; }
+    if (u.pathname === '/livres') { res.end(LIVRES_PAGE); return; }
+    if (u.pathname === '/console-spa') { res.end(CONSOLE_SPA_PAGE); return; }
+    if (u.pathname === '/console-bruit') { res.end(CONSOLE_BRUIT_PAGE); return; }
     if (u.pathname === '/snap-v3') { res.end(SNAP_V3_PAGE); return; }
     if (u.pathname === '/radios') { res.end(RADIOS_PAGE); return; }
     if (u.pathname === '/modale') { res.end(MODALE_PAGE); return; }
