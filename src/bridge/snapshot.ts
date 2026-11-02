@@ -29,8 +29,12 @@ export interface AXNode {
   ignoredReasons?: Array<{ name: string }>;
 }
 
-/** Rôle et nom rendu d'une ref ; `alt` : nom brut de l'arbre quand il diffère (voir Snapshot.meta). */
-export interface RefMeta { role: string; name: string; alt?: string }
+/**
+ * Rôle et nom rendu d'une ref ; `alt` : nom brut de l'arbre quand il diffère (voir Snapshot.meta). `near` :
+ * case à cocher, radio ou switch sans nom suivie d'un texte (« <input type=checkbox> checkbox 2 ») — ce texte
+ * est son libellé naturel : `text:` le retrouve (après les noms accessibles), mais il n'entre pas dans `name`.
+ */
+export interface RefMeta { role: string; name: string; alt?: string; near?: string }
 
 export interface Snapshot {
   url: string;
@@ -56,6 +60,8 @@ export interface Snapshot {
   invalid: Array<{ ref: string; backendId: number | undefined; line: string; message: string }>;
   /** Fenêtre modale ouverte qui masque le reste de la page : son nom accessible ('' sans nom). */
   modal?: string;
+  /** backendDOMNodeId de l'élément focalisé (propriété `focused` de l'arbre), s'il y en a un. */
+  focused?: number;
 }
 
 /**
@@ -88,7 +94,16 @@ export interface SnapshotOptions {
    * et taper le texte d'origine.
    */
   sourceTexts?: Map<number, string>;
+  /**
+   * Longueur maximale d'un nom ou d'un texte rendu (`--name-max`), coupure marquée « … » ; 0 = illimité.
+   * Défaut : NAME_MAX pour les noms, TEXT_MAX pour les textes et régions annoncées. Les refs n'en dépendent pas.
+   */
+  nameMax?: number;
 }
+
+/** Longueur par défaut d'un nom rendu (lien, bouton…) et d'une ligne de texte brut. */
+export const NAME_MAX = 80;
+export const TEXT_MAX = 100;
 
 /** Budget par défaut (octets) ; le bridge applique `snapMax` de la config (12 000 par défaut). */
 export const DEFAULT_MAX_BYTES = 12_000;
@@ -109,6 +124,12 @@ const ERROR_MAX = 120;
 const OPTIONS_MAX = 20;
 /** Rôles sans nom auxquels on donne un nom de contexte (texte voisin) : croix de suppression d'un tag, etc. */
 const CONTEXT_ROLES = new Set(['button', 'checkbox', 'radio', 'switch', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'treeitem']);
+/**
+ * Rôles dont le libellé naturel, sans <label>, est le texte qui les SUIT (« [ ] checkbox 2 ») : nœuds frères
+ * suivants, jusqu'au prochain contrôle ou <br>. Le texte qui précède (libellé de la case précédente) ne sert
+ * qu'en repli.
+ */
+const NEXT_LABEL_ROLES = new Set(['checkbox', 'radio', 'switch']);
 /** Enfants d'une combobox ouverte qui portent ses options (le reste est son texte interne, déjà rendu en =valeur). */
 const POPUP_ROLES = new Set(['MenuListPopup', 'listbox', 'tree', 'grid', 'dialog', 'group', 'option']);
 /** Raisons Chrome d'un nœud masqué par une modale, un fond aria-hidden ou inerte. */
@@ -161,7 +182,7 @@ const hasProp = (n: AXNode, name: string, value: unknown) => listOf(n.properties
 
 function quote(s: string, max: number): string {
   const t = norm(s);
-  const cut = t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  const cut = t.length > max ? `${t.slice(0, Math.max(1, max - 1))}…` : t;
   return `"${cut.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
@@ -222,6 +243,8 @@ function level(node: AXNode): string {
 
 export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+  const nameMax = opts.nameMax === undefined ? NAME_MAX : opts.nameMax === 0 ? Infinity : opts.nameMax;
+  const textMax = opts.nameMax === undefined ? TEXT_MAX : nameMax;
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const root = nodes.find((n) => n.parentId === undefined || !byId.has(n.parentId)) ?? nodes[0];
 
@@ -381,12 +404,30 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   };
   /**
    * Contexte d'un élément sans nom : texte du frère le plus proche (avant, puis après), sinon de ceux du
-   * parent, jusqu'à 3 niveaux (300 nœuds parcourus au plus). Croix d'un tag « PHP » → « PHP ». `key` entre
-   * dans la ref : texte brut de l'arbre, SANS chiffres (compteur, horodatage voisins), pour qu'elle ne change
-   * pas quand un compteur bouge ; `label` est le texte rendu.
+   * parent, jusqu'à 3 niveaux (300 nœuds parcourus au plus). Croix d'un tag « PHP » → « PHP ». Case à cocher,
+   * radio, switch : d'abord le texte qui la SUIT (frères suivants jusqu'au prochain contrôle ou saut de ligne),
+   * son libellé naturel (`follows`). `key` entre dans la ref : texte brut de l'arbre, SANS chiffres (compteur,
+   * horodatage voisins), pour qu'elle ne change pas quand un compteur bouge ; `label` est le texte rendu.
    */
-  const contextOf = (node: AXNode): { label: string; key: string } => {
+  const contextOf = (node: AXNode): { label: string; key: string; text: string; follows: boolean } => {
     const budget = { n: 300 };
+    const found = (acc: { shown: string[]; raw: string[] }, follows: boolean) => {
+      const t = norm(acc.shown.join(' '));
+      if (!t) return undefined;
+      const key = norm(acc.raw.join(' ').replace(/\p{N}+/gu, ' ')).slice(0, 40);
+      return { label: t.length > 40 ? `${t.slice(0, 39)}…` : t, key: key !== '' ? key : '#', text: t, follows };
+    };
+    if (NEXT_LABEL_ROLES.has(str(node.role)) && node.parentId !== undefined) {
+      const sibs = listOf(byId.get(node.parentId)?.childIds);
+      for (const id of sibs.slice(sibs.indexOf(node.nodeId) + 1)) {
+        const c = byId.get(id);
+        if (!c) continue;
+        const r = str(c.role);
+        if (r === 'LineBreak' || INTERACTIVE.has(r) || budget.n <= 0) break;
+        const hit = found(textOf(c, budget), true);
+        if (hit) return hit;
+      }
+    }
     let cur = node;
     for (let up = 0; up < 3 && cur.parentId !== undefined && budget.n > 0; up++) {
       const parent = byId.get(cur.parentId);
@@ -397,15 +438,12 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         if (budget.n <= 0) break;
         const c = byId.get(id);
         if (!c) continue;
-        const acc = textOf(c, budget);
-        const t = norm(acc.shown.join(' '));
-        if (!t) continue;
-        const key = norm(acc.raw.join(' ').replace(/\p{N}+/gu, ' ')).slice(0, 40);
-        return { label: t.length > 40 ? `${t.slice(0, 39)}…` : t, key: key !== '' ? key : '#' };
+        const hit = found(textOf(c, budget), false);
+        if (hit) return hit;
       }
       cur = parent;
     }
-    return { label: '', key: '' };
+    return { label: '', key: '', text: '', follows: false };
   };
 
   /** Options d'une liste : rendues jusqu'à OPTIONS_MAX (les sélectionnées toujours), les autres comptées. */
@@ -431,7 +469,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
           if (node.backendDOMNodeId !== undefined) textNodes.push({ text, backendNodeId: node.backendDOMNodeId });
           if (inScope) {
             texts.push(text);
-            out.push({ depth, line: quote(text, 100) });
+            out.push({ depth, line: quote(text, textMax) });
           }
         }
         return; // InlineTextBox enfants : inutiles
@@ -459,18 +497,18 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         // ne glisse pas vers la croix voisine quand un tag est supprimé. Son nom (meta) reste vide : text:PHP
         // ne doit jamais désigner la croix du tag PHP.
         const raw = rawOf(node);
-        const cx = !name && CONTEXT_ROLES.has(role) ? contextOf(node) : { label: '', key: '' };
+        const cx = !name && CONTEXT_ROLES.has(role) ? contextOf(node) : { label: '', key: '', text: '', follows: false };
         const ctx = cx.label;
         const ref = makeRef(role, cx.key ? `\u0001${cx.key}` : raw, zone);
         const val = VALUE_ROLES.has(role) ? norm(str(node.value)) : '';
         const err = FIELD_ROLES.has(role) ? invalidMsg(node) : undefined;
         if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId, nameOf);
         const shown = name || live;
-        const label = shown ? ` ${quote(shown, live ? 100 : 80)}` : ctx ? ` (sans nom, près de ${quote(ctx, 40)})` : '';
+        const label = shown ? ` ${quote(shown, live ? textMax : nameMax)}` : ctx ? ` (sans nom, près de ${quote(ctx, 40)})` : '';
         const line = `${ref}:${role}${level(node)}${label}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
         if (err !== undefined) invalid.push({ ref, backendId: node.backendDOMNodeId, line, message: err });
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);
-        meta.set(ref, raw !== name && raw !== '' ? { role, name, alt: raw } : { role, name });
+        meta.set(ref, { role, name, ...(raw !== name && raw !== '' ? { alt: raw } : {}), ...(cx.follows ? { near: cx.text } : {}) });
         if (inScope) {
           entries.set(ref, line);
           out.push({ depth, line });
@@ -563,7 +601,9 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   }
   if (summary !== undefined) lines.push(summary);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}) };
+  // Le document (RootWebArea) porte aussi `focused` quand la page a le focus : on veut l'élément.
+  const focused = nodes.filter((n) => !n.ignored && n.backendDOMNodeId !== undefined && str(n.role) !== 'RootWebArea' && hasProp(n, 'focused', true)).pop()?.backendDOMNodeId;
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}), ...(focused !== undefined ? { focused } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */

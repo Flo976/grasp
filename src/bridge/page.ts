@@ -64,9 +64,10 @@ export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel
 /**
  * Résultat d'une attente de stabilité (DOM et réseau). `error` : l'attente elle-même a échoué (jamais
  * silencieux). `requests` : requêtes encore en vol au plafond. `challenge` : page de challenge anti-bot
- * toujours affichée (aucune redirection dans le plafond).
+ * toujours affichée (aucune redirection dans le plafond). `ongoing` : stable « suffisamment » — le document est
+ * chargé, le réseau calme, seules des mutations de faible ampleur continuent (carrousel, minuterie).
  */
-interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean }
+interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean; ongoing?: boolean }
 /**
  * Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent ;
  * `until` (action) = fin de la fenêtre d'attribution : une requête partie après ne compte que si elle
@@ -138,17 +139,62 @@ const KNOWN_REFS_MAX = 50_000;
  * résout quand aucune mutation n'a eu lieu pendant `quiet` ms, ou au plafond `cap`. Seules les mutations
  * qui changent l'arbre d'accessibilité comptent (structure, texte, attributs ARIA/visibilité) : les
  * animations (style, class) d'un carrousel ne doivent pas faire attendre 5 s à chaque page.
+ *
+ * Stabilité « suffisante » (`lenient` ms, 0 = jamais) : une page qui ne se tait jamais (carrousels, minuteries
+ * d'Amazon) rend la main après `lenient` ms si le document est chargé et que la dernière seconde n'a vu que des
+ * mutations de faible ampleur : au plus LENIENT_ADDED éléments ajoutés (descendants compris) et LENIENT_TARGETS
+ * cibles distinctes, et soit un poids (nœuds touchés) d'au plus LENIENT_TINY, soit d'au plus LENIENT_WEIGHT
+ * dont 80 % sur des cibles déjà touchées (une animation qui tourne, pas un rendu qui avance). Un gros contenu
+ * ajouté (liste rendue, résultats) dépasse ces seuils : il est attendu. Résultat `ongoing: true`.
  */
-const STABLE_FN = `function (quiet, cap) {
+const LENIENT_ADDED = 10;
+const LENIENT_TARGETS = 30;
+const LENIENT_TINY = 40;
+const LENIENT_WEIGHT = 200;
+/** Délai (depuis le début de l'observation du DOM) après lequel la stabilité « suffisante » est admise. */
+const STABLE_LENIENT_MS = 1000;
+/** Champs de saisie : un remplaçant peut changer de rôle entre eux (searchbox → combobox de Wikipédia). */
+const TEXT_FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
+/** Note d'une stabilité « suffisante » : courte, la page est utilisable. */
+const ONGOING_NOTE = 'animations continues ignorées';
+const STABLE_FN = `function (quiet, cap, lenient) {
   return new Promise((resolve) => {
     const t0 = performance.now();
     let last = t0, n = 0;
-    const obs = new MutationObserver((recs) => { n += recs.length; last = performance.now(); });
+    const log = [];
+    const seen = new Set();
+    const obs = new MutationObserver((recs) => {
+      n += recs.length; last = performance.now();
+      if (!lenient) return;
+      for (const r of recs) {
+        let w = 1, added = 0;
+        if (r.type === 'childList') {
+          w = r.addedNodes.length + r.removedNodes.length;
+          for (const a of r.addedNodes) if (a.nodeType === 1) added += 1 + Math.min(1000, a.getElementsByTagName('*').length);
+        }
+        const t = r.type === 'characterData' ? r.target.parentNode : r.target;
+        log.push({ at: last, t, w: w + added, added, seen: seen.has(t) });
+        seen.add(t);
+      }
+      while (log.length > 2000) log.shift();
+    });
     obs.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
       attributeFilter: ['hidden', 'aria-hidden', 'aria-expanded', 'aria-label', 'aria-busy', 'aria-checked', 'aria-selected', 'role', 'disabled', 'open'] });
+    const minor = (now) => {
+      if (document.readyState !== 'complete') return false;
+      let w = 0, added = 0, again = 0;
+      const targets = new Set();
+      for (const e of log) {
+        if (e.at < now - 1000) continue;
+        w += e.w; added += e.added; targets.add(e.t); if (e.seen) again += e.w;
+      }
+      if (added > ${LENIENT_ADDED} || targets.size > ${LENIENT_TARGETS}) return false;
+      return w <= ${LENIENT_TINY} || (w <= ${LENIENT_WEIGHT} && again >= 0.8 * w);
+    };
     const tick = () => {
       const now = performance.now();
       if (now - last >= quiet) { obs.disconnect(); resolve({ stable: true, mutations: n }); }
+      else if (lenient > 0 && now - t0 >= lenient && minor(now)) { obs.disconnect(); resolve({ stable: true, mutations: n, ongoing: true }); }
       else if (now - t0 >= cap) { obs.disconnect(); resolve({ stable: false, mutations: n }); }
       else setTimeout(tick, Math.max(10, Math.min(50, quiet - (now - last))));
     };
@@ -582,6 +628,11 @@ export class PageController {
   private readonly netStarts = new Map<string, number[]>();
   /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
   private undelivered = false;
+  /**
+   * Élément visé par l'action en cours (fill, type, click) : s'il a été détaché pendant la fenêtre
+   * d'observation qui suit l'action, son remplaçant est cherché et signalé (voir replacementNote).
+   */
+  private actTarget: number | undefined;
   private probeSeq = 0;
   /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
   private pw: PlaywrightEngine | undefined;
@@ -1158,6 +1209,7 @@ export class PageController {
       const { loc, stab } = await this.navigateStable(url);
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
       if (!stab.stable) out.detail = PageController.unstableNote(stab);
+      else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
@@ -1244,7 +1296,8 @@ export class PageController {
    * Snapshot d'accessibilité. `maxBytes` : budget en octets (défaut `snapMax`). `scope` (ref, CSS, text:) :
    * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
    */
-  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<Snapshot> {
+  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<Snapshot> {
+    if (opts.nameMax !== undefined && (!Number.isInteger(opts.nameMax) || opts.nameMax < 0)) throw badRequest('name-max : entier positif ou nul attendu (0 = noms entiers)');
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     // Arbre, historique (URL) et monde isolé en un aller-retour ; puis les deux relevés DOM en parallèle.
@@ -1264,7 +1317,7 @@ export class PageController {
     let title: string;
     if (root !== undefined && root.role?.value === 'RootWebArea') title = typeof root.name?.value === 'string' ? root.name.value : '';
     else title = (await this.location()).title;
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -1274,7 +1327,7 @@ export class PageController {
    * Texte de `snap`. Zone frame=… : arbre ARIA du cadre par le moteur Playwright (même d'une autre origine),
    * sans refs (elles ne désignent que le document principal) ; on agit dans le cadre avec frame=… >> css|text:.
    */
-  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<string> {
+  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<string> {
     if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
     const scope = opts.scope.trim();
     const aria = await this.pwUse(async (page) => {
@@ -1531,10 +1584,10 @@ export class PageController {
       if (this.activeRequests(o) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
       const left = capMs - elapsed();
       let timer: NodeJS.Timeout | undefined;
-      let r: { stable: boolean; mutations: number };
+      let r: { stable: boolean; mutations: number; ongoing?: boolean };
       try {
         r = await Promise.race([
-          this.evalIsolated<{ stable: boolean; mutations: number }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left})`, true),
+          this.evalIsolated<{ stable: boolean; mutations: number; ongoing?: boolean }>(`(${STABLE_FN})(${STABLE_QUIET_MS}, ${left}, ${STABLE_LENIENT_MS})`, true),
           new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('le navigateur ne répond pas')), left + 3000); }),
         ]);
       } catch (e) {
@@ -1561,7 +1614,7 @@ export class PageController {
         if (ch === 'strong') return unstable({ challenge: true });
         weakDone = true;
       }
-      return { stable: true, ms: elapsed(), mutations };
+      return { stable: true, ms: elapsed(), mutations, ...(r.ongoing === true ? { ongoing: true } : {}) };
     }
   }
 
@@ -1713,6 +1766,15 @@ export class PageController {
       this.notes?.push(`ref ${ref} retrouvée → ${self.ref} (${what}) : même élément, rang décalé parmi les homonymes`);
       return self.id;
     }
+    // Élément remplacé par un nouveau nœud (champ de recherche re-rendu en combobox) : l'élément focalisé de
+    // même nom, de même rôle ou champ de saisie lui aussi, est son remplaçant — jamais un homonyme non focalisé.
+    if (self === undefined && snap.focused !== undefined) {
+      const f = all.find((c) => c.id === snap.focused);
+      if (f !== undefined && PageController.sameKind(f.role, prev.role) && f.key === prev.key) {
+        this.notes?.push(`ref ${ref} (${what}) : l'élément a été remplacé par ${f.ref} ${f.role}${f.name !== '' ? ` "${f.name}"` : ''}, focalisé et de même nom — action sur le remplaçant`);
+        return f.id;
+      }
+    }
     const same = all.filter((c) => c.role === prev.role && c.key === prev.key);
     if (same.length > 0) {
       const c = same.slice(0, 3).map(strip);
@@ -1734,6 +1796,8 @@ export class PageController {
       all.filter((c) => is(c, (n) => n === t)),
       all.filter((c) => is(c, (n) => n.toLowerCase() === lower)),
       all.filter((c) => INTERACTIVE.has(c.role) && is(c, (n) => n.toLowerCase().includes(lower))),
+      // Case à cocher sans nom suivie de son texte (« [ ] checkbox 2 ») : ce texte est son libellé naturel.
+      all.filter((c) => c.near !== undefined && c.near.toLowerCase() === lower),
     ];
     for (const tier of tiers) {
       const hits = tier.filter((c) => c.id !== undefined);
@@ -1827,6 +1891,7 @@ export class PageController {
     const actionNotes: string[] = [];
     this.notes = actionNotes;
     this.undelivered = false;
+    this.actTarget = undefined;
     try {
       await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
@@ -1845,7 +1910,9 @@ export class PageController {
       // toutes ses requêtes comptent (comme `nav`), pas seulement celles de la fenêtre de l'action.
       const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, this.docGen !== doc0 ? { since: t0 } : win) : undefined;
       const res: ActionResult = { ok: true };
-      const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
+      const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
+      const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);
@@ -1858,7 +1925,32 @@ export class PageController {
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; }
+  }
+
+  /** Rôles de champ de saisie interchangeables pour un remplacement (searchbox re-rendu en combobox). */
+  private static sameKind(a: string, b: string): boolean {
+    return a === b || (TEXT_FIELD_ROLES.has(a) && TEXT_FIELD_ROLES.has(b));
+  }
+
+  /**
+   * L'élément visé par l'action a-t-il été détaché ? Si oui, son remplaçant : l'élément focalisé de même nom
+   * et de même rôle (ou champ de saisie ↔ champ de saisie), sinon l'unique élément de même rôle et même nom.
+   * Rien si l'élément est toujours dans la page, ou retiré sans remplaçant identifiable.
+   */
+  private async replacementNote(id: number): Promise<string | undefined> {
+    const alive = await this.callIsolated<boolean>(id, 'function () { return this.isConnected; }').catch(() => false);
+    if (alive) return undefined;
+    let prev: { role: string; key: string } | undefined;
+    for (const k of this.knownRefs.values()) if (k.id === id && k.doc === this.docGen) prev = k;
+    if (prev === undefined) return undefined;
+    const p = prev;
+    const snap = await this.snapshot();
+    const all = PageController.candidates(snap);
+    const c = all.find((x) => x.id === snap.focused && PageController.sameKind(x.role, p.role) && x.key === p.key)
+      ?? ((same) => (same.length === 1 ? same[0] : undefined))(all.filter((x) => x.role === p.role && x.key === p.key));
+    if (c === undefined) return undefined;
+    return `l'élément a été remplacé par ${c.ref} ${c.role}${c.name !== '' ? ` "${c.name}"` : ''}${c.id === snap.focused ? ' (focalisé)' : ''} — utilisez cette ref`;
   }
 
   /** Point du clic : centre du premier quad, après défilement. 409 si l'élément n'a pas de zone cliquable. */
@@ -2017,6 +2109,7 @@ export class PageController {
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       clicked = id;
+      this.actTarget = id;
       try { await this.clickNode(id); } catch (e) {
         // Erreur d'actionnabilité (pas de zone cliquable, désactivé) : Playwright attend que l'élément le devienne.
         if (this.fallback !== 'playwright' || !(e instanceof GraspError) || e.status !== 409) throw e;
@@ -2077,6 +2170,7 @@ export class PageController {
     if (engine === 'playwright') return this.pwAct(opts, sel, 'saisie', (l) => l.pressSequentially(text, { delay, timeout: PW_ACTION_TIMEOUT_MS }), {});
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
+      this.actTarget = id;
       const info = await this.describe(id);
       if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
       const focus = async () => { await this.s('DOM.focus', { backendNodeId: id }); };
@@ -2118,6 +2212,7 @@ export class PageController {
     let fieldId: number | undefined;
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
+      this.actTarget = id;
       const info = await this.describe(id);
       const isField = (info.tag === 'INPUT' && !NON_TEXT_INPUTS.has(info.type)) || info.tag === 'TEXTAREA' || info.editable;
       if (!isField) throw badRequest(`fill attend un champ de saisie, reçu <${info.tag.toLowerCase()}${info.type ? ` type=${info.type}` : ''}> — utilisez click, check ou select`);

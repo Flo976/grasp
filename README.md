@@ -230,7 +230,7 @@ en headless, en fenêtré (si `DISPLAY`) et, avec `GRASP_TEST_WINDOWS=1`, sur ch
 
 ## Snapshot
 
-`GET /snap` (CLI : `grasp snap [--max octets]`), une ligne par nœud :
+`GET /snap` (CLI : `grasp snap [--max octets] [--name-max N]`), une ligne par nœud :
 
 ```
 <indentation><ref>:<rôle>[niveau] "<nom accessible>"=<valeur> [états]
@@ -249,6 +249,11 @@ en headless, en fenêtré (si `DISPLAY`) et, avec `GRASP_TEST_WINDOWS=1`, sur ch
   48 Ko : sur une vraie page (GitHub, Booking), c'est 12 000 tokens pour une seule lecture. Au-delà, la
   dernière ligne le dit : `… tronqué : 52341 caractères restants (1890 nœuds omis) — affinez avec --max N /
   --scope <ref|css>`. Les refs hors budget restent résolubles.
+- **Noms longs** : un nom est coupé à 80 caractères, une ligne de texte brut à 100, et la coupure est
+  toujours marquée `…` (`link "Le Seigneur des anneaux : La Communauté de l'anneau, édition illustrée intég…"`).
+  `--name-max N` (`?nameMax=N`, aussi sur une ligne de `grasp run`) fixe la longueur des deux ; `0` = noms
+  entiers (titres de livres, intitulés de produits). Les refs ne dépendent pas de la troncature. `text` ne
+  tronque aucun nom : l'option y est refusée.
 - **Zone** (`--scope <ref|css>`, `?scope=` ; `text:` accepté aussi) : seules les lignes du sous-arbre de
   l'élément. Tout l'arbre est quand même parcouru, si bien que les refs sont **celles du snapshot complet**
   (le rang parmi les homonymes se compte sur la page entière) : une ref lue dans une zone s'utilise telle
@@ -383,7 +388,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | Commande | Effet |
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
-| `snap [--max octets] [--scope <ref\|css\|frame=…>]` | Snapshot d'accessibilité (12 000 octets par défaut). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
+| `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
 | `text [--max N] [--scope <ref\|css\|frame=…>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |

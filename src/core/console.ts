@@ -36,7 +36,7 @@ export interface ConsoleResult {
   seq: number;
   /** Entrées postérieures à `since` tombées du tampon circulaire avant d'avoir été lues. */
   dropped: number;
-  /** Lignes (après fusion) écartées par `limit` : les plus anciennes. */
+  /** Lignes du niveau demandé (après fusion, hors repères de navigation) écartées par `limit` : les plus anciennes. */
   omitted: number;
 }
 
@@ -78,8 +78,18 @@ export class ConsoleBuffer {
     // Fusion AVANT le filtre de niveau : ×N ne regroupe que des entrées réellement consécutives dans le
     // tampon (rien de masqué par --level entre elles). Les repères de navigation restent quel que soit le niveau.
     const merged = mergeRuns(this.items.filter((e) => e.seq > since)).filter((e) => e.source === 'navigation' || RANK[e.level] <= max);
-    const limited = q.limit !== undefined ? merged.slice(-q.limit) : merged;
-    return { entries: limited, seq: this.last, dropped, omitted: merged.length - limited.length };
+    if (q.limit === undefined) return { entries: merged, seq: this.last, dropped, omitted: 0 };
+    // --limit porte sur les lignes du niveau demandé, et `omitted` ne compte qu'elles : les repères de
+    // navigation (gardés quel que soit le niveau) n'y entrent pas — une SPA qui enchaîne les replaceState
+    // ne doit ni évincer les erreurs, ni gonfler « N ligne(s) plus ancienne(s) ». Des lignes écartées : les
+    // repères antérieurs à la première ligne gardée le sont aussi.
+    const lines = merged.filter((e) => e.source !== 'navigation');
+    const kept = q.limit > 0 ? lines.slice(-q.limit) : [];
+    if (kept.length === lines.length) return { entries: merged, seq: this.last, dropped, omitted: 0 };
+    const first = kept.length > 0 ? kept[0]!.seq : Infinity;
+    const keep = new Set(kept);
+    const entries = merged.filter((e) => e.seq >= first && (e.source === 'navigation' || keep.has(e)));
+    return { entries, seq: this.last, dropped, omitted: lines.length - kept.length };
   }
 
   /** Vide le tampon (le compteur seq continue : les --since restent valides). */

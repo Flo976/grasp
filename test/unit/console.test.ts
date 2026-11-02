@@ -42,6 +42,27 @@ test('doublons consécutifs fusionnés (×N), --limit garde les plus récentes',
   assert.equal(mergeRuns([]).length, 0);
 });
 
+test('--limit et omitted : seules les lignes du niveau demandé comptent, jamais les repères ni ce qui précède clear', () => {
+  const b = new ConsoleBuffer();
+  for (let i = 0; i < 30; i++) push(b, 'error', `ancienne ${i}`);
+  b.clear();
+  b.push({ level: 'info', source: 'navigation', text: 'http://x/' });
+  for (let i = 0; i < 60; i++) b.push({ level: 'info', source: 'navigation', text: `http://x/?etape=${i} (même document)` });
+  push(b, 'error', 'A');
+  push(b, 'info', 'i');
+  b.push({ level: 'info', source: 'navigation', text: 'http://y/' });
+  push(b, 'error', 'B');
+  const r = b.query({ level: 'error', limit: 50 });
+  assert.equal(r.omitted, 0);
+  assert.equal(r.entries.length, 64, 'rien d\'écarté : tous les repères restent');
+  assert.deepEqual(r.entries.filter((e) => e.source !== 'navigation').map((e) => e.text), ['A', 'B']);
+  const r1 = b.query({ level: 'error', limit: 1 });
+  assert.equal(r1.omitted, 1);
+  assert.deepEqual(r1.entries.map((e) => e.text), ['B'], 'au plus --limit lignes, repères antérieurs écartés');
+  assert.equal(b.query({ level: 'debug', limit: 1 }).omitted, 2, 'info et A écartées');
+  assert.equal(b.query({ level: 'error' }).omitted, 0);
+});
+
 test('clear vide le tampon sans remettre seq à zéro (les --since restent valides)', () => {
   const b = new ConsoleBuffer();
   push(b, 'info', 'a');

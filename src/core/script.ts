@@ -8,7 +8,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -129,6 +129,13 @@ export function readQuery(a: Args): string {
     const v = value(a, k);
     if (v !== undefined) q.set(k, v);
   }
+  // --name-max : longueur des noms rendus par snap (0 = entiers). text rend le texte entier : refusé, jamais ignoré.
+  const nm = value(a, 'name-max');
+  if (nm !== undefined) {
+    if (a.cmd !== 'snap') throw new ScriptError(`--name-max ne s'applique qu'à snap (${a.cmd} ne tronque aucun nom ; --max borne la sortie)`);
+    if (!/^\d+$/.test(nm)) throw new ScriptError('--name-max attend un entier positif ou nul (0 = noms entiers)');
+    q.set('nameMax', nm);
+  }
   return q.size > 0 ? `?${q}` : '';
 }
 
@@ -185,7 +192,7 @@ const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', '
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
-  snap: ['max', 'scope'], text: ['max', 'scope'],
+  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).

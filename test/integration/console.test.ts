@@ -115,7 +115,7 @@ test('console : le tampon survit aux navigations, --since, --limit, --level, cle
   assert.deepEqual(navs.map((u) => new URL(u).pathname), ['/', '/console']);
   const seq = (await fx.page.consoleQuery({})).seq;
   assert.equal((await fx.page.consoleQuery({ since: seq })).entries.length, 0);
-  assert.equal((await fx.page.consoleQuery({ since: s0, limit: 3 })).entries.length, 3);
+  assert.equal((await fx.page.consoleQuery({ since: s0, limit: 3 })).entries.filter((e) => e.source !== 'navigation').length, 3, '--limit ne compte pas les repères');
   assert.ok((await fx.page.consoleQuery({ since: s0, level: 'error' })).entries.every((e) => e.level === 'error' || e.source === 'navigation'));
   const cleared = await fx.page.consoleQuery({ clear: true });
   assert.ok(cleared.entries.length > 0, 'clear renvoie ce qu\'il vide');
