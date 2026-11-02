@@ -487,7 +487,9 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
              profiles rm <nom>                       refusé si une session l'utilise
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
-Lecture      snap [--max octets] [--scope <ref|css|frame=…>]   budget 12000 octets par défaut (config snapMax)
+Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N]   budget 12000 octets par défaut (config snapMax)
+               --name-max N : noms coupés à N caractères (défaut 80, textes 100), coupure toujours marquée « … » ;
+               0 = noms entiers (titres longs) ; les refs n'en dépendent pas ; aussi sur une ligne de run
              text [--max N] [--scope <ref|css|frame=…>]        4000 caractères par défaut (config textMax)
                --scope <iframe> : texte du cadre s'il est de même origine, sinon erreur explicite ; zone vide :
                rien sur stdout, « note: aucun texte visible » sur stderr

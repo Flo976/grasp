@@ -92,7 +92,16 @@ export interface SnapshotOptions {
    * et taper le texte d'origine.
    */
   sourceTexts?: Map<number, string>;
+  /**
+   * Longueur maximale d'un nom ou d'un texte rendu (`--name-max`), coupure marquée « … » ; 0 = illimité.
+   * Défaut : NAME_MAX pour les noms, TEXT_MAX pour les textes et régions annoncées. Les refs n'en dépendent pas.
+   */
+  nameMax?: number;
 }
+
+/** Longueur par défaut d'un nom rendu (lien, bouton…) et d'une ligne de texte brut. */
+export const NAME_MAX = 80;
+export const TEXT_MAX = 100;
 
 /** Budget par défaut (octets) ; le bridge applique `snapMax` de la config (12 000 par défaut). */
 export const DEFAULT_MAX_BYTES = 12_000;
@@ -171,7 +180,7 @@ const hasProp = (n: AXNode, name: string, value: unknown) => listOf(n.properties
 
 function quote(s: string, max: number): string {
   const t = norm(s);
-  const cut = t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  const cut = t.length > max ? `${t.slice(0, Math.max(1, max - 1))}…` : t;
   return `"${cut.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
@@ -232,6 +241,8 @@ function level(node: AXNode): string {
 
 export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+  const nameMax = opts.nameMax === undefined ? NAME_MAX : opts.nameMax === 0 ? Infinity : opts.nameMax;
+  const textMax = opts.nameMax === undefined ? TEXT_MAX : nameMax;
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const root = nodes.find((n) => n.parentId === undefined || !byId.has(n.parentId)) ?? nodes[0];
 
@@ -456,7 +467,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
           if (node.backendDOMNodeId !== undefined) textNodes.push({ text, backendNodeId: node.backendDOMNodeId });
           if (inScope) {
             texts.push(text);
-            out.push({ depth, line: quote(text, 100) });
+            out.push({ depth, line: quote(text, textMax) });
           }
         }
         return; // InlineTextBox enfants : inutiles
@@ -491,7 +502,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         const err = FIELD_ROLES.has(role) ? invalidMsg(node) : undefined;
         if (LIVE_ROLES.has(role) && !name) live = liveText(node, byId, nameOf);
         const shown = name || live;
-        const label = shown ? ` ${quote(shown, live ? 100 : 80)}` : ctx ? ` (sans nom, près de ${quote(ctx, 40)})` : '';
+        const label = shown ? ` ${quote(shown, live ? textMax : nameMax)}` : ctx ? ` (sans nom, près de ${quote(ctx, 40)})` : '';
         const line = `${ref}:${role}${level(node)}${label}${val ? `=${quote(val, 60)}` : ''}${flags(node, role, err)}`;
         if (err !== undefined) invalid.push({ ref, backendId: node.backendDOMNodeId, line, message: err });
         if (node.backendDOMNodeId !== undefined) refs.set(ref, node.backendDOMNodeId);

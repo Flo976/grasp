@@ -1245,6 +1245,7 @@ export class PageController {
    * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
    */
   async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<Snapshot> {
+    if (opts.nameMax !== undefined && (!Number.isInteger(opts.nameMax) || opts.nameMax < 0)) throw badRequest('name-max : entier positif ou nul attendu (0 = noms entiers)');
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
     // Arbre, historique (URL) et monde isolé en un aller-retour ; puis les deux relevés DOM en parallèle.
@@ -1264,7 +1265,7 @@ export class PageController {
     let title: string;
     if (root !== undefined && root.role?.value === 'RootWebArea') title = typeof root.name?.value === 'string' ? root.name.value : '';
     else title = (await this.location()).title;
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -1274,7 +1275,7 @@ export class PageController {
    * Texte de `snap`. Zone frame=… : arbre ARIA du cadre par le moteur Playwright (même d'une autre origine),
    * sans refs (elles ne désignent que le document principal) ; on agit dans le cadre avec frame=… >> css|text:.
    */
-  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined } = {}): Promise<string> {
+  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<string> {
     if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
     const scope = opts.scope.trim();
     const aria = await this.pwUse(async (page) => {
