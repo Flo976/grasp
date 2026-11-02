@@ -153,6 +153,8 @@ const LENIENT_TINY = 40;
 const LENIENT_WEIGHT = 200;
 /** Délai (depuis le début de l'observation du DOM) après lequel la stabilité « suffisante » est admise. */
 const STABLE_LENIENT_MS = 1000;
+/** Champs de saisie : un remplaçant peut changer de rôle entre eux (searchbox → combobox de Wikipédia). */
+const TEXT_FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
 /** Note d'une stabilité « suffisante » : courte, la page est utilisable. */
 const ONGOING_NOTE = 'animations continues ignorées';
 const STABLE_FN = `function (quiet, cap, lenient) {
@@ -626,6 +628,11 @@ export class PageController {
   private readonly netStarts = new Map<string, number[]>();
   /** L'action en cours a dû être rejouée en synthétique (l'entrée native n'a pas atteint la page). */
   private undelivered = false;
+  /**
+   * Élément visé par l'action en cours (fill, type, click) : s'il a été détaché pendant la fenêtre
+   * d'observation qui suit l'action, son remplaçant est cherché et signalé (voir replacementNote).
+   */
+  private actTarget: number | undefined;
   private probeSeq = 0;
   /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
   private pw: PlaywrightEngine | undefined;
@@ -1759,6 +1766,15 @@ export class PageController {
       this.notes?.push(`ref ${ref} retrouvée → ${self.ref} (${what}) : même élément, rang décalé parmi les homonymes`);
       return self.id;
     }
+    // Élément remplacé par un nouveau nœud (champ de recherche re-rendu en combobox) : l'élément focalisé de
+    // même nom, de même rôle ou champ de saisie lui aussi, est son remplaçant — jamais un homonyme non focalisé.
+    if (self === undefined && snap.focused !== undefined) {
+      const f = all.find((c) => c.id === snap.focused);
+      if (f !== undefined && PageController.sameKind(f.role, prev.role) && f.key === prev.key) {
+        this.notes?.push(`ref ${ref} (${what}) : l'élément a été remplacé par ${f.ref} ${f.role}${f.name !== '' ? ` "${f.name}"` : ''}, focalisé et de même nom — action sur le remplaçant`);
+        return f.id;
+      }
+    }
     const same = all.filter((c) => c.role === prev.role && c.key === prev.key);
     if (same.length > 0) {
       const c = same.slice(0, 3).map(strip);
@@ -1875,6 +1891,7 @@ export class PageController {
     const actionNotes: string[] = [];
     this.notes = actionNotes;
     this.undelivered = false;
+    this.actTarget = undefined;
     try {
       await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
@@ -1893,7 +1910,9 @@ export class PageController {
       // toutes ses requêtes comptent (comme `nav`), pas seulement celles de la fenêtre de l'action.
       const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, this.docGen !== doc0 ? { since: t0 } : win) : undefined;
       const res: ActionResult = { ok: true };
-      const notes = [detail, ...actionNotes, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
+      const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
+      const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);
@@ -1906,7 +1925,32 @@ export class PageController {
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; }
+  }
+
+  /** Rôles de champ de saisie interchangeables pour un remplacement (searchbox re-rendu en combobox). */
+  private static sameKind(a: string, b: string): boolean {
+    return a === b || (TEXT_FIELD_ROLES.has(a) && TEXT_FIELD_ROLES.has(b));
+  }
+
+  /**
+   * L'élément visé par l'action a-t-il été détaché ? Si oui, son remplaçant : l'élément focalisé de même nom
+   * et de même rôle (ou champ de saisie ↔ champ de saisie), sinon l'unique élément de même rôle et même nom.
+   * Rien si l'élément est toujours dans la page, ou retiré sans remplaçant identifiable.
+   */
+  private async replacementNote(id: number): Promise<string | undefined> {
+    const alive = await this.callIsolated<boolean>(id, 'function () { return this.isConnected; }').catch(() => false);
+    if (alive) return undefined;
+    let prev: { role: string; key: string } | undefined;
+    for (const k of this.knownRefs.values()) if (k.id === id && k.doc === this.docGen) prev = k;
+    if (prev === undefined) return undefined;
+    const p = prev;
+    const snap = await this.snapshot();
+    const all = PageController.candidates(snap);
+    const c = all.find((x) => x.id === snap.focused && PageController.sameKind(x.role, p.role) && x.key === p.key)
+      ?? ((same) => (same.length === 1 ? same[0] : undefined))(all.filter((x) => x.role === p.role && x.key === p.key));
+    if (c === undefined) return undefined;
+    return `l'élément a été remplacé par ${c.ref} ${c.role}${c.name !== '' ? ` "${c.name}"` : ''}${c.id === snap.focused ? ' (focalisé)' : ''} — utilisez cette ref`;
   }
 
   /** Point du clic : centre du premier quad, après défilement. 409 si l'élément n'a pas de zone cliquable. */
@@ -2065,6 +2109,7 @@ export class PageController {
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
       clicked = id;
+      this.actTarget = id;
       try { await this.clickNode(id); } catch (e) {
         // Erreur d'actionnabilité (pas de zone cliquable, désactivé) : Playwright attend que l'élément le devienne.
         if (this.fallback !== 'playwright' || !(e instanceof GraspError) || e.status !== 409) throw e;
@@ -2125,6 +2170,7 @@ export class PageController {
     if (engine === 'playwright') return this.pwAct(opts, sel, 'saisie', (l) => l.pressSequentially(text, { delay, timeout: PW_ACTION_TIMEOUT_MS }), {});
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
+      this.actTarget = id;
       const info = await this.describe(id);
       if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
       const focus = async () => { await this.s('DOM.focus', { backendNodeId: id }); };
@@ -2166,6 +2212,7 @@ export class PageController {
     let fieldId: number | undefined;
     return this.act(opts, async (snap) => {
       const id = await this.resolve(sel, snap);
+      this.actTarget = id;
       const info = await this.describe(id);
       const isField = (info.tag === 'INPUT' && !NON_TEXT_INPUTS.has(info.type)) || info.tag === 'TEXTAREA' || info.editable;
       if (!isField) throw badRequest(`fill attend un champ de saisie, reçu <${info.tag.toLowerCase()}${info.type ? ` type=${info.type}` : ''}> — utilisez click, check ou select`);

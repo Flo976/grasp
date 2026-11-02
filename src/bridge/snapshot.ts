@@ -60,6 +60,8 @@ export interface Snapshot {
   invalid: Array<{ ref: string; backendId: number | undefined; line: string; message: string }>;
   /** Fenêtre modale ouverte qui masque le reste de la page : son nom accessible ('' sans nom). */
   modal?: string;
+  /** backendDOMNodeId de l'élément focalisé (propriété `focused` de l'arbre), s'il y en a un. */
+  focused?: number;
 }
 
 /**
@@ -599,7 +601,9 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   }
   if (summary !== undefined) lines.push(summary);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}) };
+  // Le document (RootWebArea) porte aussi `focused` quand la page a le focus : on veut l'élément.
+  const focused = nodes.filter((n) => !n.ignored && n.backendDOMNodeId !== undefined && str(n.role) !== 'RootWebArea' && hasProp(n, 'focused', true)).pop()?.backendDOMNodeId;
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}), ...(focused !== undefined ? { focused } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */
