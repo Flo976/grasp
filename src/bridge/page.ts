@@ -67,7 +67,7 @@ export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel
  * toujours affichée (aucune redirection dans le plafond). `ongoing` : stable « suffisamment » — le document est
  * chargé, le réseau calme, seules des mutations de faible ampleur continuent (carrousel, minuterie).
  */
-interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean; ongoing?: boolean }
+interface Stability { stable: boolean; ms: number; mutations: number; error?: string; requests?: number; challenge?: boolean; ongoing?: boolean; background?: boolean }
 /**
  * Options de l'attente de stabilité : `since` = seules les requêtes parties depuis cet instant comptent ;
  * `until` (action) = fin de la fenêtre d'attribution : une requête partie après ne compte que si elle
@@ -157,6 +157,14 @@ const STABLE_LENIENT_MS = 1000;
 const TEXT_FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
 /** Note d'une stabilité « suffisante » : courte, la page est utilisable. */
 const ONGOING_NOTE = 'animations continues ignorées';
+/**
+ * Requêtes de fond (mesures d'audience, publicités d'Amazon : chemins toujours différents, rythme irrégulier, donc
+ * pas reconnues comme polling) : si le DOM reste calme pendant NET_BACKGROUND_MS alors que seul le réseau s'agite,
+ * la page est jugée stable. Un rendu qui suit une chaîne de requêtes plus longue que ce délai sans toucher au DOM
+ * peut être manqué : `grasp wait --text|--sel` reste le recours.
+ */
+const NET_BACKGROUND_MS = 1000;
+const BACKGROUND_NOTE = 'requêtes de fond ignorées';
 const STABLE_FN = `function (quiet, cap, lenient) {
   return new Promise((resolve) => {
     const t0 = performance.now();
@@ -1210,6 +1218,7 @@ export class PageController {
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
       if (!stab.stable) out.detail = PageController.unstableNote(stab);
       else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
+      else if (stab.background === true) out.detail = BACKGROUND_NOTE;
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
@@ -1548,6 +1557,14 @@ export class PageController {
     return n;
   }
 
+  /** Requête partie dans la fenêtre d'attribution d'une action, encore en vol (dans ACTION_REQUEST_MS). */
+  private actionInFlight(o: StableOptions): boolean {
+    const until = o.until;
+    if (until === undefined) return false;
+    const now = Date.now();
+    return this.counted(o).some((r) => r.start <= until && r.end === undefined && now - r.start < ACTION_REQUEST_MS);
+  }
+
   /** Activité réseau (départ ou fin d'une requête qui compte) après l'instant `after`. */
   private netActiveAfter(o: StableOptions, after: number): boolean {
     return this.counted(o).some((r) => r.start > after || (r.end !== undefined && r.end > after));
@@ -1570,6 +1587,8 @@ export class PageController {
     let mutations = 0;
     let error: string | undefined;
     let weakDone = false;
+    /** Depuis quand le DOM est calme alors que seul le réseau empêche de conclure (requêtes de fond). */
+    let netOnlySince: number | undefined;
     if (capMs <= 0) return { stable: true, ms: 0, mutations: 0 };
     const elapsed = () => Date.now() - t0;
     const unstable = (extra: Partial<Stability> = {}): Stability => {
@@ -1579,9 +1598,10 @@ export class PageController {
     for (;;) {
       if (capMs - elapsed() <= 0) return unstable();
       // Navigation de document en cours : on attend la fin du chargement (le nouveau document repart de zéro).
-      if (this.navigating()) { await this.settle(Math.max(0, capMs - elapsed())); continue; }
-      // Requêtes en vol : on attend qu'elles se terminent (leur réponse met souvent le DOM à jour).
-      if (this.activeRequests(o) > 0) { await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
+      if (this.navigating()) { netOnlySince = undefined; await this.settle(Math.max(0, capMs - elapsed())); continue; }
+      // Requête déclenchée par l'action encore en vol (« Enregistrer ») : sa réponse mettra le DOM à jour, on
+      // l'attend. Les autres requêtes en vol n'empêchent pas d'observer le DOM en même temps (voir plus bas).
+      if (this.actionInFlight(o)) { netOnlySince = undefined; await sleep(Math.min(25, Math.max(1, capMs - elapsed()))); continue; }
       const left = capMs - elapsed();
       let timer: NodeJS.Timeout | undefined;
       let r: { stable: boolean; mutations: number; ongoing?: boolean };
@@ -1600,9 +1620,16 @@ export class PageController {
       } finally { clearTimeout(timer); }
       mutations += r.mutations;
       if (!r.stable) return unstable();
+      if (r.mutations > 0 || r.ongoing === true) netOnlySince = undefined;
       // DOM calme : encore faut-il que le réseau l'ait été pendant la même fenêtre, et qu'aucune navigation
       // n'ait démarré (redirection JS juste après le load) — sinon on recommence.
-      if (this.navigating() || this.activeRequests(o) > 0 || this.netActiveAfter(o, Date.now() - STABLE_QUIET_MS)) continue;
+      if (this.navigating()) { netOnlySince = undefined; continue; }
+      if (this.activeRequests(o) > 0 || this.netActiveAfter(o, Date.now() - STABLE_QUIET_MS)) {
+        // DOM calme, réseau agité : on recommence, mais pas indéfiniment (requêtes de fond).
+        netOnlySince ??= Date.now() - STABLE_QUIET_MS;
+        if (this.actionInFlight(o) || Date.now() - netOnlySince < NET_BACKGROUND_MS) continue;
+        return { stable: true, ms: elapsed(), mutations, background: true };
+      }
       const ch = o.challenge === true && !weakDone ? await this.evalIsolated<string>(`(${CHALLENGE_FN})()`).catch(() => '') : '';
       if (ch === 'strong' || ch === 'weak') {
         // Challenge anti-bot : il se remplace lui-même par la vraie page ; on guette cette navigation (indice
@@ -1912,7 +1939,7 @@ export class PageController {
       const res: ActionResult = { ok: true };
       // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
       const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
-      const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);

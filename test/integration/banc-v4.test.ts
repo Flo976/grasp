@@ -96,6 +96,21 @@ test('nav : un gros contenu ajouté à 800 ms est attendu, même avec un carrous
   assert.match(s.text, /"Article n°299"/);
 });
 
+test('nav sur une page aux requêtes de fond perpétuelles (DOM figé) : main rendue en < 2 s, note « requêtes de fond »', async () => {
+  const t0 = Date.now();
+  const r = await fx.page.nav(`${site.url}/fond-reseau`);
+  const ms = Date.now() - t0;
+  assert.ok(ms < 2000, `nav en ${ms} ms`);
+  assert.doesNotMatch(r.detail ?? '', /instable/, r.detail);
+  assert.match(r.detail ?? '', /requêtes de fond ignorées/);
+});
+
+test('nav : un rendu qui dépend de requêtes enchaînées est attendu malgré les requêtes de fond', async () => {
+  await fx.page.nav(`${site.url}/fond-reseau?rendu=1`);
+  const s = await fx.page.snapshot({ maxBytes: 100_000 });
+  assert.match(s.text, /"Produit 49"/);
+});
+
 // ---------- 4. Troncature des noms : --name-max ----------
 
 test('snapshot : noms longs tronqués par « … » par défaut ; nameMax 0 = entier ; nameMax N', async () => {

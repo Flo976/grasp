@@ -348,6 +348,10 @@ est vide, le titre aussi, et un `--snap-diff` saisit le DOM en pleine transition
   avec une note sur stderr : `note: DOM encore instable après 5021 ms (63 mutations) : la page peut encore
   changer` (ou `réseau encore actif après … (N requête(s) en cours)`, `page de challenge anti-bot probable,
   toujours affichée après …`).
+  Deux cas rendent la main plus tôt, avec une note courte : `animations continues ignorées` (après 1 s, seules
+  de petites mutations répétées — carrousel, compteur) et `requêtes de fond ignorées` (DOM calme depuis 1 s
+  alors que seules des requêtes continuent — mesures d'audience, publicités). Une requête partie pendant une
+  action (« Enregistrer ») reste attendue jusqu'à sa réponse (2,5 s au plus).
 - **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui fait réagir la page** —
   navigation, route `pushState` d'une application monopage, requête réseau partie pendant l'action ou dans
   les 400 ms qui suivent (XHR d'un « Enregistrer », suggestions d'une autocomplétion), ou enchaînée à l'une

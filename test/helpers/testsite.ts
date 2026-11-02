@@ -626,6 +626,24 @@ export const CONSOLE_BRUIT_PAGE = `<!doctype html>
 <script>for (let k = 0; k < 30; k++) console.error('ancienne ' + k);</script>
 </body></html>`;
 
+/**
+ * Requêtes de fond perpétuelles et non périodiques (mesures d'audience, pubs d'Amazon) : toutes les 100 à 250 ms une
+ * requête vers un chemin différent, DOM figé. Avec ?rendu=1, une vraie liste est ajoutée après 3 requêtes
+ * enchaînées (rendu qui dépend du réseau : doit être attendu).
+ */
+export const FOND_RESEAU_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Fond réseau</title></head><body><h1>Produits</h1><ul id="l"></ul>
+<script>
+let i = 0;
+const beacon = () => { fetch('/fond/b' + (i++) + '-' + Math.floor(Math.random() * 1e6)).catch(() => {}); setTimeout(beacon, 100 + Math.random() * 150); };
+beacon();
+if (location.search.includes('rendu=1')) {
+  fetch('/api/lent?ms=300').then(() => fetch('/api/lent?ms=300')).then(() => fetch('/api/lent?ms=300')).then(() => {
+    document.getElementById('l').innerHTML = Array.from({ length: 50 }, (_, k) => '<li>Produit ' + k + '</li>').join('');
+  });
+}
+</script></body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -685,6 +703,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cases') { res.end(CASES_PAGE); return; }
     if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }
     if (u.pathname === '/carrousel') { res.end(CARROUSEL_PAGE); return; }
+    if (u.pathname === '/fond-reseau') { res.end(FOND_RESEAU_PAGE); return; }
+    if (u.pathname.startsWith('/fond/')) { setTimeout(() => res.end('{}'), 60); return; }
     if (u.pathname === '/livres') { res.end(LIVRES_PAGE); return; }
     if (u.pathname === '/console-spa') { res.end(CONSOLE_SPA_PAGE); return; }
     if (u.pathname === '/console-bruit') { res.end(CONSOLE_BRUIT_PAGE); return; }
