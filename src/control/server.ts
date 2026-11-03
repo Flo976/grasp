@@ -13,6 +13,7 @@ import { GraspError } from '../core/errors.js';
 import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, readJson, str } from '../core/http.js';
 import { discoverChrome, profileRootsFor, realProbe, type DiscoveredBrowser, type ProfileRoots } from '../browser/discover.js';
 import { assertSupportedVersion, browserVersion } from '../browser/launch.js';
+import { lightpandaEngine } from '../browser/lightpanda.js';
 import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
@@ -135,8 +136,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   //    Mode attach (cdpUrl) : rien à lancer, la version est vérifiée à la connexion.
   let browser: DiscoveredBrowser | undefined;
   let version: number | string = 'attach';
+  const lightpanda = lightpandaEngine(o.env);
   if (config.cdpUrl !== null) {
     log(`mode attach : sessions ouvertes dans le navigateur existant ${config.cdpUrl} (jamais lancé ni tué par Grasp)`);
+  } else if (lightpanda !== null) {
+    // Évaluation : moteur Lightpanda (GRASP_ENGINE=lightpanda), lancé par chaque bridge sur 127.0.0.1.
+    version = 'lightpanda';
+    log(`moteur expérimental Lightpanda : ${lightpanda}`);
   } else {
     browser = discoverChrome(o.env, realProbe, o.home, config.chromePath === null ? undefined : config.chromePath);
     version = assertSupportedVersion(await browserVersion(browser));
@@ -189,6 +195,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       id: s.id, userDataDir: s.userDataDir, policy, headless: config.headless,
       ...(browser !== undefined ? { browser } : {}),
       ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}),
+      ...(config.cdpUrl === null && lightpanda !== null ? { lightpanda } : {}),
       socketPath: bridgeSocketPath(paths, s.id),
       downloadDir: downloadDirFor(browser, roots, paths, s.id),
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),

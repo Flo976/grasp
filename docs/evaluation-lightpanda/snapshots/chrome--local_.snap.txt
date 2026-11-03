@@ -1,0 +1,16 @@
+page "Inscription" http://127.0.0.1:46445/
+eaug9:navigation
+ ee0rz:link "Accueil"
+ eqw5u:link "Aide"
+exo60:main
+ eua9n:heading[1] "Inscription"
+ et2s5:form
+  euv3l:textbox "Nom" [required]
+  et9er:textbox "Email"
+  e7yyj:textbox "Ville"
+  ecgzh:combobox "Pays"="--" [-]
+   options : "--" [x] | "France" | "Madagascar"
+  e5ld4:checkbox "J'accepte les conditions" [ ]
+  e9kfo:button "Valider"
+ "En attente"
+ euv2g:button "Ajouter en haut"

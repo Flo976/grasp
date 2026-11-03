@@ -13,6 +13,8 @@ export interface BridgeInit {
   browser?: DiscoveredBrowser;
   /** Mode attach : URL DevTools d'un navigateur existant, jamais tué par Grasp. */
   attach?: string;
+  /** Évaluation : binaire Lightpanda à lancer à la place de Chrome (GRASP_ENGINE=lightpanda côté control plane). */
+  lightpanda?: string;
   userDataDir: string;
   headless: boolean;
   policy: Readonly<EffectivePolicy>;

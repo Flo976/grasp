@@ -1,0 +1,48 @@
+page "Snapshot v3" http://127.0.0.1:46445/snap-v3
+emwc5:heading[1] "Profil"
+"Avant le vide"
+"Après le vide"
+e55g7:spinbutton "Heures"="35"
+"Disponibilité"
+ev9kb:textbox "Disponibilité Disponibilité"
+etxc0:heading[2] "Mes compétences"
+evhfw:button "Enregistrer le profil"
+"texte libre en minuscules"
+exo9v:list "Compétences"
+ "PHP"
+ e8496:button (sans nom, près de "PHP")
+ "Symfony"
+ e2atb:button (sans nom, près de "Symfony")
+ "Laravel"
+ edp73:button (sans nom, près de "Laravel")
+ecgzh:combobox "Pays"="p2" [-]
+ options : "Pays 0" | "Pays 1" | "Pays 2" [x] | "Pays 3" | "Pays 4" | "Pays 5" | "Pays 6" | "Pays 7" | "Pays 8" | "Pays 9" | "Pays 10" | "Pays 11" | "Pays 12" | "Pays 13" | "Pays 14" | "Pays 15" | "Pays 16" | "Pays 17" | "Pays 18" | "Pays 19" | … +5
+e34dr:combobox "Unité"="Heure" [-]
+ options : "Jour" | "Heure" [x]
+eao7b:combobox "Ajouter une compétence"="Laravel" [+]
+e9dun:listbox "Suggestions"
+ ecje2:option[1] "Laravel 10"
+ ea8po:option[1] "Laravel Livewire"
+ e3thb:option[1] "+ Créer « Laravel »"
+e3vj:listbox "Villes"
+ ec0e8:option "Ville 0"
+ ecroj:option "Ville 1"
+ ex9gm:option "Ville 2"
+ ey0qx:option "Ville 3"
+ eiij0:option "Ville 4"
+ eqi27:option "Ville 5"
+ e7tki:option "Ville 6"
+ ebr4l:option "Ville 7"
+ eavs:option "Ville 8"
+ eyp7f:option "Ville 9"
+ et8vd:option "Ville 10"
+ e2c5i:option "Ville 11"
+ e3xtv:option "Ville 12"
+ eh334:option "Ville 13"
+ ezr05:option "Ville 14"
+ ek4ia:option "Ville 15"
+ eehxr:option "Ville 16"
+ eutgs:option "Ville 17"
+ ew97l:option "Ville 18"
+ eqmn2:option "Ville 19"
+ … +10 options

@@ -1,0 +1,91 @@
+banc-v4.test.js	case à cocher / radio sans nom : nommée par le texte qui la SUIT ; croix de tag : texte qui précède	aucune ligne /checkbox \(sans nom, près de "checkbox 1"\)/ dans :
+banc-v4.test.js	text:checkbox 2 désigne la 2e case (pas le nœud texte, pas la 1re case)	'aucun élément nommé « checkbox 2 » — noms proches : esona heading "Checkboxes"'
+banc-v4.test.js	fill sur un champ remplacé par un nouveau nœud (autre rôle) : signalé, et l'ancienne ref vise le remplaçant focalisé	The input did not match the regular expression /l'élément a été remplacé par e[0-9a-z]+ combobox "Rechercher"/. Input:
+capture-console-cli.test.js	CLI screenshot : chemin sur stdout (fichier 0600 sous l'état de Grasp, dossier 0700), --json, -o, -o -, --full/--el/--max-width/--refs	'Unexpected end of JSON input'
+capture-console-cli.test.js	CLI console : une ligne par entrée, seq courant sur stderr, --since/--level/--limit/--json/--clear, --console sur les actions	#1 navigation → http://127.0.0.1:45743/console
+cli.test.js	--no-sandbox : jamais ajouté pour un utilisateur non-root, même avec GRASP_ALLOW_NO_SANDBOX=1	The expression evaluated to a falsy value:
+console.test.js	console : niveaux, objet, exception, promesse rejetée, image 404, fetch hors allowlist, iframe	délai dépassé ; entrées :
+console.test.js	console : --console sur une action = seulement les entrées produites pendant l'action ; doublons ×N ; combinable avec --snap-diff	'requête bloquée attendue : {"entries":[],"seq":25,"since":25,"omitted":0,"dropped":0}'
+console.test.js	console : une iframe cross-origin (processus séparé, OOPIF) est aussi écoutée, et gardée	délai dépassé ; entrées :
+console.test.js	console : l'URL du cadre (champ frame) est masquée comme les autres, même origine et hors processus	délai dépassé ; entrées :
+console.test.js	console : les URL recopiées par Chrome dans les messages du domaine Log (CSP) sont masquées	délai dépassé ; entrées :
+delivery.test.js	simulation fidèle : avec setIgnoreInputEvents, Input.dispatchMouseEvent répond OK mais la page ne reçoit rien	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	clic livré : OK sans note, événements de confiance, un seul clic	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	étage (a) : entrée perdue puis livrée après Page.bringToFront + focus émulé — un seul clic, annoncé	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	étage (b) : entrée native jamais livrée → clic synthétique dans le monde isolé, annoncé explicitement	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	étage (b) autorisé même si allowEval=false (code fixe de Grasp, monde isolé)	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	étage (c) : rien d'observable, même en synthétique → ERREUR, jamais de faux OK	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	--snap-diff « (aucun changement) » : tel quel après un clic livré, mais signalé après un clic non livré	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	check : entrée perdue → coche synthétique annoncée, état vérifié	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	press Enter : entrée perdue → touche synthétique, le formulaire est soumis (soumission implicite)	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	press livré : OK sans note	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	press : touche sans effet par défaut et sans gestionnaire, non livrée → ERREUR	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	fill "" (touche Suppr) : entrée perdue → saisie synthétique annoncée, valeur vérifiée	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	fill livré : aucune note	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	délai de livraison configurable (limite inputDeliveryMs) : la non-livraison est détectée dans ce délai	"Cannot read properties of undefined (reading 'targetId')"
+delivery.test.js	/home/florent/grasp-lightpanda/dist/test/integration/delivery.test.js	"Cannot read properties of undefined (reading 'close')"
+delivery.test.js	dist/test/integration/delivery.test.js	'test timed out after 120000ms'
+downloads.test.js	téléchargements (allowDownload) : le fichier arrive dans downloads/<session>	'/tmp/gr-hGVc7W/d/grasp/downloads/s12369e94b458/grasp-dl.txt absent'
+fixes.test.js	screenshot --el : le bord gauche d'un élément flottant plus haut que le viewport n'est pas rogné	'largeur 301'
+fixes.test.js	screenshot --el : élément dans le viewport à position fractionnaire — boîte entière (floor de x, ceil du bord droit)	largeur 101
+fixes.test.js	text --scope sur une iframe : même origine → son texte ; autre origine → message explicite ; zone vide → chaîne vide	"la zone #meme est une iframe d'une autre origine (http://127.0.0.1:46015/cadre-texte) : son contenu n'est pas lisible depuis la page — pour le lire : grasp text --scope 'frame=#meme' (moteur Playwright, npm i playwright-core), ou
+form-errors.test.js	Malt : message aria-hidden sous un champ sans aria-* → [invalide: …] sur le champ, dans le diff du fill et dans snap --scope	'~ e12pl:textbox "Intitulé du poste"="Développeur PHP Symfony Migration Sécurité Web IA Expert" [invalide: Doit compter au maximum 50 caractères]'
+form-errors.test.js	Enregistrer : aria-describedby, aria-errormessage, message non relié, validité native, role=alert, toast aria-hidden — tous dans le diff	~ eegmn:textbox "Code postal"="75" [invalide: Code postal à 5 chiffres]
+form-errors.test.js	correction : l'erreur disparaît du diff ; formulaire valide : aucune note	'~ e12pl:textbox "Intitulé du poste"="Développeur PHP Symfony"'
+form-errors.test.js	moteur Playwright : click et fill gardent les notes formulaire invalide / champ invalide	"moteur Playwright : recherche de l'onglet : Protocol error (Target.attachToTarget): BrowserContextNotLoaded"
+navigation-guard.test.js	garde runtime : une iframe cross-origin (OOPIF) qui navigue elle-même hors allowlist est bloquée (console désactivée)	"la navigation interne à l'iframe doit être interceptée"
+navigation-saisie.test.js	type --snap-diff dans une autocomplétion (suggestions 250 ms + 500 ms après la frappe) → suggestions dans le diff	~ ei02u:combobox "Ville"="Par"
+navigation-saisie.test.js	fill sur un contenteditable riche : texte brut, paragraphes, aucun format de bloc hérité, pas d'exception	'fill attend un champ de saisie, reçu <div> — utilisez click, check ou select'
+navigation-saisie.test.js	fill sur un contenteditable : une seule ligne, puis vidage	'fill attend un champ de saisie, reçu <div> — utilisez click, check ou select'
+navigation-saisie.test.js	fill sur un contenteditable : espaces doubles (rendus en insécables) → pas de « TypeError: Illegal invocation »	'fill attend un champ de saisie, reçu <div> — utilisez click, check ou select'
+navigation-saisie.test.js	onglet en arrière-plan : action native → onglet ramené au premier plan, annoncé, rendu (rAF) observé dans le diff	'Target.createTarget: TargetAlreadyLoaded'
+playwright-cli.test.js	CLI : --engine playwright, lecture et action dans une iframe d'une autre origine, run, doctor	ERROR: click: moteur Playwright : recherche de l'onglet : Protocol error (Target.attachToTarget): BrowserContextNotLoaded
+playwright-cli.test.js	cycle de vie : après usage de Playwright, bascule de profil puis fermeture → aucun Chrome laissé, Playwright reconnecté au nouveau navigateur	Expected values to be strictly equal:
+playwright.test.js	click --engine playwright : clic de confiance livré par Playwright, aucune note de repli	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	fill, select, check, press, type --delay, hover via Playwright dans le document principal	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	hover et type natifs (sans Playwright) : mêmes commandes, livraison vérifiée	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	iframe d'une autre origine (hors processus) : lire et agir dans le cadre avec frame=…	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	garde de navigation : un clic Playwright qui sort de l'allowlist est bloqué par le garde Fetch de Grasp	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	clic Playwright après défilement (page à iframe hors processus) : un seul clic, sur la cible, rien dans l'iframe, jamais rejoué	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	clic Playwright sans aucun événement reçu par la page : 502, jamais rejoué (il a pu partir ailleurs)	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	text: résolu sur un nœud texte : Playwright clique sur le texte, pas au centre du parent (lien voisin)	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	type et press via Playwright vérifiés : touches perdues → 502, jamais un faux OK	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	onglet de la session en arrière-plan : clic Playwright ramène l'onglet au premier plan (pas 10 s d'attente puis 504)	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	upload via Playwright : 403 sans allowUpload (avant toute connexion), fichier posé dans le cadre avec	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	repli automatique (fallbackEngine=playwright) : clic natif non livré → rejoué via Playwright, annoncé, un seul clic	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	repli automatique sur la page à iframe : le rejeu Playwright ne part jamais dans l'iframe	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	repli automatique : Playwright n'aide pas (entrée toujours perdue) → étage synthétique, les deux annoncés	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	repli automatique : élément pas encore visible (409 natif) → Playwright attend son actionnabilité et clique	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	playwright-core absent : --engine playwright → 501 « npm i playwright-core » ; repli configuré → note, puis synthétique	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	cycle de vie : la déconnexion de Playwright ne ferme ni le navigateur ni l'onglet ; reconnexion à la demande	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	cycle de vie : connexion fermée après inactivité	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	téléchargements : brancher Playwright ne détourne pas le dossier de Grasp (noDefaults)	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	cycle de vie : une déconnexion qui croise une reconnexion ne laisse aucune connexion Playwright orpheline	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	cycle de vie : une attente Playwright plus longue que le délai d'inactivité n'est pas coupée	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	dialogues : Playwright connecté ne ferme pas ceux des autres onglets (mode attach : onglets de l'utilisateur)	"Cannot read properties of undefined (reading 'targetId')"
+playwright.test.js	/home/florent/grasp-lightpanda/dist/test/integration/playwright.test.js	"Cannot read properties of undefined (reading 'close')"
+playwright.test.js	dist/test/integration/playwright.test.js	'test timed out after 120000ms'
+profile-races.test.js	sessions : deux POST /sessions simultanés sur le même profil → un seul Chrome, l'autre reçoit 409	un seul navigateur sur le profil x
+profile-races.test.js	bascule : le nouveau profil ne démarre pas → repli sur l'ancien, session toujours pilotable	{"ok":true,"id":"s7648c2872fde","profile":"b","previous":"a","unchanged":false}
+profiles.test.js	profils : session create --profile <inconnu> crée le profil à la volée (conseil sur stderr)	'Chrome tourne sur le --user-data-dir du profil'
+profiles.test.js	profils : `grasp profile <nom>` relance la session sur un autre --user-data-dir en gardant son id (cookies isolés)	The expression evaluated to a falsy value:
+profiles.test.js	profils : bascule d'une session éphémère → répertoire temporaire supprimé	The expression evaluated to a falsy value:
+relecture-v3.test.js	onglet qui reste caché après Page.bringToFront : note distincte, une seule tentative (et une seule attente) par document	'Target.createTarget: TargetAlreadyLoaded'
+relecture-v3.test.js	text-transform : refs identiques même si le relevé du texte source échoue ; text: accepte les deux formes	aucune ligne /heading\[2\] "MES COMPÉTENCES"$/ dans :
+relecture-v3.test.js	relevé DOM des erreurs en échec : repli sur l'arbre d'accessibilité, les [invalide] ne sont pas effacés	page "Radios" http://127.0.0.1:46369/radios
+relecture-v3.test.js	select fermé : l'option choisie au-delà de la 20e apparaît, marquée [x]	page "Snapshot v3" http://127.0.0.1:46369/snap-v3
+screenshot.test.js	capture du viewport (défaut) : PNG aux dimensions du viewport, dimensions rapportées = dimensions réelles	'haut de page bleu, reçu 255,255,255'
+screenshot.test.js	--full : page entière (3100 px), haut bleu, cible rouge à sa place, pied vert	hauteur 1080
+screenshot.test.js	--el : découpe exacte sur la boîte de l'élément, même hors écran (scrollIntoView), par CSS, ref ou text:	'(2,2) = 255,255,255'
+screenshot.test.js	--max-width : réduit l'échelle (moins de tokens image), proportions conservées, aussi sur la zone défilée	'hauteur 113, attendu ≈ 323'
+screenshot.test.js	--format jpeg|webp et --quality ; options invalides → 400	'capture impossible : Page.captureScreenshot: unsupported screenshot format.'
+screenshot.test.js	--refs : refs dessinées sur les éléments interactifs visibles, retirées après, autorisé avec allowEval=false	'aucune ref dessinée'
+screenshot.test.js	--full sur une page plus large que le viewport : toute la largeur est rendue (pas de moitié blanche)	largeur 1920
+screenshot.test.js	--el sur un élément plus haut que le viewport, loin dans le document : capturé en entier (pas 1 px)	hauteur 2935
+snapshot-v3.test.js	libellé répété (deux labels, aria-labelledby doublé) : nom dédupliqué, texte du label non répété	page "Snapshot v3" http://127.0.0.1:45255/snap-v3
+snapshot-v3.test.js	radio, case à cocher et champ required d'un formulaire vierge : pas de [invalide] ; après soumission : oui	page "Radios" http://127.0.0.1:45255/radios
+snapshot-v3.test.js	listes déroulantes : options du select natif (20 max, sélection marquée) et listbox ARIA tronquée	page "Snapshot v3" http://127.0.0.1:45255/snap-v3
+snapshot-v3.test.js	autocomplétion : l'option « Créer … » est rendue en entier, distincte des suggestions	page "Snapshot v3" http://127.0.0.1:45255/snap-v3
+snapshot-v3.test.js	fenêtre modale (showModal) : refs du fond « masquées par une fenêtre modale », jamais déplacées sur un homonyme	'le snapshot se concentre sur la modale'
+snapshot-v3.test.js	fenêtre modale aria-modal avec fond aria-hidden : même comportement	Expected "actual" to be strictly unequal to:
+config.test.js	absent ≠ désactivé : aucun `?? false` / `|| false` / `?? []` dans le code source	Expected values to be strictly deep-equal:

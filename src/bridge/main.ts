@@ -4,6 +4,7 @@ import { chmodSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { launchChrome, assertSupportedVersion, type ChromeProcess } from '../browser/launch.js';
 import { CdpClient } from '../browser/cdp.js';
+import { launchLightpanda } from '../browser/lightpanda.js';
 import { chromeDownloadPath } from '../browser/windows.js';
 import { PageController } from './page.js';
 import { bridgeHandler } from './server.js';
@@ -55,6 +56,8 @@ async function resolveDevtools(url: string): Promise<{ wsUrl: string; version: s
   if (!r.ok) throw new Error(`${url}/json/version a répondu ${r.status}`);
   const j = await r.json() as { webSocketDebuggerUrl?: string; Browser?: string };
   if (!j.webSocketDebuggerUrl) throw new Error(`${url} n'expose pas de webSocketDebuggerUrl`);
+  // Lightpanda (évaluation) : « Browser: Lightpanda/1.0 », pas de version Chrome à contrôler.
+  if ((j.Browser ?? '').startsWith('Lightpanda/')) return { wsUrl: j.webSocketDebuggerUrl, version: 'Chrome/999.0' };
   return { wsUrl: j.webSocketDebuggerUrl, version: j.Browser ?? '' };
 }
 
@@ -89,6 +92,13 @@ async function main(): Promise<void> {
     devtoolsUrl = wsUrl;
     cdp = await CdpClient.connect(wsUrl);
     info = { pid: 0, pgid: 0, version };
+  } else if (init.lightpanda !== undefined) {
+    // Évaluation : Lightpanda lancé par ce bridge (son groupe de processus), tué avec lui. Pas de profil.
+    chrome = await launchLightpanda({ bin: init.lightpanda, ...(init.stderrLog !== undefined ? { stderrLog: init.stderrLog } : {}) });
+    chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Lightpanda s'est arrêté (code=${c} signal=${s})`); });
+    devtoolsUrl = chrome.wsUrl;
+    cdp = await CdpClient.connect(chrome.wsUrl);
+    info = { pid: chrome.pid, pgid: chrome.pgid, version: chrome.version };
   } else {
     if (init.browser === undefined) throw new Error('bridge : ni navigateur ni URL attach');
     mkdirSync(init.userDataDir, { recursive: true, mode: 0o700 });
