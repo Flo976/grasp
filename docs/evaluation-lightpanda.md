@@ -139,6 +139,11 @@ LIGHTPANDA_DISABLE_TELEMETRY=true lightpanda serve --host 127.0.0.1 --port 9333 
 grasp config set cdpUrl http://127.0.0.1:9333
 ```
 
+**Limite du lanceur de cette branche** : il n'applique pas `PR_SET_PDEATHSIG` (via `setpriv`) comme celui de
+Chrome. Constaté après les deux exécutions de la suite : 4 processus Lightpanda orphelins, laissés par des tests
+qui tuent le bridge par `SIGKILL` (arrêtés à la main). À reprendre avant tout usage réel, avec la même
+enveloppe `setpriv` que Chrome (Lightpanda est un ELF unique, c'est simple).
+
 Pas d'équivalent de `--user-data-dir` : les **profils** Grasp n'ont pas de sens (cookies : `--cookie`/`--cookie-jar`
 de Lightpanda, non branchés). Le mode Windows (chrome.exe) n'est pas concerné : Lightpanda n'existe pas sous Windows.
 
@@ -301,7 +306,7 @@ Pourquoi l'offrir en option :
 
 | Travail | Estimation |
 |---|---|
-| Option propre `engine: "chrome" \| "lightpanda"` dans la config (au lieu de variables d'environnement), `grasp doctor`, découverte du binaire, `GRASP_LIGHTPANDA_ARGS` → clé `lightpandaArgs` avec `--load-resources stylesheet,iframe,image` par défaut | 1 j |
+| `setpriv` / PDEATHSIG pour Lightpanda, option propre `engine: "chrome" \| "lightpanda"` dans la config (au lieu de variables d'environnement), `grasp doctor`, découverte du binaire, `GRASP_LIGHTPANDA_ARGS` → clé `lightpandaArgs` avec `--load-resources stylesheet,iframe,image` par défaut | 1 j |
 | Capacités par moteur : `screenshot`, `--engine playwright`, `fallbackEngine`, profils, téléchargements, `upload --engine` → **501 explicite** avec Lightpanda ; dialogues signalés comme « fermés d'office » | 1 j |
 | Contournements snapshot : nom de `<select>` = libellé de l'option choisie, dédoublonnage du libellé répété, `[focus]` via `document.activeElement` (monde isolé), `contenteditable` par attribut | 1 à 2 j |
 | Tests : marquer les tests Chrome-seulement (`skip` si moteur Lightpanda), faire tourner la suite sur les deux moteurs en CI, figer une version de Lightpanda | 1 à 2 j |
