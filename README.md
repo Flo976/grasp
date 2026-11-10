@@ -1,9 +1,35 @@
-# Grasp
+<div align="center">
 
-Serveur de contrôle de Chrome pour agents IA. L'agent ne regarde pas de captures d'écran par défaut : il lit
-**l'arbre d'accessibilité aplati**, une ligne par nœud utile, et agit par références stables. Quand
-l'image est vraiment nécessaire, `grasp screenshot` écrit un fichier et ne renvoie que son **chemin** ;
-pour déboguer, `grasp console` lit le journal du navigateur (logs, exceptions, requêtes en échec).
+<img src="assets/banner.svg" alt="Grasp : Chrome piloté par l'arbre d'accessibilité, pensé pour les agents IA" width="100%">
+
+<br>
+
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](.nvmrc)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](tsconfig.json)
+[![CDP](https://img.shields.io/badge/Chrome-CDP%20direct-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](#architecture)
+[![Dépendances](https://img.shields.io/badge/d%C3%A9pendance-1%20(ws)-7c5cff?style=for-the-badge)](package.json)
+[![Licence](https://img.shields.io/badge/licence-MIT-22d3ee?style=for-the-badge)](package.json)
+
+**Votre agent ne regarde pas l'écran : il lit la page.**
+
+[Démarrage rapide](#démarrage-rapide) ·
+[Snapshot](#snapshot) ·
+[Commandes](#commandes) ·
+[Mode Windows](#mode-windows-chromeexe-depuis-wsl2) ·
+[Sécurité](#sécurité) ·
+[Limites](#limites-connues)
+
+</div>
+
+---
+
+## ✨ En bref
+
+Grasp est un serveur qui pilote Chrome pour les agents IA. Par défaut, l'agent ne reçoit pas de
+captures d'écran. Il lit **l'arbre d'accessibilité aplati**, une ligne par nœud utile, et agit
+par **références stables**. Quand l'image est vraiment nécessaire, `grasp screenshot` écrit un
+fichier et ne renvoie que son **chemin**. Pour déboguer, `grasp console` lit le journal du
+navigateur (logs, exceptions, requêtes en échec).
 
 ```
 page "Inscription" http://127.0.0.1:45457/
@@ -19,14 +45,56 @@ exo60:main
  "En attente"
 ```
 
-Sur la page de test : **388 octets** de snapshot, contre 18,7 Ko pour une capture PNG en base64
-(×48). Après une action, `--snap-diff` ne renvoie que ce qui a changé (une ligne pour un `fill`).
-Sur une vraie page, chaque lecture est **bornée par défaut** (`text` et `--snap-diff` : 4000
-caractères, `snap` : 12 000 octets) et toute coupure le dit en dernière ligne ; `--scope` lit une zone.
+<table>
+<tr>
+<td align="center" width="25%"><h3>388 o</h3>snapshot de la page de test<br><sub>contre 18,7 Ko pour un PNG en base64</sub></td>
+<td align="center" width="25%"><h3>×48</h3>plus léger<br><sub>qu'une capture d'écran</sub></td>
+<td align="center" width="25%"><h3>1 ligne</h3>de diff après un <code>fill</code><br><sub>avec <code>--snap-diff</code></sub></td>
+<td align="center" width="25%"><h3>1 dép.</h3><code>ws</code>, c'est tout<br><sub>ni Playwright, ni Puppeteer</sub></td>
+</tr>
+</table>
 
-- TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Cœur sans Playwright ni Puppeteer ;
-  un [moteur Playwright de repli](#moteur-playwright-de-repli) **optionnel** se branche sur le même Chrome.
-- Linux (desktop et conteneur), et Chrome Windows piloté depuis WSL2 (voir [Mode Windows](#mode-windows-chromeexe-depuis-wsl2)). macOS en best-effort.
+Sur une vraie page, chaque lecture est **bornée par défaut** : `text` et `--snap-diff` à 4000
+caractères, `snap` à 12 000 octets. Toute coupure est annoncée en dernière ligne, et `--scope`
+limite la lecture à une zone.
+
+## 🧭 Pourquoi Grasp
+
+| | Captures d'écran | DOM brut | **Grasp** |
+|---|---|---|---|
+| Coût en tokens | 💸 élevé | 💸💸 très élevé | ✅ borné et annoncé |
+| Cibler un élément | coordonnées fragiles | sélecteurs fragiles | ✅ refs stables (rôle + nom) |
+| Voir l'effet d'une action | nouvelle capture | tout relire | ✅ `--snap-diff` : seulement ce qui change |
+| Page qui charge encore | à deviner | à deviner | ✅ attente de stabilité DOM + réseau |
+| Saisie silencieusement perdue | invisible | invisible | ✅ livraison vérifiée, valeur relue |
+| Erreurs de formulaire cachées | visibles si affichées | à chercher | ✅ `[invalide: <message>]` sur la ligne du champ |
+
+## 🧩 Ce que Grasp sait faire
+
+- 🌳 **Snapshot d'accessibilité** compact, avec des refs qui restent valides quand la page bouge
+  ([détails](#snapshot)).
+- 🔁 **Diffs après action** : `+` apparu, `-` disparu, `~` modifié, calculés sur un DOM stable.
+- ⏱️ **Attente intelligente** : DOM et réseau calmes, redirections et challenges anti-bot suivis
+  ([détails](#attente-de-stabilité)).
+- 🎯 **Livraison vérifiée des entrées** : un clic ou une saisie qui n'arrive pas est détecté et
+  repris ([détails](#livraison-vérifiée-des-entrées)).
+- 👤 **Profils persistants** : cookies et connexions gardés d'une session à l'autre, import d'un
+  profil Chrome existant ([détails](#profils)).
+- 🪟 **Chrome Windows depuis WSL2**, pour les sites qui bloquent Chrome headless
+  ([détails](#mode-windows-chromeexe-depuis-wsl2)).
+- 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
+  ([détails](#port-devtools-et-navigatorwebdriver)).
+- 📜 **`grasp run`** : plusieurs commandes en un seul appel.
+- 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
+- 🔒 **Sécurité par défaut** : allowlist de navigation, token, socket Unix ([détails](#sécurité)).
+
+## 🛠️ Stack
+
+- TypeScript strict, Node 22+, ESM, `node:http`, CDP en direct via `ws`. Le cœur n'utilise ni
+  Playwright ni Puppeteer ; un [moteur Playwright de repli](#moteur-playwright-de-repli)
+  **optionnel** se branche sur le même Chrome.
+- Linux (desktop et conteneur), et Chrome Windows piloté depuis WSL2 (voir
+  [Mode Windows](#mode-windows-chromeexe-depuis-wsl2)). macOS en best-effort.
 - Tests : `node:test` uniquement, contre un vrai Chrome et un site local. Aucun site externe.
 
 ## Démarrage rapide
@@ -927,3 +995,9 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   le voir passer) et ne couvre que le cadre principal ; en mode attach avec une fenêtre visible, un onglet
   en arrière-plan ou une fenêtre minimisée peut empêcher la capture (erreur 504 explicite après 30 s, non
   reproduit en headless).
+
+---
+
+<div align="center">
+<sub>Fait pour les agents qui lisent plutôt qu'ils ne regardent · MIT</sub>
+</div>
