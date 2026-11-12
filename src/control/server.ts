@@ -11,7 +11,7 @@ import { loadConfigFile, resolveConfig, limitsOf, type ResolvedConfig } from '..
 import { checkUrl, effectivePolicy, type EffectivePolicy } from '../core/policy.js';
 import { assertProxyServer, credentialLabel, maskCredentials, parseHttpAuth, type HttpCredential } from '../core/remote.js';
 import { GraspError } from '../core/errors.js';
-import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, readJson, str } from '../core/http.js';
+import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, optCount, optFlag, optInt, readJson, str } from '../core/http.js';
 import { discoverChrome, profileRootsFor, realProbe, type DiscoveredBrowser, type ProfileRoots } from '../browser/discover.js';
 import { assertSupportedVersion, browserVersion } from '../browser/launch.js';
 import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
@@ -32,6 +32,8 @@ function minutes(m: number): string {
   return m >= 1 ? `${Number.isInteger(m) ? m : m.toFixed(1)} min` : `${Math.round(m * 60)} s`;
 }
 import { STATE_MAX_BYTES } from '../core/state.js';
+import { asRunScript, formatHistory, HISTORY_DEFAULT_LIMIT, HISTORY_MAX, HistoryLog } from '../core/history.js';
+import { beginRecord, errorOf, finalState, stripTarget, type BridgeCall, type Recording } from './history.js';
 
 export interface Session {
   id: string;
@@ -62,6 +64,8 @@ export interface Session {
   memoryProbe?: Promise<void> | undefined;
   /** Options d'accès distant de la session, conservées en mémoire pour relancer le bridge (bascule de profil). */
   options: SessionOptions;
+  /** Commandes exécutées dans la session (`grasp history`), bornées, en mémoire seulement. */
+  history: HistoryLog;
 }
 
 /** Options de session : proxy propre et identifiants HTTP basic (mémoire du control plane et du bridge, jamais sur disque). */
@@ -342,7 +346,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     const p = profile !== undefined ? profileFor(profile, '--profile', `la session ${id} (en cours de création)`) : undefined;
     creating++;
     try {
-      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false, options, browserStartedAt: Date.now(), recycles: 0, inflight: 0 };
+      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false, options, browserStartedAt: Date.now(), recycles: 0, inflight: 0, history: new HistoryLog() };
       const bridge = await startBridge(base);
       if (closing !== undefined) {
         // Arrêt du serveur pendant le démarrage : la liste des sessions à fermer est déjà prise.
@@ -622,22 +626,35 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     };
   }
 
+  /** Appel direct au bridge d'une session (historique : description de cible, état final). */
+  function bridgeOf(s: Session): BridgeCall {
+    return (method, path, body) => request({ transport: 'unix', socketPath: s.bridge.socketPath }, method, path, body, {}, 30_000);
+  }
+
   /**
    * Une étape de `grasp run` : la même route du bridge qu'une commande isolée (mêmes contrôles de politique,
    * mêmes limites), ou la bascule de profil du control plane. Le bridge est relu à chaque étape (bascule).
    */
-  async function execStep(s: Session, rq: StepRequest, onNotice: (n: string) => void): Promise<unknown> {
+  async function execStep(s: Session, rq: StepRequest, onNotice: (n: string) => void, record = false): Promise<unknown> {
     if (s.closed !== undefined) throw new GraspError(409, `session ${s.id} fermée pendant le script`);
-    if (rq.path === 'profile') return switchProfile(s, String(rq.body?.name ?? ''));
+    if (rq.path === 'profile') {
+      const rec = record ? await beginRecord(s.history, 'POST', '/profile', rq.body, 'run', bridgeOf(s)) : undefined;
+      try { const out = await switchProfile(s, String(rq.body?.name ?? '')); rec?.finish(true); return out; } catch (e) { rec?.finish(false, e instanceof GraspError ? e.status : 500, (e as Error).message); throw e; }
+    }
     if (!SESSION_ROUTES.has(rq.path.split('?')[0]!)) throw new GraspError(400, `route ${rq.path} indisponible dans run`);
     // Entre deux étapes : un recyclage peut avoir lieu ici, jamais pendant une étape.
     const notice = await enter(s);
     let r;
+    let rec: Recording | undefined;
     try {
       if (notice !== undefined) onNotice(notice);
       if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
-      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, rq.body, {}, rq.timeoutMs);
+      // Historique : seulement les étapes du script (pas les lectures internes du rapport de recette).
+      if (record) rec = await beginRecord(s.history, rq.method, rq.path, rq.body, 'run', bridgeOf(s));
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, rec !== undefined ? rec.body : rq.body, {}, rq.timeoutMs);
+      rec?.finish(r.status < 400, r.status, r.status >= 400 ? errorOf(r.text()) : undefined, rec.inline && r.status < 400 ? r.json() : undefined);
     } catch (e) {
+      rec?.finish(false, e instanceof GraspError ? e.status : 502, (e as Error).message);
       if (e instanceof GraspError) throw e;
       throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
     } finally { leave(s); }
@@ -652,7 +669,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       } catch { /* texte brut */ }
       throw new GraspError(r.status, msg, extra);
     }
-    return isJson ? r.json() : r.text();
+    return isJson ? (rec?.inline === true ? stripTarget(r.json()) : r.json()) : r.text();
   }
 
   async function proxy(s: Session, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -660,15 +677,28 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     const qs = new URLSearchParams(url.searchParams);
     qs.delete('session');
     const path = `${url.pathname}${qs.size ? `?${qs}` : ''}`;
+    const parsed = body && body.length ? JSON.parse(body.toString('utf8')) : undefined;
+    // Historique : commande décrite (cible, champ secret) avant d'être transmise.
+    const rec = await beginRecord(s.history, req.method ?? 'GET', path, typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : undefined, 'api', bridgeOf(s));
     let r;
     try {
-      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, req.method ?? 'GET', path, body && body.length ? JSON.parse(body.toString('utf8')) : undefined);
-    } catch (e) { throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`); }
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, req.method ?? 'GET', path, rec !== undefined ? rec.body : parsed);
+    } catch (e) {
+      rec?.finish(false, 502, (e as Error).message);
+      throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
+    }
+    // Action qui a décrit sa cible : la description va à l'historique, pas au client.
+    let out = r.body;
+    let result: unknown;
+    if (rec?.inline === true && r.status < 400) {
+      try { result = r.json(); out = Buffer.from(JSON.stringify(stripTarget(result))); } catch { /* pas du JSON : transmis tel quel */ }
+    }
+    rec?.finish(r.status < 400, r.status, r.status >= 400 ? errorOf(r.text()) : undefined, result);
     // En-têtes x-grasp-* du bridge (dimensions d'une capture) transmis tels quels.
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(r.headers)) if (k.startsWith('x-grasp-') && typeof v === 'string') extra[k] = v;
-    res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': r.body.length });
-    res.end(r.body);
+    res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': out.length });
+    res.end(out);
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -730,7 +760,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         const s = sessions.get(sp[1]!);
         if (!s) throw new GraspError(404, `session ${sp[1]} inconnue — \`grasp session list\``);
         const body = await readJson(req);
-        return sendJson(res, 200, { ok: true, id: s.id, ...await switchProfile(s, str(body, 'name')) });
+        const rec = await beginRecord(s.history, 'POST', '/profile', body, 'api', bridgeOf(s));
+        let sw;
+        try { sw = await switchProfile(s, str(body, 'name')); } catch (e) { rec?.finish(false, e instanceof GraspError ? e.status : 500, (e as Error).message); throw e; }
+        rec?.finish(true);
+        return sendJson(res, 200, { ok: true, id: s.id, ...sw });
       }
       const m = /^\/sessions\/([^/]+)$/.exec(url.pathname);
       if (m && req.method === 'DELETE') {
@@ -738,6 +772,21 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         if (!s) throw new GraspError(404, `session ${m[1]} inconnue`);
         await closeSession(s);
         return sendJson(res, 200, { ok: true });
+      }
+      if (route === 'GET /history' || route === 'DELETE /history') {
+        const s = pickSession(req, url);
+        const h = s.history;
+        if (req.method === 'DELETE') { h.clear(); return sendJson(res, 200, { ok: true, seq: h.seq }); }
+        const since = optCount(url.searchParams.get('since'), 'since') ?? 0;
+        const entries = h.since(since);
+        const lost = h.lostAfter(since);
+        if (optFlag(url.searchParams.get('asRun'), 'asRun') === true) {
+          const expects = optFlag(url.searchParams.get('expect'), 'expect') === true ? await finalState(bridgeOf(s)) : undefined;
+          return sendJson(res, 200, { script: asRunScript(entries, { sessionId: s.id, ...(expects !== undefined ? { expects } : {}), lost }), seq: h.seq, entries: entries.length, lost });
+        }
+        const limit = optInt(url.searchParams.get('limit'), 'limit') ?? HISTORY_DEFAULT_LIMIT;
+        const shown = entries.slice(-limit);
+        return sendJson(res, 200, { entries: shown, text: formatHistory(shown), seq: h.seq, omitted: entries.length - shown.length, lost, max: HISTORY_MAX });
       }
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
@@ -752,7 +801,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         let r: RunResult;
         let notice: string | undefined;
         try {
-          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }), optBool(body, 'continue') === true, ac.signal, {
+          const own = new Set(steps.map((x) => x.rq));
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }, own.has(rq)), optBool(body, 'continue') === true, ac.signal, {
             report: optBool(body, 'report'),
             takeNotice: () => { const n = notice; notice = undefined; return n; },
           });

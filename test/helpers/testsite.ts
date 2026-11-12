@@ -782,6 +782,42 @@ for (let i = 0; i < N; i++) { const d = document.createElement('span'); n.append
 n.innerHTML = '<strong>Fond atteint</strong>';
 </script></body></html>`;
 
+/**
+ * grasp history : liste de courses (état dans la page). Deux boutons « Supprimer » (nom ambigu : la ref devient
+ * un sélecteur CSS par l'ancêtre `li[data-id]`), un champ de mot de passe (valeur jamais conservée).
+ */
+export const HISTORIQUE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Courses</title></head><body>
+<h1>Liste de courses</h1>
+<form id="ajout">
+  <label>Article <input id="article" autocomplete="off"></label>
+  <label>Rayon <select id="rayon"><option value="">—</option><option>Fruits</option><option>Crèmerie</option></select></label>
+  <label><input type="checkbox" id="urgent"> Urgent</label>
+  <label>Code d'accès <input type="password" id="code"></label>
+  <button>Ajouter</button>
+</form>
+<ul id="liste"><li data-id="1">Pain <button type="button">Supprimer</button></li><li data-id="2">Beurre <button type="button">Supprimer</button></li></ul>
+<p id="etat"></p>
+<script>
+let next = 3;
+const $ = (id) => document.getElementById(id);
+const resume = () => { const items = [...$('liste').children].map((li) => li.firstChild.textContent.trim()); $('etat').textContent = items.length + ' article(s) : ' + items.join(', '); };
+$('liste').addEventListener('click', (e) => { if (e.target.localName === 'button') { e.target.parentElement.remove(); resume(); } });
+$('ajout').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const nom = $('article').value.trim();
+  if (!nom) return;
+  const li = document.createElement('li');
+  li.dataset.id = String(next++);
+  li.append(nom + ($('rayon').value ? ' (' + $('rayon').value + ')' : '') + ($('urgent').checked ? ' urgent' : '') + ' ');
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Supprimer'; li.append(b);
+  $('liste').append(li);
+  $('article').value = ''; $('urgent').checked = false;
+  resume();
+});
+resume();
+</script></body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -881,6 +917,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/snap-v3') { res.end(SNAP_V3_PAGE); return; }
     if (u.pathname === '/radios') { res.end(RADIOS_PAGE); return; }
     if (u.pathname === '/modale') { res.end(MODALE_PAGE); return; }
+    if (u.pathname === '/historique') { res.end(HISTORIQUE_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

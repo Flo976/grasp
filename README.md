@@ -552,6 +552,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
+| `history [--since <seq>] [--limit N] [--clear]`, `history --as-run [--expect] [-o f]` | Commandes de la session (500 au plus, en mémoire) ; `--as-run` : script `grasp run` rejouable, refs traduites en sélecteurs durables, mots de passe masqués. Voir [Historique](#historique-et-rejeu--grasp-history). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
@@ -800,6 +801,108 @@ page finale : http://127.0.0.1:45955/boutique « Boutique »
 - Le verdict ne dépend que des étapes : une erreur console rapportée ne fait pas échouer le run ; pour qu'elle
   le fasse, `expect no-console-errors`. Exemple complet : `examples/recette.sh` (une recette qui passe, puis la
   même qui échoue sur une 500).
+
+### Historique et rejeu : grasp history
+
+Le control plane mémorise les commandes de chaque session ; `grasp history --as-run` en fait un script
+`grasp run` rejouable. Le cas visé : un agent explore une page à coups de `snap` et de refs, puis veut figer le
+parcours qui a marché en recette (sans refs, qui ne valent que pour la session qui les a lues).
+
+```bash
+grasp history                          # 50 dernières commandes de la session
+grasp history --as-run --expect -o parcours.grasp
+grasp session create                   # nouvelle session…
+grasp run parcours.grasp               # …même parcours, vérifié par les expect de l'état final
+```
+
+```
+#3 09:39:17 OK fill eie0l Pommes --snap-diff → text:Article (496 ms)
+#6 09:39:18 OK fill e6gmj '<masqué>' → 'text:Code d'\''accès' (150 ms, valeur masquée)
+#9 09:39:18 OK click evu3y → 'li[data-id="1"] button' (169 ms)
+#10 09:39:18 KO click text:Inexistant (6 ms) — 404 aucun élément nommé « Inexistant » — …
+#14 09:39:19 OK wait --text frais (1 ms, run)
+```
+
+```
+# grasp history --as-run — session s8c82d938069f, entrées #1 à #15 (2026-11-12T09:39:35.310Z)
+# …
+# Omis : 4 lecture(s) pure(s) (snap ×2, text ×2).
+# Omis : 1 commande(s) en échec (#10 click text:Inexistant).
+# ATTENTION : 1 valeur(s) masquée(s), lignes commentées : le script ne se rejoue pas à l'identique sans elles.
+nav http://127.0.0.1:45323/historique
+fill text:Article Pommes
+select text:Rayon Fruits
+check text:Urgent
+# fill 'text:Code d'\''accès' '<masqué>'   # #6 : valeur masquée, champ secret : … — décommentez et complétez avant de rejouer
+click text:Ajouter
+click 'li[data-id="1"] button'   # evu3y button "Supprimer" : nom ambigu
+fill -- text:Article '-12 œufs "frais"'
+press Enter text:Article
+wait --text frais
+# État final constaté à l'export :
+expect url http://127.0.0.1:45323/historique
+expect title Courses
+expect text 'Liste de courses'
+```
+
+- **Ce qui est mémorisé** : chaque commande adressée à la session — commande isolée (CLI, MCP, API HTTP) ou
+  étape d'un `grasp run` (`run` en fin de ligne) ; pas les lectures internes du rapport de recette. La ligne est
+  **reconstruite depuis la requête** reçue (même syntaxe que `run`) : relue par `run`, elle redonne exactement la
+  même requête (testé sur toutes les commandes de `run`). Avec l'heure, la durée, OK/KO et l'erreur (300
+  caractères au plus). `history` lui-même n'est pas mémorisé.
+- **Borné** : 500 entrées par session (autant qu'un script de `run`), les plus anciennes oubliées et c'est
+  **annoncé** (stderr, et en tête du script). En mémoire du control plane seulement : rien sur disque, perdu à la
+  fermeture de la session ou à l'arrêt du serveur ; conservé à travers un recyclage ou une bascule de profil.
+  Un argument de plus de 4096 caractères n'est pas conservé (ligne commentée dans le script, raison dite).
+- **Lecture** : `grasp history [--since <seq>] [--limit N] [--json]` — `#seq heure OK|KO ligne → sélecteur
+  durable (durée)`, arguments coupés à 80 caractères pour l'affichage ; 50 entrées par défaut, les omises
+  annoncées ; `seq courant : N` sur stderr pour le `--since` suivant (comme `console`). `--clear` vide l'historique
+  (ce n'est pas un oubli : rien n'est annoncé ensuite).
+- **`--as-run`** : tout ce qui est retenu après `--since <seq>` (défaut : tout), sur stdout ou dans `-o fichier`
+  (0600). Règles :
+  - **lectures pures omises** (`snap`, `text`, `console`, `screenshot`, `cookies`, `pdf`, `state export`), comptées
+    en tête ; `wait` et `expect` gardés (synchronisation et vérification font partie du parcours) ;
+  - **commandes en échec omises**, citées en tête (une action refusée n'a pas eu l'effet voulu) ;
+  - options d'affichage retirées des actions (`--snap-diff`, `--max`, `--scope`, `--console`, `--shot-on-error`) ;
+    `--engine`, `--delay`, `--uncheck` gardées ;
+  - `state import` (hors `run`) laissé en commentaire ; `eval` gardé (il faudra `allowEval` au rejeu) ;
+  - `--expect` ajoute l'**état final** relu au moment de l'export : `expect url` et `expect title` exacts, et
+    `expect text` du premier titre de niveau 1 du snapshot (à défaut, du premier titre ; omis s'il est coupé).
+- **Refs → sélecteurs durables**. La cible d'une commande par ref est décrite **avant** l'action (après un clic,
+  l'élément peut avoir disparu), sur le snapshot même qui sert à la résoudre : rien de plus à lire. Règle :
+  1. `text:<nom accessible>` si ce nom, résolu par les règles de `text:`, désigne **cet** élément et lui seul ;
+  2. sinon (nom vide, ambigu, ou qui désignerait un autre élément), le premier sélecteur CSS de cette liste qui
+     ne désigne **que lui** dans le document (vérifié par `querySelectorAll`) : `data-testid`, `data-test(-id)`,
+     `data-qa`, `data-cy` ; `#id` si l'id n'a pas l'air généré (pas de série de 3 chiffres, d'hexadécimal, de
+     `:r1:` React, de préfixe `ember`/`react`/`radix`/`mui`…) ; `tag[name=…]` (avec `[value=…]` pour une case ou
+     un bouton radio) ; `tag[aria-label=…]` ; `a[href=…]` ; `input[type=submit][value=…]` ; puis
+     `<ancêtre identifié> tag`, où l'ancêtre identifié est le plus proche qui porte un des attributs ci-dessus ou
+     un `data-*-id` / `data-*-key` (`li[data-id="1"] button` : la ligne dont on a supprimé l'article) ;
+  3. en dernier recours, un **chemin positionnel** depuis cet ancêtre (ou `body`) : `#liste > li:nth-of-type(2)
+     > button:nth-of-type(1)` — juste sur la même page, fragile si l'ordre change ;
+  4. rien d'unique : la ref reste, avec la raison en commentaire (`# ref non traduite : …`), et l'en-tête le
+     signale ; elle ne se rejoue que si la page est identique (le hash rôle-nom-rang est déterministe).
+
+  Un sélecteur CSS ou `text:` tapé par l'agent est gardé tel quel (déjà durable). Quand le CSS l'emporte sur le
+  nom, la ligne le dit en commentaire (`# evu3y button "Supprimer" : nom ambigu`). Les refs de `--scope` ne sont
+  pas traduites (l'option est retirée des actions ; elle reste sur `expect text`).
+- **Secrets** : la valeur d'un `fill` ou d'un `type` dans un champ `password`, ou dont l'`autocomplete` dit
+  `current-password`, `new-password`, `one-time-code`, `cc-number` ou `cc-csc`, n'est **jamais conservée**, même en
+  mémoire : `<masqué>` à la place, dès l'enregistrement. Par prudence, la valeur est aussi masquée quand le type
+  du champ n'a pas pu être lu (cible dans une iframe via `frame=…`, ou action en échec : la description arrive avec le résultat). Dans le
+  script, la ligne est **commentée**, jamais rejouée avec une fausse valeur (un mot de passe erroné peut bloquer
+  un compte) : à compléter à la main. Il n'existe pas encore de syntaxe `secret:NOM` (variables de secrets) dans
+  Grasp ; quand elle existera, c'est elle qui devra remplacer le masque. Les autres valeurs saisies (courriel,
+  nom, recherche) sont conservées telles quelles : elles sont ce qui rend le script rejouable.
+- **Coût mesuré** (Chrome headless, WSL2, médiane de 15 `hover` par ref, appel direct au bridge) : la description
+  de cible ajoute 0,2 ms sur la page de test (`/historique`) et 16 ms sur une page de 2000 liens (317 → 333 ms),
+  contre 188 ms pour une description par un snapshot séparé (première version, abandonnée). `expect`, `wait --sel`
+  et `upload` par ref passent par ce snapshot séparé (route interne `POST /internal/durable`).
+- Testé (`test/integration/history.test.ts`) : exploration par refs d'une liste de courses (refs de `snap`,
+  lectures, une erreur, un mot de passe, une valeur qui commence par `-`, un `run`), export, rejeu par
+  `grasp run` dans une **nouvelle session** : `== recette : OK` et `text` de la page finale identique à celui de
+  la session explorée ; mot de passe absent de l'historique, du JSON et du script ; homonymes sans attribut
+  stable rejoués par chemin positionnel.
 
 ## Serveur MCP
 
@@ -1267,6 +1370,8 @@ POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)
 POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
+GET  /history?since=&limit=  → {entries[], text, seq, omitted, lost, max}   DELETE /history
+GET  /history?asRun=1&expect=1&since=  → {script, seq, entries, lost}
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
@@ -1627,6 +1732,13 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   relocalisation : si le 1er de deux homonymes disparaît, la ref du 1er désigne désormais le 2e (elle existe
   toujours) ; de même, une ref d'une page précédente dont le hash (rôle, nom, rang) existe sur la nouvelle
   page désigne l'élément de la nouvelle page. Seule une ref **absente** est protégée.
+- Historique (`grasp history`) : la traduction d'une ref est vérifiée sur la page **au moment de l'action** ;
+  rien ne garantit qu'au rejeu le même `text:` ou le même CSS désigne encore un seul élément (page qui a changé,
+  liste plus longue) — le rejeu échoue alors en 404/409 explicite, jamais sur un homonyme. Les sélecteurs
+  `text:` et CSS ne voient que le document principal : un élément dans une racine fantôme ou une iframe (`frame=…`)
+  garde sa ref ou son sélecteur d'origine. Les valeurs saisies ailleurs que dans un champ reconnu comme secret
+  sont conservées en clair dans la mémoire du control plane (lisibles avec le token, comme la session elle-même).
+  `grasp mcp` n'a pas d'outil `history` (route HTTP seulement).
 - Console : un curseur `--since` d'un tampon recréé n'est détecté que tant qu'il dépasse le seq courant ; si
   le nouveau tampon a déjà dépassé l'ancien seq, les entrées antérieures au curseur ne sont pas montrées.
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**

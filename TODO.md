@@ -96,6 +96,18 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).
 
+## Historique et rejeu
+
+- [x] **`grasp history [--as-run] [--since]`** (branche `feat/historique-run`) : commandes de la session mémorisées
+      par le control plane (500, en mémoire), `--as-run` → script `grasp run` rejouable : refs → `text:<nom>`
+      (unique) ou CSS stable vérifié unique (attributs, ancêtre identifié, chemin positionnel en dernier recours),
+      lectures et échecs omis, mots de passe jamais conservés (ligne commentée), `--expect` sur l'état final.
+      Description de cible faite sur le snapshot de l'action (+0,2 ms / +16 ms mesurés). Test : exploration,
+      export, rejeu dans une nouvelle session, même `text` final.
+- [ ] Remplacer le masque des mots de passe par `secret:NOM` quand les variables de secrets existeront.
+- [ ] Outil MCP `history` ; traduction des refs de `--scope` ; description sans snapshot séparé pour
+      `expect`/`wait --sel`/`upload` par ref.
+
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 
 Sécurité du garde

@@ -29,7 +29,12 @@ export interface ActionOptions {
   shotOnError?: boolean | undefined;
   /** Moteur de l'action : « native » (CDP direct, défaut) ou « playwright » (repli optionnel). frame= impose Playwright. */
   engine?: string | undefined;
+  /** Historique (control plane) : sélecteur de la cible à décrire pendant la résolution (`target` du résultat). */
+  describeTarget?: string | undefined;
 }
+
+/** Cible décrite pour l'historique : sélecteur durable (absent = ref non traduite), rôle, nom, champ secret. */
+export interface DurableTarget { given: string; durable?: string; how?: 'text' | 'css' | 'given'; role?: string; name?: string; note?: string; secret: boolean | null }
 
 /** Moteur Playwright du bridge (voir playwright.ts). */
 export interface EngineConfig {
@@ -49,7 +54,7 @@ export interface EngineConfig {
  */
 export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number; since: number; omitted: number; dropped: number }
 /** `trackersBlocked` : requêtes vers des traqueurs annulées pendant l'action (absent si aucune). */
-export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number }
+export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number; target?: DurableTarget }
 export interface Blocked { url: string; reason: string; at: number }
 
 export interface ShotOptions {
@@ -698,6 +703,9 @@ export class PageController {
    * d'observation qui suit l'action, son remplaçant est cherché et signalé (voir replacementNote).
    */
   private actTarget: number | undefined;
+  /** Historique : cible à décrire pendant l'action en cours (une fois), et sa description. */
+  private describeWanted: string | undefined;
+  private described: DurableTarget | undefined;
   private probeSeq = 0;
   /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
   private pw: PlaywrightEngine | undefined;
@@ -2061,7 +2069,23 @@ export class PageController {
 
   // ---------- Sélecteurs : ref e5, CSS #id, texte text:Valider ----------
 
+  /**
+   * Résolution d'un sélecteur. Pendant une action dont le control plane veut l'historique (`describeTarget`),
+   * la cible est aussi décrite (sélecteur durable, champ secret) sur le MÊME snapshot, une seule fois : pas de
+   * second snapshot pour l'historique.
+   */
   private async resolve(sel: string, snap?: Snapshot): Promise<number> {
+    const want = this.describeWanted;
+    const s = sel.trim();
+    if (want === undefined || s !== want) return this.resolveSel(sel, snap);
+    this.describeWanted = undefined;
+    const sn = snap ?? (REF_RE.test(s) || s.startsWith('text:') ? await this.snapshot() : undefined);
+    const id = await this.resolveSel(s, sn);
+    this.described = await this.describeResolved(s, id, sn).catch(() => undefined);
+    return id;
+  }
+
+  private async resolveSel(sel: string, snap?: Snapshot): Promise<number> {
     const s = sel.trim();
     if (s === '') throw badRequest('sélecteur vide');
     if (REF_RE.test(s)) {
@@ -2187,6 +2211,47 @@ export class PageController {
     return node.backendNodeId;
   }
 
+  /**
+   * `grasp history` : sélecteur durable de la cible d'une commande, relevé AVANT l'action (l'élément peut
+   * disparaître ensuite), et nature secrète du champ. Règle, pour une ref : `text:<nom accessible>` si ce nom,
+   * résolu par les mêmes règles que `text:`, désigne CET élément (et lui seul) ; sinon le premier sélecteur CSS
+   * d'une liste d'attributs stables (data-testid…, id non généré, name, aria-label, href, ancêtre identifié) qui
+   * ne désigne que lui dans le document ; sinon chemin positionnel depuis l'ancêtre identifié le plus proche ;
+   * sinon rien (la ref reste, avec la raison). Un sélecteur CSS ou text: reçu est déjà durable : gardé tel quel.
+   * Lecture seule : snapshot, puis requêtes DOM ; aucun événement envoyé à la page (code en monde isolé).
+   * Route interne (expect, wait, upload) ; les actions le font pendant leur propre résolution (`describeTarget`).
+   */
+  async durableTarget(sel: string): Promise<DurableTarget> {
+    const s = sel.trim();
+    // Cadre (moteur Playwright) : type du champ non vérifiable depuis le document principal.
+    if (s.startsWith('frame=')) return { given: sel, durable: sel, how: 'given', secret: null };
+    const snap = REF_RE.test(s) || s.startsWith('text:') ? await this.snapshot() : undefined;
+    return this.describeResolved(s, await this.resolveSel(s, snap), snap);
+  }
+
+  /** Description durable d'une cible déjà résolue (`snap` : celui de la résolution, pour une ref). */
+  private async describeResolved(s: string, id: number, snap: Snapshot | undefined): Promise<DurableTarget> {
+    const secret = await this.callIsolated<boolean>(id, SECRET_FIELD_FN).catch(() => null);
+    if (!REF_RE.test(s) || snap === undefined) return { given: s, durable: s, how: 'given', secret };
+    const meta = snap.meta.get(s) ?? this.knownRefs.get(s);
+    const role = meta?.role;
+    const name = (meta?.name ?? '').trim();
+    const base = { given: s, ...(role !== undefined ? { role } : {}), name, secret };
+    let note: string;
+    if (name === '') note = 'sans nom accessible';
+    else {
+      try {
+        if (this.resolveText(name, snap) === id) return { ...base, durable: `text:${name}`, how: 'text' };
+        note = `text:${name} désigne un autre élément`;
+      } catch (e) { note = e instanceof GraspError && e.status === 409 ? 'nom ambigu' : `text:${name} introuvable`; }
+    }
+    const cands = await this.callIsolated<string[]>(id, STABLE_CSS_FN).catch(() => [] as string[]);
+    for (const c of Array.isArray(cands) ? cands : []) {
+      try { if (await this.resolveCss(c) === id) return { ...base, durable: c, how: 'css', note }; } catch { /* non unique ou invalide : suivant */ }
+    }
+    return { ...base, note: `${note}, aucun sélecteur CSS unique` };
+  }
+
   private async callOn<T>(backendNodeId: number, fn: string, ...args: unknown[]): Promise<T> {
     let objectId: string;
     try {
@@ -2256,6 +2321,8 @@ export class PageController {
     this.notes = actionNotes;
     this.undelivered = false;
     this.actTarget = undefined;
+    this.describeWanted = opts.describeTarget?.trim();
+    this.described = undefined;
     try {
       await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
@@ -2289,8 +2356,9 @@ export class PageController {
         if (extra !== undefined && extra !== '') res.detail = res.detail !== undefined ? `${res.detail} ; ${extra}` : extra;
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
+      if (this.described !== undefined) res.target = this.described;
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; this.describeWanted = undefined; this.described = undefined; }
   }
 
   /** Rôles de champ de saisie interchangeables pour un remplacement (searchbox re-rendu en combobox). */
@@ -3173,3 +3241,67 @@ export class PageController {
     });
   }
 }
+
+/**
+ * `grasp history` (monde isolé) : le champ est-il secret ? password, ou autocomplete de mot de passe, de code à
+ * usage unique ou de carte bancaire — sa valeur n'est jamais conservée dans l'historique.
+ */
+const SECRET_FIELD_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el || el.localName !== 'input') return false;
+  if (String(el.type).toLowerCase() === 'password') return true;
+  const ac = String(el.getAttribute('autocomplete') || '').toLowerCase();
+  return /(^|\\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\\s|$)/.test(ac);
+}`;
+
+/**
+ * `grasp history` (monde isolé) : sélecteurs CSS candidats d'un élément, du plus durable au plus fragile. Le
+ * bridge garde le premier qui ne désigne que cet élément dans le document. Un id « généré » (chiffres en
+ * série, hexadécimal, :r1: de React…) n'est pas durable ; le chemin positionnel (nth-of-type) part de l'ancêtre
+ * identifié le plus proche, en dernier recours.
+ */
+const STABLE_CSS_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el) return [];
+  const q = (v) => '"' + String(v).replace(/[\\\\"]/g, '\\\\$&').replace(/\\n/g, '\\\\a ') + '"';
+  const generated = (v) => !v || v.length > 64 || /^[:_]|:$|\\d{3,}|(?=[a-f]*\\d)[0-9a-f]{6,}|^(ember|react|radix|mui|headlessui|ext-gen|yui|gwt)/i.test(v);
+  const TEST = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
+  const ident = (n) => {
+    for (const a of TEST) { const v = n.getAttribute(a); if (v) return '[' + a + '=' + q(v) + ']'; }
+    if (n.id && !generated(n.id)) return '#' + CSS.escape(n.id);
+    for (const a of n.getAttributeNames()) if (/^data-(.*-)?(id|key)$/.test(a)) { const v = n.getAttribute(a); if (v && v.length <= 64) return n.localName + '[' + a + '=' + q(v) + ']'; }
+    return undefined;
+  };
+  const tag = el.localName;
+  const out = [];
+  const own = ident(el);
+  if (own) out.push(own);
+  const nm = el.getAttribute('name');
+  if (nm && /^(input|select|textarea|button)$/.test(tag)) {
+    const t = el.getAttribute('type');
+    const base = tag + '[name=' + q(nm) + ']';
+    if (t === 'radio' || t === 'checkbox') { const v = el.getAttribute('value'); if (v !== null) out.push(base + '[value=' + q(v) + ']'); }
+    out.push(base);
+  }
+  const al = el.getAttribute('aria-label');
+  if (al) out.push(tag + '[aria-label=' + q(al) + ']');
+  const href = tag === 'a' ? el.getAttribute('href') : null;
+  if (href && !/^javascript:/i.test(href) && href.length <= 200) out.push('a[href=' + q(href) + ']');
+  if (tag === 'input' && /^(submit|button|reset)$/.test(el.type) && el.value) out.push('input[type=' + q(el.type) + '][value=' + q(el.value) + ']');
+  // Ancêtre identifié : « li[data-id="2"] button », puis chemin positionnel depuis lui (ou depuis body).
+  const step = (n) => { let i = 1; for (let s = n.previousElementSibling; s; s = s.previousElementSibling) if (s.localName === n.localName) i++; return n.localName + ':nth-of-type(' + i + ')'; };
+  let anchor = null, anchorSel = 'body';
+  for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+    const id = ident(p);
+    if (id) { anchor = p; anchorSel = id; break; }
+  }
+  if (anchor) {
+    out.push(anchorSel + ' ' + tag);
+    if (al) out.push(anchorSel + ' ' + tag + '[aria-label=' + q(al) + ']');
+    if (nm) out.push(anchorSel + ' ' + tag + '[name=' + q(nm) + ']');
+  }
+  const path = [];
+  for (let n = el; n && n !== anchor && n !== document.body && n !== document.documentElement; n = n.parentElement) path.unshift(step(n));
+  if (path.length > 0 && path.length <= 12) out.push(anchorSel + ' > ' + path.join(' > '));
+  return out;
+}`;
