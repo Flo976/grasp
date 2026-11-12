@@ -137,3 +137,16 @@ test('viewport invalide : 400 sans rien changer', async () => {
   assert.equal((await fx.page.viewportInfo()).viewport, null);
   assert.match(await text(), /Mise en page bureau/);
 });
+
+test('reset d\'un viewport de la taille de l\'écran réel : pas d\'attente de 2 s (retour attendu sur l\'écran natif)', async () => {
+  await fx.page.navigate(`${site.url}/viewport`);
+  const ecran = await (fx.page as unknown as { evalIsolated<T>(e: string): Promise<T> }).evalIsolated<number[]>('[screen.width, screen.height]');
+  const [w, h] = ecran as [number, number];
+  await vp({ size: `${w}x${h}` });
+  const t0 = Date.now();
+  const back = await fx.page.setViewport(null);
+  const dt = Date.now() - t0;
+  assert.equal(back.viewport, null);
+  assert.ok(dt < 1500, `reset en ${dt} ms (écran ${w}x${h}) : la boucle d'attente ne doit pas courir jusqu'à son plafond de 2 s`);
+  assert.match(await text(), /Mise en page bureau/);
+});

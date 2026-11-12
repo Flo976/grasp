@@ -729,6 +729,8 @@ export class PageController {
   private vp: ViewportSpec | undefined;
   /** Un user agent mobile a été posé sur l'onglet (à retirer au reset). */
   private uaOverridden = false;
+  /** Écran réel [largeur, hauteur], lu avant le premier override : cible de l'attente au reset. */
+  private nativeScreen: number[] | undefined;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -2802,6 +2804,8 @@ export class PageController {
    */
   async setViewport(spec: ViewportSpec | null): Promise<ViewportResult> {
     const prev = this.vp;
+    const readScreen = () => this.evalIsolated<number[]>('[screen.width, screen.height]').catch(() => undefined);
+    if (spec !== null && prev === undefined) this.nativeScreen = await readScreen();
     if (spec === null) {
       await this.s('Emulation.clearDeviceMetricsOverride');
       await this.s('Emulation.setTouchEmulationEnabled', { enabled: false });
@@ -2822,13 +2826,16 @@ export class PageController {
       this.vp = { ...spec };
     }
     // L'override est appliqué par le moteur de rendu après la réponse de CDP : on attend que la page le voie
-    // (taille d'écran émulée, ou retour à l'écran réel), 2 s au plus.
-    const target = spec !== null ? spec : prev;
+    // (taille d'écran émulée, ou retour à l'écran réel), 2 s au plus. Au reset, on attend l'ÉGALITÉ avec
+    // l'écran réel lu avant le premier override, pas une différence avec l'ancien viewport : un viewport de la
+    // taille de l'écran (800x600 en headless, 1920x1080 sur un écran 1920×1080) n'en diffère jamais.
+    // Écran réel inconnu (lecture échouée) : pas d'attente, la stabilité suit.
+    const target = spec !== null ? [spec.width, spec.height] : prev !== undefined ? this.nativeScreen : undefined;
+    if (spec === null) this.nativeScreen = undefined;
     if (target !== undefined) {
-      const want = spec !== null;
       for (let i = 0; i < 80; i++) {
-        const sc = await this.evalIsolated<number[]>('[screen.width, screen.height]').catch(() => undefined);
-        if (sc === undefined || (sc[0] === target.width && sc[1] === target.height) === want) break;
+        const sc = await readScreen();
+        if (sc === undefined || (sc[0] === target[0] && sc[1] === target[1])) break;
         await sleep(25);
       }
     }

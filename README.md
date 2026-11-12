@@ -1048,7 +1048,9 @@ Mise en page mobile
   (testé : page rechargée par le recyclage déjà à 360 px). `session list` et `GET /sessions` l'affichent.
 - **Coût** : la commande attend que la page voie la nouvelle taille puis la [stabilité](#attente-de-stabilité)
   (une application peut re-rendre au redimensionnement) : 403 à 416 ms par réglage ou reset sur la page de test
-  (10 mesures, headless).
+  (10 mesures, headless). Le reset attend le retour à l'écran réel lu avant le premier réglage, et non une simple
+  différence avec l'ancien viewport : un viewport de la taille de l'écran (800x600 en headless) coûtait sinon 2 s
+  de plus au reset (mesuré : 2507 ms avant correction, 405 à 407 ms après ; test dans `viewport.test.ts`).
 - **Captures** : voir [Captures d'écran](#captures-décran) ; l'agrandissement temporaire de `--full` et `--el`
   garde la densité et le mode mobile, et rend ensuite le viewport émulé (testé : mesures identiques avant et après).
 - **Mode attach** : réglage limité à l'onglet que Grasp ouvre (session CDP de sa cible) ; les onglets de
