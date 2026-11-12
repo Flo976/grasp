@@ -191,6 +191,25 @@ Accès distant
 - [ ] `grasp mcp` ne sait pas encore créer une session avec `--proxy` ou `--http-auth` (utiliser `--session`
       sur une session créée par la CLI).
 
+Onglets et popups
+- [x] **Onglets pilotables** (branche `feat/onglets-popups`) : `tabs`, `tab <id>`, `tab new [url]`, `tab close [id]` ;
+      popup / `target=_blank` adopté en pause (garde posé avant son premier document), annoncé par l'action
+      (`nouvel onglet t2 ouvert : …`), `--follow` ; retour sur l'ouvreur quand le popup se ferme (OAuth) ; refs,
+      console, garde, traqueurs, SSRF par onglet ; plafond `maxTabs` (10). Tests : `tabs.test.ts`, `tabs-cli.test.ts`.
+- [x] Mode attach : `tab new` et l'onglet d'état (`state export|import`) étaient détachés aussitôt attachés (le
+      meneur prenait leur `Target.attachedToTarget` pour un onglet de l'utilisateur) ; cibles réclamées
+      (`hub.claimed`), test en mode attach dans `tabs.test.ts`.
+- [x] Notes d'onglet bornées et masquées (URL par `redactUrl` à 300, titre à 80) : un popup OAuth ne recopie plus
+      `code=…` en clair ni 20 000 caractères d'URL dans la note.
+- [x] Notes différées (onglet fermé par la page hors action) visibles partout : en tête du résultat de tout outil
+      MCP (le client MCP ignorait `X-Grasp-Notice`, recyclage compris), reportées dans la note du recyclage ;
+      option MCP `follow`.
+- [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
+      l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
+      pause : le premier document échapperait au garde.
+- [ ] Outils MCP dédiés `tabs` / `tab` (aujourd'hui via `run`) ; recyclage et bascule de profil : seul l'onglet actif
+      est rouvert.
+
 Lecture et recette
 - [x] **Lecture progressive** (branche `feat/lecture-progressive`) : `snap --outline` (repères, tableaux et titres
       avec le volume de chaque repère), `snap --interactive` (actionnables, conteneurs et titres de contexte),

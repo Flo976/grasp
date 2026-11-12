@@ -7,6 +7,7 @@
 import { DEVICES, parseSize } from './viewport.js';
 import { EXPECT_DEFAULT_MS, EXPECT_KINDS, expectSpecOf, isExpectKind, type ExpectKind } from './expect.js';
 import { secretRef } from './secrets.js';
+import { TAB_ID_RE } from './tabs.js';
 
 export class ScriptError extends Error {}
 
@@ -142,6 +143,8 @@ function actionBody(a: Args, extra: Record<string, unknown>): Record<string, unk
     ...(max !== undefined ? { max } : {}), ...(scope !== undefined ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
     ...(a.flags.has('network') ? { network: true } : {}),
+    // --follow : bascule sur l'onglet (popup, target=_blank) que l'action ouvre.
+    ...(a.flags.has('follow') ? { follow: true } : {}),
     ...engineOf(a), ...dialogOf(a),
   };
 }
@@ -330,11 +333,11 @@ function viewportRequest(a: Args): StepRequest {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport'] as const;
+export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport', 'tabs', 'tab'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run', 'history']);
 
 const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error'];
-const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine', 'dialog'];
+const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine', 'dialog', 'follow'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 export const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
@@ -345,7 +348,7 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   network: ['since', 'failed', 'max', 'type'],
   // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
-  upload: ['engine'], eval: [], cookies: [], storage: [], profile: [],
+  upload: ['engine'], eval: [], cookies: [], storage: [], profile: [], tabs: [], tab: [],
   viewport: VIEWPORT_FLAGS,
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'],
   // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
@@ -426,6 +429,8 @@ export function buildRequest(a: Args): StepRequest {
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     case 'expect': return expectRequest(a);
     case 'viewport': return viewportRequest(a);
+    case 'tabs': return { cmd, method: 'GET', path: '/tabs' };
+    case 'tab': return tabRequest(a);
     default:
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);
       throw new ScriptError(`commande inconnue « ${cmd} » (commandes de run : ${RUN_COMMANDS.join(', ')})`);
@@ -470,6 +475,23 @@ function historyRequest(a: Args): StepRequest {
   if (a.pos.length > 0) throw new ScriptError(`usage : grasp ${cmd}${cmd === 'reload' ? ' [--hard]' : ''} (aucun argument : ${a.pos[0]} en trop)`);
   if (cmd === 'reload' && a.flags.has('hard')) { if (a.flags.get('hard') !== true) throw new ScriptError('--hard ne prend pas de valeur'); body.hard = true; }
   return { cmd, method: 'POST', path: `/${cmd}`, body };
+}
+
+export const TAB_USAGE = 'tab <id> | tab new [url] | tab close [id]   (grasp tabs : liste)';
+
+/** `tab <id>` (bascule), `tab new [url]`, `tab close [id]`. */
+function tabRequest(a: Args): StepRequest {
+  const [sub, arg, ...rest] = a.pos;
+  const usage = () => new ScriptError(`usage : grasp ${TAB_USAGE}`);
+  if (sub === undefined || rest.length > 0) throw usage();
+  if (sub === 'new') return { cmd: 'tab', method: 'POST', path: '/tabs/new', body: arg !== undefined ? { url: arg } : {}, timeoutMs: 120_000 };
+  if (sub === 'close') {
+    if (arg !== undefined && !TAB_ID_RE.test(arg)) throw new ScriptError(`tab close : identifiant d'onglet t1, t2… attendu, reçu « ${arg} »`);
+    return { cmd: 'tab', method: 'POST', path: '/tabs/close', body: arg !== undefined ? { id: arg } : {} };
+  }
+  if (arg !== undefined) throw usage();
+  if (!TAB_ID_RE.test(sub)) throw new ScriptError(`tab : identifiant d'onglet t1, t2… (grasp tabs), new ou close attendu, reçu « ${sub} »`);
+  return { cmd: 'tab', method: 'POST', path: '/tabs/select', body: { id: sub } };
 }
 
 /** Options de chaque assertion (toutes acceptent --shot-on-error). */

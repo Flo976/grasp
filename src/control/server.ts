@@ -157,6 +157,8 @@ SESSION_ROUTES.add('/network');
 SESSION_ROUTES.add('/a11y');
 // Recette multi-pages (grasp audit / diff).
 for (const r of ['/inventory', '/check-links']) SESSION_ROUTES.add(r);
+// Onglets et popups.
+for (const r of ['/tabs', '/tabs/select', '/tabs/new', '/tabs/close']) SESSION_ROUTES.add(r);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -530,7 +532,15 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try {
       let url: string | undefined;
       let cookies: unknown[] = [];
-      try { const r = await request(sock, 'GET', '/location', undefined, {}, 10_000); if (r.status === 200) url = String(r.json().url); } catch { /* bridge muet : rien à recharger */ }
+      // Note différée du bridge (onglet fermé par la page) consommée par cette lecture : reportée dans la note du
+      // recyclage, sinon perdue avec l'ancien bridge.
+      let pending: string | undefined;
+      try {
+        const r = await request(sock, 'GET', '/location', undefined, {}, 10_000);
+        if (r.status === 200) url = String(r.json().url);
+        const n = r.headers['x-grasp-notice'];
+        if (typeof n === 'string' && n !== '') { try { pending = decodeURIComponent(n); } catch { pending = n; } }
+      } catch { /* bridge muet : rien à recharger */ }
       try { const r = await request(sock, 'GET', '/internal/session-cookies', undefined, {}, 10_000); if (r.status === 200) cookies = r.json().cookies as unknown[]; } catch { /* idem */ }
       const code = await old.stop();
       if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
@@ -553,7 +563,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       s.memory = undefined;
       persistInstances();
       const nsock = { transport: 'unix' as const, socketPath: s.bridge.socketPath };
-      const parts = [`navigateur recyclé : ${why}`];
+      const parts = [...(pending !== undefined ? [pending] : []), `navigateur recyclé : ${why}`];
       if (cookies.length > 0) {
         try {
           const r = await request(nsock, 'POST', '/internal/session-cookies', { cookies }, {}, 10_000);
@@ -702,6 +712,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (e instanceof GraspError) throw e;
       throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
     } finally { leave(s); }
+    // Note du bridge (onglet fermé par la page depuis la commande précédente) : jointe à l'étape, comme le recyclage.
+    const bn = r.headers['x-grasp-notice'];
+    if (typeof bn === 'string') onNotice(decodeURIComponent(bn));
     const isJson = String(r.headers['content-type'] ?? '').startsWith('application/json');
     if (r.status >= 400) {
       let msg = r.text();
@@ -757,6 +770,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(r.headers)) if (k.startsWith('x-grasp-') && typeof v === 'string') extra[k] = v;
     if (req.method === 'POST' && url.pathname === '/viewport' && r.status === 200) { try { rememberViewport(s, r.json()); } catch { /* réponse illisible : rien retenu */ } }
+    // Notes du control plane (recyclage) et du bridge (onglets) : les deux, jamais l'une à la place de l'autre.
+    const own = res.getHeader('x-grasp-notice');
+    if (typeof own === 'string' && extra['x-grasp-notice'] !== undefined) extra['x-grasp-notice'] = `${own}${encodeURIComponent(' ; ')}${extra['x-grasp-notice']}`;
     res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': out.length });
     res.end(out);
   }
@@ -867,7 +883,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         let notice: string | undefined;
         try {
           const own = new Set(steps.map((x) => x.rq));
-          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }, own.has(rq)), optBool(body, 'continue') === true, ac.signal, {
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = notice !== undefined ? `${notice} ; ${n}` : n; }, own.has(rq)), optBool(body, 'continue') === true, ac.signal, {
             report: optBool(body, 'report'),
             takeNotice: () => { const n = notice; notice = undefined; return n; },
           });

@@ -11,6 +11,7 @@ import type { PageController, SessionCookie, ShotOptions } from './page.js';
 import { compileFind, FIND_LIMIT_MAX, SNAP_MODES, type FindPattern, type FindSpec, type SnapMode } from './snapshot.js';
 import type { SecretUse } from '../core/secrets.js';
 import { redactResponse } from '../control/redact.js';
+import type { Tabs } from './tabs.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -62,11 +63,20 @@ function level(v: unknown): ConsoleLevel | undefined {
   return v;
 }
 
+/** Routes du control plane lui-même (santé, rapport de sécurité) : jamais visibles de l'agent. */
+const INTERNAL = new Set(['GET /health', 'GET /policy', 'GET /session-options']);
+
+/** Routes d'onglets : seulement si le bridge gère des onglets (tests qui branchent un seul PageController). */
+function tabsOf(tabs: Tabs | undefined, route: string): Tabs {
+  if (tabs === undefined) throw new GraspError(404, `route inconnue : ${route}`);
+  return tabs;
+}
+
 /**
  * API HTTP du bridge, servie sur un socket Unix privé (0600 dans un répertoire 0700).
  * Seul le control plane s'y connecte ; les permissions du système de fichiers font office d'authentification.
  */
-export function bridgeHandler(page: PageController, info: () => Record<string, unknown>, sessionOptions: () => Record<string, unknown> = () => ({})) {
+export function bridgeHandler(page: PageController, info: () => Record<string, unknown>, sessionOptions: () => Record<string, unknown> = () => ({}), tabs?: Tabs) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Toute réponse du bridge est masquée avec les secrets saisis dans la session (et leurs valeurs effectives).
     redactResponse(res, page.secretRedactor);
@@ -75,7 +85,11 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog'), network: optBool(body, 'network'), describeTarget: optStr(body, 'describeTarget') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog'), network: optBool(body, 'network'), describeTarget: optStr(body, 'describeTarget'), follow: optBool(body, 'follow') };
+      // Onglet fermé hors de toute commande (popup refermé par la page) : dit par la réponse suivante à l'agent,
+      // quelle qu'elle soit (jamais par une route interne du control plane, qui ne la transmettrait pas).
+      const notice = INTERNAL.has(route) || url.pathname.startsWith('/internal/') ? undefined : await tabs?.takeNotices();
+      if (notice !== undefined) res.setHeader('x-grasp-notice', encodeURIComponent(notice));
       const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
@@ -144,6 +158,11 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           if (!Array.isArray(urls) || !urls.every((u) => typeof u === 'string')) throw new GraspError(400, 'champ « urls » (tableau d\'URL) requis');
           return sendJson(res, 200, await page.checkLinks(urls as string[]));
         }
+        // Onglets (popups, target=_blank, tab new) : voir tabs.ts.
+        case 'GET /tabs': return sendJson(res, 200, { tabs: await tabsOf(tabs, route).list() });
+        case 'POST /tabs/select': return sendJson(res, 200, await tabsOf(tabs, route).select(str(body, 'id')));
+        case 'POST /tabs/new': return sendJson(res, 200, await tabsOf(tabs, route).open(optStr(body, 'url')));
+        case 'POST /tabs/close': return sendJson(res, 200, await tabsOf(tabs, route).close(optStr(body, 'id')));
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());

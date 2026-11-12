@@ -58,8 +58,13 @@ class Client {
   private creating: Promise<string> | undefined;
   private server: ChildProcess | undefined;
   private starting: Promise<void> | undefined;
+  /** Notes reçues (en-tête X-Grasp-Notice : navigateur recyclé, onglet fermé par la page…) pas encore montrées. */
+  private notices: string[] = [];
 
   constructor(private readonly o: McpOptions) { this.session = o.session; }
+
+  /** Notes à joindre au résultat de l'outil en cours (une seule fois : la CLI les dit de même sur stderr). */
+  takeNotices(): string[] { return this.notices.splice(0); }
 
   async call(method: string, path: string, body?: unknown, timeoutMs?: number, withSession = true): Promise<HttpResult> {
     await this.ensureServer();
@@ -70,6 +75,11 @@ class Client {
     try { r = await request(endpointOf(this.o.paths), method, path, body, headers, timeoutMs); } catch (e) {
       if (unreachable(e)) throw new GraspCallError('serveur Grasp injoignable — lancez `grasp serve` (ou relancez `grasp mcp`)', 502);
       throw e;
+    }
+    // Note du serveur sur cette commande, succès comme échec : consommée côté serveur, perdue si on ne la montre pas.
+    const notice = r.headers['x-grasp-notice'];
+    if (typeof notice === 'string' && notice !== '') {
+      try { this.notices.push(decodeURIComponent(notice)); } catch { this.notices.push(notice); }
     }
     if (r.status >= 400) {
       let msg = r.text();
@@ -193,6 +203,7 @@ const ACTION_PROPS: Record<string, Prop> = {
   shotOnError: B('En cas d\'échec, capture du viewport ; son chemin est ajouté au message d\'erreur.'),
   engine: S('Moteur de l\'action (défaut native ; playwright = moteur de repli, playwright-core requis).', { enum: ['native', 'playwright'] }),
   dialog: S('Réponse aux dialogues JS ouverts pendant l\'action : accept, dismiss, ou le texte d\'un prompt (accepté avec ce texte ; un texte ne confirme jamais un confirm, seul accept le fait). Sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS. Le dialogue vu est toujours rapporté.'),
+  follow: B('Si l\'action ouvre un popup ou un onglet (target=_blank), en faire l\'onglet actif (grasp … --follow).'),
 };
 const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
 
@@ -432,10 +443,20 @@ function errorResult(e: unknown): ToolResult {
 async function callTool(c: Client, name: unknown, args: unknown): Promise<ToolResult> {
   const t = TOOLS.find((x) => x.name === name);
   if (t === undefined) throw new RpcError(-32602, `outil inconnu « ${String(name)} » (outils : ${TOOLS.map((x) => x.name).join(', ')})`);
-  try { return await t.run(c, validate(t, args)); } catch (e) {
-    if (e instanceof ArgError || e instanceof ScriptError) return errorResult(new Error(`${t.name} : ${e.message}`));
-    return errorResult(e);
+  let res: ToolResult;
+  try { res = await t.run(c, validate(t, args)); } catch (e) {
+    res = e instanceof ArgError || e instanceof ScriptError ? errorResult(new Error(`${t.name} : ${e.message}`)) : errorResult(e);
   }
+  return withNotices(res, c.takeNotices());
+}
+
+/** Notes du serveur (onglet fermé par la page, navigateur recyclé…) en tête du texte de l'outil : `note: …`. */
+function withNotices(res: ToolResult, notes: string[]): ToolResult {
+  if (notes.length === 0) return res;
+  const head = notes.map((n) => `note: ${n}`).join('\n');
+  const first = res.content[0];
+  if (first !== undefined && first.type === 'text') return { ...res, content: [{ type: 'text', text: `${head}\n${first.text}` }, ...res.content.slice(1)] };
+  return { ...res, content: [{ type: 'text', text: head }, ...res.content] };
 }
 
 // ---------- JSON-RPC 2.0 ----------

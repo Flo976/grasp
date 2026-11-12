@@ -43,6 +43,64 @@ export interface ActionOptions {
   network?: boolean | undefined;
   /** Historique (control plane) : sélecteur de la cible à décrire pendant la résolution (`target` du résultat). */
   describeTarget?: string | undefined;
+  /** Onglets : bascule sur l'onglet (popup, target=_blank) ouvert par l'action (voir tabs.ts). */
+  follow?: boolean | undefined;
+}
+
+/** Cible CDP rapportée par Target.attachedToTarget (openerId : onglet qui l'a ouverte). */
+export interface TargetInfo { targetId: string; type: string; url?: string; openerId?: string }
+
+/**
+ * Coordination des onglets d'un même navigateur : un PageController par onglet, sur UNE connexion CDP. Chaque
+ * événement d'une session va au contrôleur qui la possède (onglet, iframes hors processus, onglets d'état) ; les
+ * événements du navigateur et des sessions sans propriétaire vont au contrôleur « meneur » (le premier, puis le
+ * suivant s'il est fermé), qui garde les nouvelles cibles et les confie à `adopt` (tabs.ts) quand c'est un onglet.
+ */
+export class TabHub {
+  readonly pages = new Set<PageController>();
+  lead: PageController | undefined;
+  /** Cibles auto-attachées pendant la création d'un onglet d'état : targetId → session prête (gardée, relancée). */
+  readonly attaching = new Map<string, Promise<string>>();
+  /** Création de cible en cours (sérialisée) : distingue l'onglet d'état d'export/import d'un onglet à adopter. */
+  creating: 'scratch' | 'tab' | undefined;
+  /**
+   * Cibles que Grasp attache lui-même (Target.attachToTarget : `tab new` et onglet d'état en mode attach). Leur
+   * Target.attachedToTarget n'est pas celui d'un onglet de l'utilisateur : le meneur ne doit pas les détacher.
+   */
+  readonly claimed = new Set<string>();
+  private lock: Promise<unknown> = Promise.resolve();
+  /** Popups refusés (plafond) : toutes leurs requêtes échouent, le temps de les relancer puis de les fermer. */
+  readonly denied = new Set<string>();
+  /** Nouvel onglet (popup, target=_blank, tab new) en pause : adopté (gardé, piloté) → true ; sinon garde seule. */
+  adopt: ((sessionId: string, info: TargetInfo, waiting: boolean) => Promise<boolean>) | undefined;
+  /** Ref remise par un snapshot d'un AUTRE onglet que `self` : { tab: cet onglet, here: l'onglet de `self` }. */
+  refElsewhere: ((ref: string, self: PageController) => { tab: string; here: string } | undefined) | undefined;
+
+  ownerOf(sessionId: string): PageController | undefined {
+    for (const p of this.pages) if (p.owns(sessionId)) return p;
+    return undefined;
+  }
+
+  ownsTarget(targetId: string): boolean {
+    for (const p of this.pages) if (p.target === targetId) return true;
+    return false;
+  }
+
+  /** Événement pour `pc` ? Session possédée par lui, ou (navigateur, session sans propriétaire) s'il mène. */
+  routes(pc: PageController, sessionId: string | undefined): boolean {
+    const owner = sessionId !== undefined ? this.ownerOf(sessionId) : undefined;
+    return owner !== undefined ? owner === pc : this.lead === pc;
+  }
+
+  /** Création de cible sérialisée : l'événement d'attachement (qui précède la réponse) sait de quoi il s'agit. */
+  creation<T>(kind: 'scratch' | 'tab', fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(async () => {
+      this.creating = kind;
+      try { return await fn(); } finally { this.creating = undefined; }
+    });
+    this.lock = run.catch(() => undefined);
+    return run;
+  }
 }
 
 /** Cible décrite pour l'historique : sélecteur durable (absent = ref non traduite), rôle, nom, champ secret. */
@@ -791,8 +849,12 @@ export class PageController {
   /** Onglets d'état (export/import) : session CDP → origine attendue ; leurs documents sont servis vides par Fetch. */
   private readonly scratch = new Map<string, string>();
   /** Cibles auto-attachées pendant la création d'un onglet d'état : targetId → session prête (gardée, relancée). */
-  private readonly attaching = new Map<string, Promise<string>>();
-  private scratchWanted = 0;
+  /** Demandes d'ouverture de fenêtre (window.open, target=_blank) vues dans cet onglet : popups attendus (tabs.ts). */
+  windowOpens = 0;
+  /** Répertoire de téléchargement et moteur Playwright : repris par les onglets ouverts depuis celui-ci. */
+  private downloadDir = '';
+  private engineCfg: { endpoint: string | undefined; module: string | undefined; idleMs: number; isLocal: boolean } = { endpoint: undefined, module: undefined, idleMs: PW_IDLE_MS, isLocal: false };
+  private readonly listener = (e: CdpEvent): void => { void this.onEvent(e); };
   /** sessionStorage importé, en attente du premier document de son origine dans l'onglet. */
   private pendingSession: { origin: string; identifier: string } | undefined;
   /** Viewport émulé de la session (grasp viewport), réappliqué après un agrandissement de capture ; undefined = natif. */
@@ -807,7 +869,8 @@ export class PageController {
     private readonly sessionId: string,
     private readonly targetId: string,
     readonly policy: Readonly<EffectivePolicy>,
-  ) {}
+    readonly hub: TabHub,
+  ) { hub.pages.add(this); }
 
   static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined; resolve?: Resolver | undefined; proxyServer?: string | null | undefined; viewport?: ViewportSpec | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
@@ -815,7 +878,9 @@ export class PageController {
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
     if (targetId === undefined) targetId = (await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' })).targetId;
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-    const pc = new PageController(cdp, sessionId, targetId, policy);
+    const hub = new TabHub();
+    const pc = new PageController(cdp, sessionId, targetId, policy, hub);
+    hub.lead = pc;
     // Liste illisible : la session échoue (jamais un blocage annoncé mais inactif).
     if (policy.blockTrackers) pc.trackers = TrackerList.embedded();
     pc.foreign = opts.newTab === true;
@@ -827,12 +892,101 @@ export class PageController {
     if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     const en = opts.engine ?? {};
     pc.fallback = en.fallback ?? 'none';
-    pc.pw = new PlaywrightEngine({ endpoint: en.devtoolsUrl, targetId, module: en.module, idleMs: en.idleMs ?? PW_IDLE_MS, isLocal: en.isLocal === true });
+    pc.engineCfg = { endpoint: en.devtoolsUrl, module: en.module, idleMs: en.idleMs ?? PW_IDLE_MS, isLocal: en.isLocal === true };
+    pc.pw = new PlaywrightEngine({ ...pc.engineCfg, targetId });
+    pc.downloadDir = opts.downloadDir;
     await pc.init(opts.downloadDir);
     // Viewport de la session (session create --viewport, ou conservé à travers une bascule / un recyclage) :
     // posé avant toute navigation, la première page est rendue à cette taille.
     if (opts.viewport !== undefined) await pc.setViewport(opts.viewport);
     return pc;
+  }
+
+  /**
+   * Onglet de plus (popup, target=_blank, tab new) sur une session déjà attachée, avec les réglages de
+   * `sibling` : même politique, mêmes identifiants HTTP, même liste de traqueurs, mêmes limites. La cible est
+   * normalement EN PAUSE (waitForDebuggerOnStart) : garde et console sont en place avant son premier document.
+   */
+  static async adopt(sibling: PageController, sessionId: string, targetId: string, resume?: () => Promise<unknown>): Promise<PageController> {
+    const pc = new PageController(sibling.cdp, sessionId, targetId, sibling.policy, sibling.hub);
+    pc.trackers = sibling.trackers;
+    pc.foreign = sibling.foreign;
+    pc.capturesDir = sibling.capturesDir;
+    pc.creds = sibling.creds;
+    pc.dns = sibling.dns;
+    pc.netCtx = sibling.netCtx;
+    pc.limits = sibling.limits;
+    pc.fallback = sibling.fallback;
+    pc.testHooks = sibling.testHooks;
+    pc.engineCfg = sibling.engineCfg;
+    pc.pw = new PlaywrightEngine({ ...sibling.engineCfg, targetId });
+    pc.downloadDir = sibling.downloadDir;
+    try {
+      if (resume !== undefined) {
+        // Cible en pause : Page.enable et les autres domaines n'aboutissent qu'après la relance (mesuré, Chrome 150 :
+        // Page.enable reste sans réponse). Le garde, lui, est posé EN PAUSE ; les domaines sont demandés avant la
+        // relance (la cible les traite dans l'ordre, avant son premier document), puis attendus.
+        pc.cdp.on('event', pc.listener);
+        await pc.guard(sessionId);
+        const pre = [pc.s('Page.enable'), pc.s('DOM.enable'), pc.s('Accessibility.enable'), ...(pc.policy.allowConsole ? [pc.enableConsole(sessionId)] : [])];
+        await resume();
+        await Promise.all(pre);
+      }
+      await pc.init(sibling.downloadDir);
+    } catch (e) { pc.dispose(); throw e; }
+    return pc;
+  }
+
+  /** Cible CDP de l'onglet. */
+  get target(): string { return this.targetId; }
+
+  /** Session CDP de l'onglet. */
+  get session(): string { return this.sessionId; }
+
+  /** Session de cet onglet, d'une de ses iframes hors processus ou d'un de ses onglets d'état. */
+  owns(sessionId: string): boolean { return sessionId === this.sessionId || this.children.has(sessionId) || this.scratch.has(sessionId); }
+
+  /** Ref remise par un snapshot de cet onglet. */
+  knowsRef(ref: string): boolean { return this.knownRefs.has(ref); }
+
+  /** Navigateur partagé (mode attach) : rien n'est imposé aux onglets de l'utilisateur. */
+  get attachedMode(): boolean { return this.foreign; }
+
+  /**
+   * Onglet fermé : plus aucun événement de ses sessions, moteur Playwright déconnecté. Le meneur passe au
+   * suivant ; s'il n'y en a plus (dernier onglet fermé), ce contrôleur reste meneur pour les seuls événements du
+   * navigateur, sans rien posséder : un nouvel onglet doit encore être gardé avant de s'exécuter, puis adopté.
+   */
+  dispose(): void {
+    this.hub.pages.delete(this);
+    void this.pw?.disconnect().catch(() => undefined);
+    if (this.hub.lead === this) {
+      const next = this.hub.pages.values().next().value;
+      if (next === undefined) return;
+      this.hub.lead = next;
+    }
+    this.cdp.off('event', this.listener);
+  }
+
+  /**
+   * Nouvel onglet : attend son premier document (chargé, ou bloqué par le garde), au plus `capMs`. `stable` :
+   * attend ensuite la stabilité du DOM et du réseau, comme `nav` (bascule --follow), au plus stableTimeoutMs.
+   */
+  async opened(capMs: number, stable = false): Promise<{ url: string; title: string; blocked: Blocked | null }> {
+    const end = Date.now() + capMs;
+    while (Date.now() < end && this.blocked === null && !(this.docGen > 0 && !this.loading)) await sleep(25);
+    if (stable && this.blocked === null) await this.waitStable(this.limits.stableTimeoutMs).catch(() => undefined);
+    const loc = await this.location().catch(() => ({ url: '', title: '' }));
+    return { ...loc, blocked: this.blocked };
+  }
+
+  /** Attente de stabilité (DOM et réseau), comme après une action ; plafond stableTimeoutMs. */
+  async stable(): Promise<void> { await this.waitStable(this.limits.stableTimeoutMs).catch(() => undefined); }
+
+  /** Pré-contrôle d'une URL (allowlist, schémas, protection SSRF), sans naviguer : 403 si refusée. */
+  async assertNavigable(url: string): Promise<void> {
+    const v = await checkNavigation(this.ssrfCtx, url, this.dns);
+    if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
   }
 
   // ---------- Moteur Playwright de repli (optionnel, connexion paresseuse) ----------
@@ -1045,7 +1199,8 @@ export class PageController {
   }
 
   private async init(downloadDir: string): Promise<void> {
-    this.cdp.on('event', (e: CdpEvent) => { void this.onEvent(e); });
+    this.cdp.off('event', this.listener);
+    this.cdp.on('event', this.listener);
     await this.s('Page.enable');
     await this.s('DOM.enable');
     await this.s('Accessibility.enable');
@@ -1065,8 +1220,8 @@ export class PageController {
     if (this.foreign) await this.s('Page.setDownloadBehavior', dl).catch(() => undefined);
     else await this.cdp.send('Browser.setDownloadBehavior', dl);
     // Popups (window.open, target=_blank) : attachés en pause, gardés AVANT de s'exécuter.
-    // En mode attach, on ne s'impose pas aux autres onglets de l'utilisateur.
-    if (!this.foreign) await this.cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    // En mode attach, on ne s'impose pas aux autres onglets de l'utilisateur. Une fois par navigateur (meneur).
+    if (!this.foreign && this.hub.lead === this) await this.cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   }
 
   /** Domaines CDP de la console. Pas de tampon de corps réseau : Grasp ne lit jamais les corps. */
@@ -1372,8 +1527,14 @@ export class PageController {
   }
 
   private async onEvent(e: CdpEvent): Promise<void> {
+    // Plusieurs onglets sur une connexion : chaque événement n'est traité que par le contrôleur qui le possède.
+    if (!this.hub.routes(this, e.sessionId)) return;
     try {
       if (e.method === 'Fetch.requestPaused' && e.sessionId !== undefined && this.scratch.has(e.sessionId)) { await this.onScratchPaused(e); return; }
+      if (e.method === 'Fetch.requestPaused' && e.sessionId !== undefined && this.hub.denied.has(e.sessionId)) {
+        await this.cdp.send('Fetch.failRequest', { requestId: e.params.requestId, errorReason: 'BlockedByClient' }, e.sessionId);
+        return;
+      }
       if (e.method === 'Fetch.authRequired') { await this.onAuthRequired(e); return; }
       if (e.method === 'Security.certificateError') { await this.onCertificateError(e); return; }
       if (e.method === 'Fetch.requestPaused') {
@@ -1426,12 +1587,20 @@ export class PageController {
       }
       if (e.method === 'Target.attachedToTarget' && e.sessionId === undefined) {
         const sid: string = e.params.sessionId;
-        const info = e.params.targetInfo as { targetId: string; type: string };
-        if (info.targetId === this.targetId || this.foreign) {
+        const info = e.params.targetInfo as TargetInfo;
+        // Session ouverte par Grasp lui-même (attachToTarget) : son appelant la reprend telle quelle (y compris si
+        // l'événement est traité après que la session a déjà un propriétaire).
+        if (this.hub.claimed.has(info.targetId) || this.hub.ownerOf(sid) !== undefined) return;
+        if (info.targetId === this.targetId || this.foreign || this.hub.ownsTarget(info.targetId)) {
           // Onglets de l'utilisateur (mode attach) : on ne les garde pas, on les laisse vivre.
           if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
           await this.cdp.send('Target.detachFromTarget', { sessionId: sid });
           return;
+        }
+        // Nouvel onglet (popup, target=_blank, tab new), sauf l'onglet d'état en création : adopté comme onglet
+        // pilotable (gardé AVANT de s'exécuter, voir tabs.ts) ; à défaut, gardé seul comme avant.
+        if (info.type === 'page' && this.hub.adopt !== undefined && !(info.openerId === undefined && this.hub.creating === 'scratch')) {
+          if (await this.hub.adopt(sid, info, e.params.waitingForDebugger === true)) return;
         }
         const ready = (async () => {
           if (info.type === 'page' || info.type === 'iframe') await this.guard(sid);
@@ -1439,7 +1608,7 @@ export class PageController {
           return sid;
         })();
         // Onglet d'état en cours de création : il reprend cette session (un seul client Fetch par onglet).
-        if (this.scratchWanted > 0 && info.type === 'page') this.attaching.set(info.targetId, ready);
+        if (this.hub.creating === 'scratch' && info.type === 'page') this.hub.attaching.set(info.targetId, ready);
         await ready;
         return;
       }
@@ -1468,6 +1637,8 @@ export class PageController {
           this.netEnd(e.params.requestId);
           break;
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
+        // Popup ou target=_blank demandé : l'onglet attendu est attaché par le navigateur (tabs.ts le compte).
+        case 'Page.windowOpen': this.windowOpens++; break;
         case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; this.loadStarts++; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
         // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
@@ -2601,6 +2772,11 @@ export class PageController {
     const s = sel.trim();
     if (s === '') throw badRequest('sélecteur vide');
     if (REF_RE.test(s)) {
+      // Refs propres à chaque onglet : une ref remise par un autre onglet n'est jamais cherchée ici (même hash).
+      if (!this.knownRefs.has(s)) {
+        const other = this.hub.refElsewhere?.(s, this);
+        if (other !== undefined) throw notFound(`ref ${s} vient de l'onglet ${other.tab}, pas de l'onglet actif ${other.here} : les refs sont propres à chaque onglet — \`grasp tab ${other.tab}\` pour y agir, ou \`snap\` ici`);
+      }
       const sn = snap ?? await this.snapshot();
       const id = sn.refs.get(s);
       if (id !== undefined) return id;
@@ -3720,27 +3896,30 @@ export class PageController {
    * aucune requête n'atteint le site et aucun script du site ne s'exécute pendant la lecture ou l'écriture.
    */
   private async withScratch<T>(fn: (sid: string) => Promise<T>): Promise<T> {
-    this.scratchWanted++;
     let targetId: string | undefined;
     let sid: string | undefined;
     try {
-      ({ targetId } = await this.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true }));
+      // Création sérialisée avec celle des onglets (tab new) : l'onglet d'état n'est jamais adopté comme onglet.
+      ({ targetId } = await this.hub.creation('scratch', () => this.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true })));
       if (!this.foreign) {
         // Auto-attach du navigateur : la session existe déjà (l'événement précède la réponse) ; on l'attend.
         const end = Date.now() + 2000;
-        while (!this.attaching.has(targetId) && Date.now() < end) await sleep(10);
-        const ready = this.attaching.get(targetId);
+        while (!this.hub.attaching.has(targetId) && Date.now() < end) await sleep(10);
+        const ready = this.hub.attaching.get(targetId);
         if (ready !== undefined) sid = await ready;
       }
-      if (sid === undefined) sid = (await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      if (sid === undefined) {
+        // Mode attach : attachement explicite, réclamé pour que le meneur ne le prenne pas pour un onglet de l'utilisateur.
+        this.hub.claimed.add(targetId);
+        sid = (await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      }
       this.scratch.set(sid, '');
       await this.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sid);
       // Un service worker du site ne doit pas répondre à la place du document vide.
       await this.cdp.send('Network.enable', {}, sid).then(() => this.cdp.send('Network.setBypassServiceWorker', { bypass: true }, sid)).catch(() => undefined);
       return await fn(sid);
     } finally {
-      this.scratchWanted--;
-      if (targetId !== undefined) this.attaching.delete(targetId);
+      if (targetId !== undefined) { this.hub.attaching.delete(targetId); this.hub.claimed.delete(targetId); }
       if (sid !== undefined) this.scratch.delete(sid);
       if (targetId !== undefined) await this.cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
     }
