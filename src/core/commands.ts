@@ -134,7 +134,7 @@ const EXPECT_SUMMARY: Record<ExpectKind, string> = {
   'sel': 'élément visible (CSS) ou présent (ref, text:)',
   'no-sel': 'aucun élément correspondant',
   'value': 'valeur du champ égale (~ : contient)',
-  'no-console-errors': 'aucune erreur console depuis le début du document',
+  'no-console-errors': 'aucune entrée de niveau error depuis le début du document : console, exceptions ET requêtes en échec (4xx/5xx, net::ERR, bloquées par Grasp), comme console --level error',
   'no-form-errors': 'aucun champ invalide ni alerte',
   'request': 'requête réseau vue (« MÉTHODE chemin|url » [statut], 2xx par défaut ; exige allowConsole)',
   'a11y': 'au plus N problèmes relevés par l\'audit d\'accessibilité (grasp a11y), 0 par défaut',
@@ -183,7 +183,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'wait', group: 'Lecture', usage: 'wait [--text T | --sel S | --idle] [--timeout ms]', summary: 'attend un texte, un élément ou une page stable (10000 ms)', options: ['text', 'sel', 'idle', 'timeout'], run: true, mcp: 'wait' },
   { name: 'network', group: 'Lecture', usage: 'network [--since <seq>] [--failed] [--max N] [--type xhr,fetch,…]', summary: 'journal réseau « #seq MÉTHODE url → statut · durée · type » (50 dernières)', options: ['since', 'failed', 'max', 'type'], run: true, mcp: 'network' },
   { name: 'a11y', group: 'Lecture', usage: 'a11y [--scope <ref|css>] [--max N]', summary: 'audit d\'accessibilité (pas WCAG) : une ligne par problème, ref et correction', options: ['scope', 'max'], run: true, mcp: 'a11y' },
-  { name: 'console', group: 'Lecture', usage: 'console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--clear]', summary: 'journal du navigateur, une ligne par entrée (50 dernières)', options: ['level', 'since', 'limit', 'clear'], run: true, mcp: 'console' },
+  { name: 'console', group: 'Lecture', usage: 'console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--clear]', summary: 'journal du navigateur, une ligne par entrée (50 dernières) ; --level error inclut les requêtes en échec (4xx/5xx, net::ERR, bloquées par Grasp)', options: ['level', 'since', 'limit', 'clear'], run: true, mcp: 'console' },
   { name: 'screenshot', group: 'Lecture', usage: 'screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]', summary: 'capture ; sans -o : CHEMIN d\'un fichier 0600 sur stdout', options: ['full', 'refs', 'el', 'quality', 'max-width', 'format'], cliOptions: ['output'], run: true, mcp: 'screenshot' },
   { name: 'pdf', group: 'Lecture', usage: 'pdf [-o f.pdf]', summary: 'PDF de la page', options: [], cliOptions: ['output'] },
   // Actions
@@ -209,17 +209,17 @@ export const COMMANDS: readonly CommandSpec[] = [
   // Sensibles (désactivées par défaut)
   { name: 'eval', group: 'Sensibles', usage: 'eval <expression>', summary: 'évalue du JavaScript dans la page', options: [], run: true, disabledByDefault: 'allowEval' },
   { name: 'cookies', group: 'Sensibles', usage: 'cookies', summary: 'cookies de la session', options: [], run: true, disabledByDefault: 'allowCookies' },
-  { name: 'storage', group: 'Sensibles', usage: 'storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->', summary: 'stockage Web de l\'origine affichée, sans eval', options: [], run: true, disabledByDefault: 'allowCookies',
+  { name: 'storage', group: 'Sensibles', usage: 'storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->', summary: 'stockage Web de l\'origine affichée, sans eval', options: [], run: true, mcp: 'storage', disabledByDefault: 'allowCookies',
     subcommands: [
       { name: 'get', usage: 'storage get local|session <clé>', summary: 'valeur sur stdout (clé absente : code 1)' },
       { name: 'set', usage: 'storage set local|session <clé> <valeur|->', summary: 'écrit (- : valeur lue sur stdin)' },
       { name: 'rm', usage: 'storage rm local|session <clé>', summary: 'supprime la clé' },
     ] },
   { name: 'upload', group: 'Sensibles', usage: 'upload <sél> <fichier>…', summary: 'envoie des fichiers dans un <input type=file>', options: ['engine'], run: true, disabledByDefault: 'allowUpload' },
-  { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON', options: [], disabledByDefault: 'allowCookies',
+  { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON ; dans run : state import <fichier> seulement', options: [], run: true, mcp: 'state_import', disabledByDefault: 'allowCookies',
     subcommands: [
-      { name: 'export', usage: 'state export [fichier|-] [--origin http://hôte:port,…]', summary: 'exporte (fichier 0600 ; sans fichier : chemin sur stdout)', options: ['origin'] },
-      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine)' },
+      { name: 'export', usage: 'state export [fichier|-] [--origin http://hôte:port,…]', summary: 'exporte (fichier 0600 ; sans fichier : chemin sur stdout) ; commande isolée, pas dans run', options: ['origin'] },
+      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire courant, ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
     ] },
   // Configuration
   { name: 'security', group: 'Configuration', usage: 'security', summary: 'politique telle que le garde l\'applique', options: [] },

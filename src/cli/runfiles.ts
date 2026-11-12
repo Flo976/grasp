@@ -1,7 +1,9 @@
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { writePrivateFile } from '../core/perms.js';
-import { compileScript, type RunResult } from '../control/run.js';
+import { compileScript, type RunImport, type RunResult } from '../control/run.js';
+import { RUN_MAX_BYTES, STATE_MAX_BYTES } from '../core/state.js';
+import { homedir } from 'node:os';
 
 /**
  * `screenshot -o <fichier>` dans `grasp run` : le serveur renvoie l'image (base64) dans le résultat de l'étape,
@@ -98,4 +100,58 @@ export function writeRunShots(r: RunResult, outDir: string): void {
       if (r.report !== undefined) r.report.ok = false;
     }
   }
+}
+
+/**
+ * Chemin d'un fichier cité par un script : aucun shell ne passe sur une ligne de `grasp run`, donc `~` en tête
+ * (`~` seul ou `~/…`) est développé ici, comme le shell le fait pour la commande isolée ; le reste est relatif au
+ * répertoire courant, ou absolu. Ni `~utilisateur` ni les variables d'environnement ($HOME) ne sont développés.
+ */
+export function runFilePath(f: string, cwd = process.cwd(), home = homedir()): string {
+  if (f === '~' || f.startsWith('~/')) return join(home, f.slice(1));
+  return resolve(cwd, f);
+}
+
+/**
+ * `state import <fichier>` dans `grasp run` : la CLI lit et analyse chaque fichier AVANT d'envoyer le script (le
+ * serveur ne lit jamais un chemin venu d'un script, comme il n'écrit jamais celui d'un `screenshot -o`). Chemin
+ * relatif au répertoire courant, absolu, ou en `~/` (voir runFilePath). Fichier illisible, JSON invalide ou trop
+ * gros : refus, aucune commande exécutée. Script invalide : rien à lire ici, le serveur rend l'erreur d'analyse.
+ * `max` : total des fichiers (paramètre pour les tests).
+ */
+export function readRunImports(script: string, cwd = process.cwd(), max = STATE_MAX_BYTES, home = homedir()): Record<string, RunImport> {
+  let steps: ReturnType<typeof compileScript>;
+  try { steps = compileScript(script, { files: true }); } catch { return {}; }
+  const out: Record<string, RunImport> = {};
+  let total = 0;
+  for (const s of steps) {
+    const f = s.rq.loadFrom;
+    if (f === undefined || Object.hasOwn(out, f)) continue;
+    const path = runFilePath(f, cwd, home);
+    const where = `ligne ${s.src.line} : state import ${f}`;
+    let raw: string;
+    try {
+      const st = statSync(path);
+      if (!st.isFile()) throw new Error('n\'est pas un fichier');
+      if (st.size > max) throw new Error(`${st.size} octets (${max} au plus)`);
+      raw = readFileSync(path, 'utf8');
+    } catch (e) { throw new Error(`${where} : lecture impossible : ${(e as Error).message}`); }
+    total += Buffer.byteLength(raw);
+    if (total > max) throw new Error(`${where} : fichiers d'état trop gros pour un run (${max} octets au plus en tout)`);
+    let state: unknown;
+    // Message sans extrait du fichier : il peut contenir des jetons de session.
+    try { state = JSON.parse(raw); } catch { throw new Error(`${where} : JSON invalide (fichier d'état grasp-state ou storageState Playwright attendu)`); }
+    out[f] = { path, state };
+  }
+  return out;
+}
+
+/**
+ * Corps complet de `POST /run` (script, fichiers de `state import`, enveloppe JSON), mesuré AVANT l'envoi : au-delà
+ * de la limite du serveur, refus clair côté CLI plutôt qu'un 413 « corps de requête trop gros ». `max` : paramètre
+ * pour les tests.
+ */
+export function checkRunBody(body: Record<string, unknown>, max = RUN_MAX_BYTES): void {
+  const n = Buffer.byteLength(JSON.stringify(body));
+  if (n > max) throw new Error(`run trop gros : ${n} octets à envoyer (${max} au plus, script et fichiers de state import compris)`);
 }

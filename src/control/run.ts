@@ -65,6 +65,8 @@ export function compileScript(script: string, opts: { files?: boolean } = {}): A
   const shots = steps.filter((s) => s.rq.saveAs !== undefined);
   if (shots.length > 0 && opts.files !== true) throw new GraspError(400, `ligne ${shots[0]!.src.line} : screenshot -o n'est disponible que depuis la CLI \`grasp run\` (le fichier est écrit par le client, sous --out-dir) ; sans -o, le chemin de la capture (0600) est renvoyé`);
   if (shots.length > MAX_RUN_SHOT_FILES) throw new GraspError(400, `${shots.length} captures nommées (screenshot -o) dans le script : ${MAX_RUN_SHOT_FILES} au plus par run (chaque image transite dans la réponse) — sans -o, seul le chemin est renvoyé`);
+  const loads = steps.filter((s) => s.rq.loadFrom !== undefined);
+  if (loads.length > 0 && opts.files !== true) throw new GraspError(400, `ligne ${loads[0]!.src.line} : state import <fichier> n'est disponible dans un script que depuis la CLI \`grasp run\` (le fichier est lu par le client, jamais par le serveur) ; API : POST /state/import {state} ; MCP : outil state_import`);
   const seen = new Map<string, number>();
   for (const s of shots) {
     const k = s.rq.saveAs!.replace(/\/+/g, '/').replace(/^(\.\/)+/, '');
@@ -73,6 +75,28 @@ export function compileScript(script: string, opts: { files?: boolean } = {}): A
     seen.set(k, s.src.line);
   }
   return steps;
+}
+
+/** Contenu d'un fichier de `state import`, tel que la CLI `grasp run` l'a lu (chemin absolu pour l'historique). */
+export interface RunImport { path: string; state: unknown }
+
+/**
+ * `state import <fichier>` : le contenu lu par la CLI (`imports`, clé = fichier tel qu'écrit dans le script) devient
+ * le corps de l'étape. Fichier cité sans contenu, ou contenu transmis pour un fichier que le script ne cite pas :
+ * refus AVANT toute exécution (jamais d'étape partie avec un état vide).
+ */
+export function attachImports(steps: Array<{ src: ScriptLine; rq: StepRequest }>, imports: unknown): void {
+  const loads = steps.filter((s) => s.rq.loadFrom !== undefined);
+  if (imports !== undefined && (typeof imports !== 'object' || imports === null || Array.isArray(imports))) throw new GraspError(400, 'champ « imports » : objet { fichier: {path, state} } attendu');
+  const given = (imports ?? {}) as Record<string, unknown>;
+  for (const s of loads) {
+    const f = s.rq.loadFrom!;
+    const imp = Object.hasOwn(given, f) ? given[f] as Partial<RunImport> | null : undefined;
+    if (imp === undefined || imp === null || typeof imp !== 'object' || imp.state === undefined) throw new GraspError(400, `ligne ${s.src.line} : state import ${f} : contenu du fichier non transmis (lu par la CLI grasp run, champ imports)`);
+    s.rq.body = { state: imp.state, ...(typeof imp.path === 'string' && imp.path !== '' ? { file: imp.path } : {}) };
+  }
+  const cited = new Set(loads.map((s) => s.rq.loadFrom!));
+  for (const k of Object.keys(given)) if (!cited.has(k)) throw new GraspError(400, `imports : « ${k} » n'est cité par aucune ligne state import du script`);
 }
 
 function compileLines(script: string): Array<{ src: ScriptLine; rq: StepRequest }> {
@@ -157,6 +181,13 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
 }
 
 const errMsg = (e: unknown) => (e as Error).message;
+
+/** Bilan d'un `state import` (mêmes mots que la commande isolée, sur stderr). */
+export function stateImportNotes(j: Record<string, unknown>): string[] {
+  const ss = j.sessionStorage === 'applied' ? 'appliqué à l\'onglet' : j.sessionStorage === 'pending' ? 'appliqué au premier document de son origine' : 'aucun';
+  const skipped = Array.isArray(j.skipped) ? j.skipped.map(String) : [];
+  return [`état importé : ${Number(j.cookies ?? 0)} cookie(s), localStorage de ${Number(j.origins ?? 0)} origine(s) (${Number(j.localStorageKeys ?? 0)} clé(s)), sessionStorage : ${ss}`, ...skipped.map((x) => `AVERTISSEMENT : non importé : ${x}`)];
+}
 
 async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, t0: number, startSeq: number | undefined, consoleOff: string | undefined): Promise<RunReport> {
   let con: RunReport['console'];
@@ -287,6 +318,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       return { output: wrapTagged(formatTab(j as unknown as TabInfo).trim(), j.boundary as BoundaryTag | undefined, 'onglets'), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
     }
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
+    case 'state': return { detail: stateImportNotes(j).join(' ; ') };
     case 'profile': {
       const p = j as { unchanged?: boolean; profile?: string; previous?: string | null };
       return { detail: p.unchanged === true ? `déjà sur le profil « ${p.profile} »` : `profil ${p.previous ?? '(éphémère)'} → ${p.profile} ; navigateur relancé, la page repart de about:blank` };

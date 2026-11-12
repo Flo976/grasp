@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
+import { RUN_MAX_BYTES } from '../../src/core/state.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
 import { startTestSite } from '../helpers/testsite.js';
 import { resolvePaths } from '../../src/core/paths.js';
@@ -28,7 +29,11 @@ test('storage set|get|rm local|session : origine affichée, sans allowEval, vér
     const blank = await runCli(env, ['storage', 'set', 'local', 'theme', 'clair']);
     assert.equal(blank.code, 1);
     assert.match(blank.stderr, /^ERROR: storage: .*about:blank.*naviguez d'abord/m);
-    assert.equal((await runCli(env, ['eval', '1'])).code, 1, 'eval reste désactivé');
+    const ev = await runCli(env, ['eval', '1']);
+    assert.equal(ev.code, 1, 'eval reste désactivé');
+    // Le refus oriente vers les alternatives sans eval, et ne dicte jamais la commande qui relâche la politique.
+    assert.match(ev.stderr, /^ERROR: eval: eval est désactivé .*storage get\|set.*expect text\|value\|sel\|a11y.*find et snap.*network.*décision de l'utilisateur humain, pas de l'agent/m);
+    assert.doesNotMatch(ev.stderr, /config set/);
 
     await ok(['nav', `${site.url}/compte`]);
     assert.match((await ok(['text'])).stdout, /Thème : aucun[\s\S]*Brouillon : aucun/);
@@ -84,6 +89,12 @@ test('storage : refusé tant que allowCookies est désactivé (défaut), message
       assert.equal(r.code, 1);
       assert.match(r.stderr, /allowCookies/);
     }
+    // state import dans run : même garde-fou qu'en commande isolée (403 qui nomme la clé), étape KO, rien écrit.
+    const file = join(t.root, 'etat.json');
+    writeFileSync(file, JSON.stringify({ format: 'grasp-state', version: 1, origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: 'interdit' }] }] }), { mode: 0o600 });
+    const run = await runCli(env, ['run'], `state import ${file}\n`);
+    assert.equal(run.code, 1);
+    assert.match(run.stdout, /\[1\] state import .* → ERROR: .*allowCookies/);
     assert.equal((await srv.api('POST', '/storage', { op: 'set', area: 'local', key: 'k', value: 'v' }, { 'x-grasp-session': id })).status, 403);
     assert.match((await runCli(env, ['text'])).stdout, /Thème : aucun/, 'rien écrit');
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
@@ -107,5 +118,90 @@ test('recette : session factice posée par state import sans allowEval (exemple 
     assert.equal(imp.code, 0, imp.stderr);
     assert.equal((await runCli(env, ['nav', `${site.url}/compte`])).code, 0);
     assert.match((await runCli(env, ['text'])).stdout, /Thème : factice[\s\S]*Brouillon : factice/);
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});
+
+test('run : ligne state import <fichier> (lu par la CLI) — session factice posée avant navigation, history --as-run la rejoue', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  writeConfig(t.env, { allowCookies: true, allowedDomains: ['127.0.0.1'] });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const file = join(t.root, 'etat-recette.json');
+    writeFileSync(file, JSON.stringify({
+      format: 'grasp-state', version: 1,
+      origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: 'factice' }] }, { origin: 'http://hors-liste.exemple', localStorage: [{ name: 'k', value: 'v' }] }],
+      sessionStorage: { origin: site.url, items: [{ name: 'brouillon', value: 'factice' }] },
+    }), { mode: 0o600 });
+    // Chemin relatif au répertoire courant de la CLI (celui des tests), comme la commande isolée.
+    const rel = relative(process.cwd(), file);
+    const r = await runCli(env, ['run'], `state import ${rel}
+nav ${site.url}/compte
+expect text "Thème : factice"
+expect text "Brouillon : factice"
+`);
+    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /^\[1\] state import .* → OK$/m);
+    assert.match(r.stderr, /\[1\] note: état importé : 0 cookie\(s\), localStorage de 1 origine\(s\) \(1 clé\(s\)\), sessionStorage : appliqué au premier document de son origine ; AVERTISSEMENT : non importé : .*hors-liste\.exemple/);
+    assert.match(r.stdout, /== recette : OK/);
+    // Rejouable : la ligne garde le fichier (chemin absolu), jamais son contenu.
+    const h = await runCli(env, ['history', '--as-run']);
+    assert.equal(h.code, 0, h.stderr);
+    assert.ok(h.stdout.split('\n').includes(`state import ${file}`), h.stdout);
+    assert.doesNotMatch(h.stdout, /hors-liste|localStorage|grasp-state/, 'contenu du fichier jamais recopié');
+    // Commande isolée : même ligne rejouable ; reçu sur stdin : commenté, raison dite.
+    await runCli(env, ['history', '--clear']);
+    // Chemin relatif : résolu par la CLI, l'historique garde le chemin absolu (rejouable depuis un autre répertoire).
+    assert.equal((await runCli(env, ['state', 'import', rel])).code, 0);
+    assert.equal((await runCli(env, ['state', 'import', '-'], JSON.stringify({ format: 'grasp-state', version: 1 }))).code, 0);
+    const h2 = (await runCli(env, ['history', '--as-run'])).stdout;
+    assert.match(h2, new RegExp(`^state import ${file.replace(/[.]/g, '\\.')}$`, 'm'));
+    assert.match(h2, /^# state import <fichier> +# #\d+ : contenu reçu sans fichier/m);
+    assert.ok(!h2.split('\n').includes(`state import ${rel}`), h2);
+
+    // ~/ en tête développé par la CLI (aucun shell ne passe sur une ligne de run) : HOME du test = t.root.
+    await runCli(env, ['history', '--clear']);
+    const tilde = await runCli(env, ['run', '--no-report'], 'state import ~/etat-recette.json\n');
+    assert.equal(tilde.code, 0, `${tilde.stdout}\n${tilde.stderr}`);
+    assert.ok((await runCli(env, ['history', '--as-run'])).stdout.split('\n').includes(`state import ${file}`));
+
+    // Fichier d'état de plus de 4 Mo (limite par défaut d'un corps) : le corps du run le porte jusqu'au bout.
+    const big = join(t.root, 'etat-gros.json');
+    writeFileSync(big, JSON.stringify({
+      format: 'grasp-state', version: 1,
+      origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: 'gros' }] }, { origin: 'http://hors-liste.exemple', localStorage: [{ name: 'k', value: 'x'.repeat(5 * 1024 * 1024) }] }],
+    }), { mode: 0o600 });
+    const g = await runCli(env, ['run'], `state import ${big}\nnav ${site.url}/compte\nexpect text "Thème : gros"\n`);
+    assert.equal(g.code, 0, `${g.stdout}\n${g.stderr}`);
+    assert.match(g.stdout, /== recette : OK/);
+
+    // Fichier illisible ou JSON invalide : refus AVANT toute exécution (la navigation de la ligne 1 n'a pas lieu).
+    await runCli(env, ['history', '--clear']);
+    const absent = await runCli(env, ['run'], `nav ${site.url}/\nstate import ${join(t.root, 'absent.json')}\n`);
+    assert.equal(absent.code, 1);
+    assert.match(absent.stderr, /ligne 2 : state import .*absent\.json : lecture impossible.* — aucune commande exécutée/);
+    writeFileSync(join(t.root, 'casse.json'), 'jeton=SECRET-42');
+    const bad = await runCli(env, ['run'], `nav ${site.url}/\nstate import ${join(t.root, 'casse.json')}\n`);
+    assert.equal(bad.code, 1);
+    assert.match(bad.stderr, /JSON invalide/);
+    assert.doesNotMatch(bad.stderr, /SECRET/, 'aucun extrait du fichier');
+    assert.doesNotMatch((await runCli(env, ['history'])).stdout, /nav /, 'rien exécuté');
+    // Corps du run au-delà de la limite du serveur (ici un script énorme) : refus clair de la CLI avant l'envoi,
+    // jamais le 413 « corps de requête trop gros » du serveur.
+    const hugeScript = join(t.root, 'enorme.grasp');
+    writeFileSync(hugeScript, `nav ${site.url}/\n# ${'x'.repeat(RUN_MAX_BYTES)}\n`);
+    const huge = await runCli(env, ['run', hugeScript]);
+    assert.equal(huge.code, 1);
+    assert.match(huge.stderr, /^ERROR: run: run trop gros : \d+ octets à envoyer \(\d+ au plus, script et fichiers de state import compris\) — aucune commande exécutée$/m);
+    assert.doesNotMatch((await runCli(env, ['history'])).stdout, /nav /, 'rien exécuté');
+    // Formes refusées à l'analyse.
+    assert.match((await runCli(env, ['run'], 'state import -\n')).stderr, /stdin n'est pas disponible dans run/);
+    assert.match((await runCli(env, ['run'], 'state export\n')).stderr, /state export n'est pas disponible dans run/);
+    // API sans client CLI : la ligne est refusée et oriente vers POST /state/import ou l'outil MCP.
+    const api = await srv.api('POST', '/run', { script: `state import ${file}` }, { 'x-grasp-session': id });
+    assert.equal(api.status, 400);
+    assert.match(api.text(), /POST \/state\/import.*state_import/);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });

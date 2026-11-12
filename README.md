@@ -115,7 +115,8 @@ limite la lecture à une zone.
   vérifier qu'un bouton a vraiment appelé l'API ; jamais d'en-têtes ni de corps ([détails](#journal-réseau)).
 - 💬 **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action ; défaut sûr (`confirm` et `prompt`
   refusés), tout dialogue rapporté ([détails](#dialogues-javascript---dialog)).
-- 🧑‍💻 **Session factice sans `eval`** : `grasp storage set local <clé> <valeur>` ou `state import`
+- 🧑‍💻 **Session factice sans `eval`** : `grasp storage set local <clé> <valeur>` ou `state import`, en commande
+  isolée, sur une ligne de `grasp run` ou par les outils MCP `storage` et `state_import`
   ([détails](#session-factice-sans-alloweval)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
 - 🚫 **Traqueurs bloqués** (liste de Peter Lowe, ~3 500 domaines) : pages plus légères, attente plus courte
@@ -284,6 +285,10 @@ grasp state export - | ssh conteneur 'grasp state import -'
 grasp session create --profile cible && grasp state import ~/etat.json   # avant toute navigation
 ```
 
+`state import` existe aussi sur une **ligne de `grasp run`** (`state import <fichier>`, fichier lu par la CLI :
+voir [Session factice](#session-factice-sans-alloweval)) et en **outil MCP** `state_import` (le JSON en argument).
+`state export` reste une commande isolée (elle écrit un fichier sensible côté client).
+
 **Format** (`format: "grasp-state"`, `version: 1`), sur-ensemble du `storageState` de Playwright — un fichier
 Playwright (sans `format`) s'importe tel quel :
 
@@ -302,7 +307,8 @@ Playwright (sans `format`) s'importe tel quel :
 hasCrossSiteAncestor}`) présent pour un cookie partitionné (CHIPS). Une `version` inconnue est refusée (400),
 jamais devinée ; un fichier invalide est refusé en entier, avant d'appliquer quoi que ce soit.
 
-- **Politique** : `allowCookies=false` (défaut) → 403 `… activez la clé allowCookies …`, aucun fichier écrit.
+- **Politique** : `allowCookies=false` (défaut) → 403 `… désactivés par la politique de Grasp (clé allowCookies). La
+  changer est une décision de l'utilisateur humain, pas de l'agent …`, aucun fichier écrit.
   **Allowlist** : seuls les cookies et origines qu'elle couvre sont exportés ou importés ; le reste est écarté
   et **listé** sur stderr (`note: N cookie(s) hors allowlist non exporté(s)`, `AVERTISSEMENT : non importé : …`).
   Un cookie de domaine `.exemple.com` relève de `*.exemple.com`. Cookies déjà expirés : non importés, signalés.
@@ -678,7 +684,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
 | `storage get\|rm local\|session <clé>`, `storage set local\|session <clé> <valeur\|->` | Stockage Web de l'origine affichée, sans `eval`. Exige `allowCookies`. Voir [Session factice](#session-factice-sans-alloweval). |
 | `tabs`, `tab <id> \| new [url] \| close [id]` | Onglets de la session : popups et `target=_blank` pilotables, `--follow` sur une action. Voir [Onglets et popups](#onglets-et-popups). |
-| `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
+| `eval`, `cookies`, `upload` | **Désactivés par défaut** (403 ; refus d'`eval` : alternatives sans eval, jamais la commande qui l'active). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 | `help [commande] [--json]`, `skill` | Aide : fiche d'une commande, description machine (`--json`), mode d'emploi pour un agent IA. Voir [Aide pour agents](#aide-pour-agents--grasp-skill-et-grasp-help---json). |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -1094,7 +1100,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
   **même syntaxe que la CLI** : `nav back forward reload scroll snap find text a11y click fill select check press
-  wait expect eval console network screenshot cookies storage upload profile viewport`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  wait expect eval console network screenshot cookies storage state upload profile viewport tabs tab`, avec leurs
+  options (`state` : `state import <fichier>` seulement, voir ci-dessous). Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
@@ -1129,6 +1136,20 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   Reste l'échec tardif (répertoire supprimé ou disque plein pendant le run) : l'étape de capture passe en
   `ERROR: capture non écrite : …` et le run en échec, mais les étapes suivantes **ont déjà été exécutées**
   (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
+- **`state import <fichier>`** : comme `screenshot -o` en écriture, le fichier est **lu par la CLI**, jamais par
+  le serveur : chemin relatif au répertoire courant (ou absolu), comme la commande isolée ; `-` (stdin) refusé
+  dans un run. **Aucun shell ne passe sur une ligne de run** : la CLI développe elle-même `~` en tête (`~` seul ou
+  `state import ~/etat.json`), mais ni `~utilisateur` ni les variables d'environnement (`$HOME/etat.json` est pris
+  à la lettre, relatif au répertoire courant). Tous les fichiers sont lus et analysés **avant l'envoi** :
+  illisible, JSON invalide (message sans extrait du fichier, qui peut contenir des jetons) ou plus de 64 Mo en
+  tout → `ERROR: run: ligne N : state import … — aucune commande exécutée`. Le corps complet du run (script,
+  fichiers, enveloppe JSON) est mesuré lui aussi avant l'envoi : au-delà de 68 Mo, limite du serveur pour
+  `POST /run`, `ERROR: run: run trop gros : … — aucune commande exécutée` (jamais un 413 du serveur). Le contenu part dans le corps du run (`imports`) et l'étape passe par la
+  route `/state/import`, avec **les mêmes garde-fous** qu'en commande isolée (`allowCookies`, allowlist, origines
+  écartées listées dans la note de l'étape). Aucune contrainte d'ordre n'est imposée (la commande isolée n'en a
+  pas) ; placée **avant le premier `nav`**, elle pose le localStorage sans requête au site et le sessionStorage au
+  premier document de son origine. Via l'API HTTP sans `files`/`imports`, ou l'outil MCP `run`, la ligne est
+  refusée (400) avec la voie à prendre : `POST /state/import {state}`, ou l'outil MCP `state_import`.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
@@ -1164,7 +1185,7 @@ FIN
 | `expect title [~] <titre> [--regex]` | idem pour `document.title` |
 | `expect sel <sél>` / `expect no-sel <sél>` | un élément CSS **visible** correspond (ref, `text:` : présent dans le snapshot), comme `wait --sel` / aucun |
 | `expect value <sél> [~] <valeur> [--regex]` | la valeur du champ (`value` ; `<select>` : valeur de l'option choisie ; éditeur riche : son texte) est égale, etc. |
-| `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` (console, exception, requête 4xx/5xx ou `net::ERR`, CSP…) depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
+| `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` — les mêmes que `console --level error` : console, exception, CSP… **et requêtes en échec** (4xx/5xx, `net::ERR`, CORS, bloquées par Grasp) — depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
 | `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
 | `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant ou de la dernière action (le plus ancien des deux), a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
 | `expect a11y [--max N] [--scope <sél>]` | l'[audit d'accessibilité](#audit-daccessibilité) relève au plus N problèmes (0 par défaut) |
@@ -1274,7 +1295,19 @@ déjà l'export et l'import de l'[état](#état--export-et-import), mêmes donn�
    ```
 
    L'origine doit être dans l'allowlist (sinon écartée et signalée). Le fichier peut contenir un vrai jeton :
-   0600, comme un export.
+   0600, comme un export. **Dans un run**, même ligne (fichier lu par la CLI avant l'envoi, relatif au répertoire
+   courant) :
+
+   ```bash
+   grasp run <<'FIN'
+   state import session-factice.json
+   nav http://127.0.0.1:8080/compte
+   expect text "Connecté"
+   FIN
+   ```
+
+   **Par MCP** : outil `state_import`, avec le JSON lui-même en argument `state` (pas un chemin : l'outil ne
+   donne pas à l'agent MCP de lecture de fichiers).
 
 2. **`grasp storage`, page déjà ouverte sur l'origine** — utile au milieu d'un `grasp run` :
 
@@ -1300,7 +1333,8 @@ déjà l'export et l'import de l'[état](#état--export-et-import), mêmes donn�
    troncature. **Choix de la clé de politique** : `allowCookies` plutôt qu'une clé dédiée, parce que ce sont
    exactement les données (jetons de session) qu'`allowCookies` expose déjà par `state export`/`import` ; une
    quatrième clé n'ajouterait aucune protection et une incohérence possible. L'API HTTP : `POST /storage`
-   `{op, area, key, value?}` ; pas d'outil MCP dédié (la ligne passe par l'outil `run`).
+   `{op, area, key, value?}` ; outil MCP `storage` (`op` get|set|rm, `area` local|session, `key`, `value` avec
+   set), mêmes contrôles (allowCookies, origine affichée dans l'allowlist, code fixe) ; clé absente → `isError`.
 
 ### Historique et rejeu : grasp history
 
@@ -1365,7 +1399,10 @@ expect text 'Liste de courses'
   - **commandes en échec omises**, citées en tête (une action refusée n'a pas eu l'effet voulu) ;
   - options d'affichage retirées des actions (`--snap-diff`, `--max`, `--scope`, `--console`, `--shot-on-error`) ;
     `--engine`, `--delay`, `--uncheck` gardées ;
-  - `state import` (hors `run`) laissé en commentaire ; `eval` gardé (il faudra `allowEval` au rejeu) ;
+  - `state import` rejoué tel quel (`state import /chemin/absolu.json`) quand la CLI a donné le fichier (commande
+    isolée ou ligne de run) : l'historique ne garde que le **chemin**, jamais le contenu, et le fichier doit encore
+    exister au rejeu ; reçu sans fichier (stdin, API, MCP `state_import`) : `# state import <fichier>   # #N :
+    contenu reçu sans fichier…`, à compléter. `eval` gardé (il faudra `allowEval` au rejeu) ;
   - **une commande par ligne** : `run` découpe le script sur les sauts de ligne avant toute citation. Une commande
     dont un argument contient `\n` ou `\r` (`fill` d'un textarea sur plusieurs lignes, `eval` sur plusieurs
     lignes) est donc **commentée** (`# … : valeur sur plusieurs lignes`, `⏎` à la place des sauts), jamais écrite
@@ -1613,13 +1650,17 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `history` | `since`, `limit`, `asRun`, `expect` | `history [--as-run [--expect]]` ([rejeu](#historique-et-rejeu--grasp-history)) |
 | `screenshot` | `full`, `el`, `format`, `quality`, `maxWidth`, `refs`, `image` | `screenshot` sans `-o` |
 | `run` | `script`, `continue`, `report` | `grasp run [--report\|--no-report]` ; lignes `expect` et [rapport de recette](#recette--expect-et-rapport-de-run) joint d'office |
+| `storage` | `op` (`get` \| `set` \| `rm`), `area` (`local` \| `session`), `key`, `value` (avec `set`) | `storage get\|set\|rm local\|session <clé> [valeur]` ([session factice](#session-factice-sans-alloweval)) |
+| `state_import` | `state` (le JSON lui-même, pas un chemin) | `state import <fichier>` ([état](#état--export-et-import)) |
 | `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
 
 Options d'action : `snapDiff`, `max`, `scope`, `console`, `network`, `shotOnError`, `dialog`, `engine` (`native` \|
 `playwright` ; pas pour `nav`, `back`, `forward`, `reload`, `scroll`), `follow` (bascule sur le popup que l'action
 ouvre ; pas sur `nav`, `back`, `forward`, `reload`, `scroll`).
-`eval`, `cookies`, `upload` et `storage` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
-politique (désactivés par défaut).
+`eval`, `cookies` et `upload` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
+politique (désactivés par défaut). `storage` et `state_import` en sont, pour qu'un agent en `grasp mcp` puisse poser
+une session factice **sans eval** ; un `state import <fichier>` dans l'outil `run` est refusé (le serveur ne lit
+pas de fichier) avec un message qui renvoie à `state_import`.
 
 - **Résultats** : le texte que la CLI écrirait, notes comprises (`note: …` en tête, puisqu'il n'y a pas de
   stderr côté agent) : `OK` ou le diff, lignes console, `seq courant`. Les notes du serveur portées par l'en-tête
@@ -1904,7 +1945,14 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
   tampon** fusionnés `×N` (la fusion précède le filtre `--level` : deux erreurs séparées par une info ne sont
   pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error ; les repères
   de navigation sont de niveau `info` et suivent le filtre comme le reste : présents sans `--level` et en
-  `info`/`debug`, absents en `warn` et `error` (`--level error` ne rend que des erreurs). Une URL opaque
+  `info`/`debug`, absents en `warn` et `error` (`--level error` ne rend que des erreurs). **`--level error` inclut
+  les requêtes en échec** : source `network` (réponse ≥ 400, `net::ERR_…`, CORS) et source `grasp` (requête
+  bloquée par le garde, certificat refusé, authentification HTTP rejetée) sont de niveau `error`. N'y sont pas : les
+  requêtes annulées (navigation qui part, `AbortController` : jamais journalisées) et les traqueurs bloqués
+  (niveau `info`). **`expect no-console-errors` compte exactement ces mêmes entrées** (filtre `level error`, depuis
+  le début du document) : une image en 404 ou un appel bloqué par l'allowlist le fait échouer — `--ignore
+  'favicon|/api/stats'` pour en écarter. Pas de contradiction entre les deux : seul le **rapport de recette**
+  les range en deux rubriques (`console :` et `requêtes en échec :`), sans changer ce qui est compté. Une URL opaque
   s'affiche telle quelle (`navigation → about:blank`). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
   écartées et les entrées perdues par le tampon sont signalées sur stderr. `--clear` vide le tampon
   après lecture (le `seq` continue). Un `--since` **supérieur au seq courant** (curseur d'un tampon recréé :
@@ -2222,7 +2270,8 @@ POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'as
 GET  /inventory → {url, status, contentType, kind, links[], linksOmitted, locs[], locsOmitted}   (statut, liens internes, <loc> d'un sitemap)
 POST /check-links {urls[] (50 au plus)} → {results: [{url, status? | redirect? | error? | skipped?}]}   (même origine que la page, HEAD)
 GET  /tabs → {tabs}   POST /tabs/select {id}   POST /tabs/new {url?}   POST /tabs/close {id?}   (toute action : follow?)
-POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
+POST /run {script, continue?, report?, files?, imports?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
+     imports : {"<fichier tel qu'écrit dans le script>": {path, state}} — contenu des lignes state import, lu par le client (exige files)
 POST /fill {target, secret: "NOM", …}   valeur prise dans le magasin (404 si inconnu, 403 hors de ses domaines)
 GET  /secrets → {file, exists, secrets: [{name, domains}], error?}   (jamais les valeurs)
 GET  /history?since=&limit=  → {entries[], text, seq, omitted, lost, max}   DELETE /history
@@ -2257,7 +2306,15 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 - Token API exigé (32 octets aléatoires, `0600`, comparaison à temps constant).
 - Dialogues JavaScript : `confirm()` et `prompt()` **refusés** ; les accepter se demande action par action
   (`--dialog`, voir [Dialogues JavaScript](#dialogues-javascript---dialog)).
-- `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Console : lecture **autorisée** (voir
+- `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Le refus d'`eval` (403)
+  **ne dicte pas** la commande qui relâcherait la politique : il oriente vers ce qui se fait sans eval (`storage
+  get|set`, `expect text|value|sel|a11y`, `find`, `snap`, `network`, `state import`) et présente `allowEval` comme
+  une décision de l'utilisateur humain, pas de l'agent (un message « config set allowEval true pour l'autoriser »
+  poussait un agent à contourner son skill — retour du deuxième essai réel). Même texte en CLI, dans `run` et par MCP.
+  Les refus des autres clés (`allowCookies` pour `storage`, `state`, `cookies` ; `allowUpload` ; `allowConsole`
+  pour `console` et `network`) suivent la même règle : la clé est nommée, sa valeur présentée comme une décision
+  de l'utilisateur humain, jamais comme une commande `config set` à lancer — sinon l'agent qui suit le refus
+  d'`eval` vers `storage` ou `state import` retomberait sur l'incitation. Console : lecture **autorisée** (voir
   [Console](#console-du-navigateur) pour la décision et ses garanties), et avec elle le [journal
   réseau](#journal-réseau), sans corps ni en-têtes, sans option pour les afficher.
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**

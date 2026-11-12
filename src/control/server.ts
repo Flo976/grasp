@@ -18,7 +18,7 @@ import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
 import { reapStaleInstances } from './stale.js';
-import { compileScript, runScript, type RunResult } from './run.js';
+import { attachImports, compileScript, runScript, type RunResult } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
@@ -31,7 +31,7 @@ const WINDOWS_MEMORY_EVERY_MS = 30_000;
 function minutes(m: number): string {
   return m >= 1 ? `${Number.isInteger(m) ? m : m.toFixed(1)} min` : `${Math.round(m * 60)} s`;
 }
-import { STATE_MAX_BYTES } from '../core/state.js';
+import { RUN_MAX_BYTES, STATE_MAX_BYTES } from '../core/state.js';
 import { describeViewport, viewportSpecOf, type ViewportSpec } from '../core/viewport.js';
 import { SecretStore } from '../core/secrets.js';
 import { redactResponse, withSecret } from './redact.js';
@@ -877,8 +877,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       }
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
-        const body = await readJson(req);
+        // Corps élargi : il peut porter le contenu des fichiers de `state import` (imports), plus le script.
+        const body = await readJson(req, RUN_MAX_BYTES);
         const steps = compileScript(str(body, 'script'), { files: optBool(body, 'files') === true });
+        attachImports(steps, body.imports);
         const s = pickSession(req, url);
         // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
         // lesquelles ont été exécutées — l'appelant, lui, ne verra jamais la réponse.

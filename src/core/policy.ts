@@ -5,6 +5,27 @@ import { classifyIp, isLocalhostName, systemResolver, type Resolver } from './ss
 export { normalizeHost };
 
 /**
+ * Refus d'`eval` (403) : oriente vers ce qui se fait SANS eval, et ne cite la clé de configuration que comme une
+ * décision de l'utilisateur humain. Un message « config set allowEval true pour l'autoriser » invitait un agent à
+ * relâcher lui-même la politique (retour du deuxième essai réel). Même texte partout (bridge, run, MCP, skill).
+ */
+export const EVAL_REFUSAL = 'eval est désactivé par la politique de Grasp. Sans eval : storage get|set local|session (stockage Web), '
+  + 'expect text|value|sel|a11y (vérifications), find et snap (éléments, valeurs, états), network (requêtes), '
+  + 'state import (session posée d\'avance). Activer allowEval est une décision de l\'utilisateur humain, pas de l\'agent : '
+  + 'demandez-lui plutôt que de changer la configuration';
+
+/**
+ * Refus (403) des autres clés de politique (allowCookies, allowUpload, allowConsole), même règle qu'EVAL_REFUSAL :
+ * la clé est nommée, sa valeur est une décision de l'utilisateur humain, jamais une commande dictée à l'agent.
+ * Sans elle, l'agent qui suivait EVAL_REFUSAL vers storage ou state import retombait sur
+ * « grasp config set allowCookies true » (relecture du deuxième essai réel).
+ */
+export function policyRefusal(what: string, key: 'allowCookies' | 'allowUpload' | 'allowConsole'): string {
+  return `${what} par la politique de Grasp (clé ${key}). La changer est une décision de l'utilisateur humain, pas de l'agent : `
+    + 'demandez-lui plutôt que de changer la configuration';
+}
+
+/**
  * Politique effective. Construite UNE fois par `effectivePolicy`, gelée, puis passée telle quelle
  * au garde runtime ET au rapport (/security/effective). Règle n°3 : ce qui rapporte lit ce qui applique.
  */

@@ -104,6 +104,11 @@ export interface StepRequest {
   cmd: string; method: 'GET' | 'POST'; path: string; body?: Record<string, unknown>; timeoutMs?: number;
   /** `screenshot -o <fichier>` dans run : chemin RELATIF, écrit par la CLI sous le répertoire de sortie du run. */
   saveAs?: string;
+  /**
+   * `state import <fichier>` dans run : fichier LU par la CLI (le serveur ne lit jamais un chemin venu d'un script) ;
+   * son contenu arrive dans le corps du run (`imports`) et devient le corps de l'étape (voir attachImports).
+   */
+  loadFrom?: string;
 }
 
 /** Captures nommées (`screenshot -o`) par run : chaque image transite en base64 dans la réponse du run. */
@@ -119,6 +124,17 @@ export function checkRunFile(file: string): string {
   if (file.startsWith('/') || file.startsWith('~') || /^[A-Za-z]:[\\/]/.test(file)) throw new ScriptError(`screenshot -o ${file} : chemin relatif attendu dans run (écrit sous le répertoire de sortie du run, --out-dir)`);
   if (file.split(/[\\/]/).some((seg) => seg === '..')) throw new ScriptError(`screenshot -o ${file} : « .. » interdit (le fichier reste sous le répertoire de sortie du run)`);
   if (file.endsWith('/')) throw new ScriptError(`screenshot -o ${file} : nom de fichier attendu, pas un répertoire`);
+  return file;
+}
+
+/**
+ * Fichier de `state import` dans un run : lu par la CLI `grasp run`, relatif au répertoire courant (ou absolu),
+ * comme la commande isolée. `-` (stdin) n'a pas de sens : stdin porte souvent le script lui-même.
+ */
+export function checkRunStateFile(file: string | undefined): string {
+  if (file === undefined || file === '') throw new ScriptError('usage : state import <fichier> (dans run : un fichier, lu par la CLI grasp run)');
+  if (file === '-') throw new ScriptError('state import - : stdin n\'est pas disponible dans run (il porte souvent le script) ; donnez un fichier');
+  if (file.includes('\0')) throw new ScriptError('state import : nom de fichier invalide');
   return file;
 }
 
@@ -333,7 +349,7 @@ function viewportRequest(a: Args): StepRequest {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport', 'tabs', 'tab'] as const;
+export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'state', 'upload', 'profile', 'viewport', 'tabs', 'tab'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run', 'history']);
 
 const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'dialog'];
@@ -348,7 +364,7 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   network: ['since', 'failed', 'max', 'type'],
   // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
-  upload: ['engine'], eval: [], cookies: [], storage: [], profile: [], tabs: [], tab: [],
+  upload: ['engine'], eval: [], cookies: [], storage: [], state: [], profile: [], tabs: [], tab: [],
   viewport: VIEWPORT_FLAGS,
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'],
   // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
@@ -425,6 +441,7 @@ export function buildRequest(a: Args): StepRequest {
     }
     case 'cookies': return { cmd, method: 'GET', path: '/cookies' };
     case 'storage': return storageRequest(a);
+    case 'state': return stateRequest(a);
     case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     case 'expect': return expectRequest(a);
@@ -448,6 +465,18 @@ function storageRequest(a: Args): StepRequest {
   if (area !== 'local' && area !== 'session') throw new ScriptError(`storage : stockage inconnu « ${area} » (local ou session)`);
   if (op === 'set' ? rest.length !== 1 : rest.length !== 0) throw usage();
   return { cmd: 'storage', method: 'POST', path: '/storage', body: { op, area, key, ...(op === 'set' ? { value: rest[0] } : {}) } };
+}
+
+/**
+ * `state import <fichier>` dans run → POST /state/import, mêmes garde-fous qu'en commande isolée (allowCookies,
+ * allowlist, appliqués par le bridge). Le corps (`{state, file}`) est posé par le control plane à partir du contenu
+ * lu par la CLI ; `state export` reste une commande isolée (elle écrit un fichier sensible côté client).
+ */
+function stateRequest(a: Args): StepRequest {
+  const [sub, file, ...rest] = a.pos;
+  if (sub === 'export') throw new ScriptError('state export n\'est pas disponible dans run (il écrit un fichier sensible) : commande isolée grasp state export');
+  if (sub !== 'import' || rest.length > 0) throw new ScriptError('usage : state import <fichier> (seule forme de state dans run)');
+  return { cmd: 'state', method: 'POST', path: '/state/import', body: {}, loadFrom: checkRunStateFile(file) };
 }
 
 /**
