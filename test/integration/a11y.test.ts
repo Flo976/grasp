@@ -22,10 +22,10 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   await fx.page.navigate(`${site.url}/a11y`);
   const r = await fx.page.a11y({ max: 100 });
   const t = r.text;
-  assert.deepEqual(r.counts, { 'sans-nom': 6, 'image-sans-alt': 3, 'erreur-non-reliee': 1, 'erreur-masquee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1, 'role-invalide': 2, 'titre-saute': 2 }, t);
-  assert.equal(r.total, 18);
+  assert.deepEqual(r.counts, { 'sans-nom': 6, 'image-sans-alt': 3, 'erreur-non-reliee': 1, 'erreur-sans-invalide': 1, 'erreur-masquee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1, 'role-invalide': 2, 'titre-saute': 2 }, t);
+  assert.equal(r.total, 19);
   assert.equal(r.omitted, 0);
-  assert.match(t.split('\n')[0]!, /^a11y : 18 problèmes — page "Accessibilité piégée" http:\/\/127\.0\.0\.1:\d+\/a11y$/);
+  assert.match(t.split('\n')[0]!, /^a11y : 19 problèmes — page "Accessibilité piégée" http:\/\/127\.0\.0\.1:\d+\/a11y$/);
   // Contrôles sans nom : ref + description DOM qui relie la ligne au code.
   assert.match(lineOf(t, /a\[href="\/panier"\]/), /^sans-nom e[0-9a-z]+:link a\[href="\/panier"\] — aucun nom accessible → texte du lien, ou aria-label/);
   assert.match(lineOf(t, /fermer-promo/), /^sans-nom e[0-9a-z]+:button .*button#fermer-promo — .* → texte visible, ou aria-label/);
@@ -42,6 +42,9 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   assert.equal(t.split('\n').filter((l) => /^\S+ svg/.test(l)).length, 1, t);
   // Erreurs : message visible non relié (réutilise la détection des erreurs de formulaire), message masqué.
   assert.match(lineOf(t, /^erreur-non-reliee/), /^erreur-non-reliee e[0-9a-z]+:textbox "Nom" \[invalide: Le nom est obligatoire\] — message « Le nom est obligatoire » affiché mais non relié .* → aria-describedby/);
+  // Message relié par aria-describedby mais champ sans aria-invalid : le défaut est l'état, pas le lien.
+  assert.match(lineOf(t, /"Prénom"/), /^erreur-sans-invalide e[0-9a-z]+:textbox "Prénom" .*— message « Le prénom est obligatoire » relié \(aria-describedby\) mais champ non marqué invalide → aria-invalid="true" tant que l'erreur est affichée$/);
+  assert.equal(t.split('\n').filter((l) => /"Prénom"/.test(l)).length, 1, t);
   assert.match(lineOf(t, /^erreur-masquee/), /^erreur-masquee "Paiement refusé" — erreur affichée mais aria-hidden/);
   // Libellés, références, rôles, titres.
   assert.match(t, /^libelle-orphelin label\[for="courriel-x"\] "Courriel" — aucun élément d'id « courriel-x »/m);
@@ -56,7 +59,7 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   assert.equal(r.note.includes('pas un audit WCAG'), true);
   // Ordre : A11Y_KINDS, puis document.
   const kinds = t.split('\n').slice(2).map((l) => l.split(' ')[0]);
-  assert.deepEqual(kinds, ['sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'image-sans-alt', 'image-sans-alt', 'image-sans-alt', 'erreur-non-reliee', 'erreur-masquee', 'libelle-orphelin', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'role-invalide', 'titre-saute', 'titre-saute']);
+  assert.deepEqual(kinds, ['sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'image-sans-alt', 'image-sans-alt', 'image-sans-alt', 'erreur-non-reliee', 'erreur-sans-invalide', 'erreur-masquee', 'libelle-orphelin', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'role-invalide', 'titre-saute', 'titre-saute']);
 });
 
 test('les refs rendues sont utilisables telles quelles ; la page ne voit rien (aucune mutation) et ne trompe pas l\'audit', async () => {
@@ -68,7 +71,7 @@ test('les refs rendues sont utilisables telles quelles ; la page ne voit rien (a
   const btn = r.issues.find((i) => i.who.includes('#fermer-promo'))?.ref;
   assert.ok(btn !== undefined);
   await fx.page.click(btn);
-  // Les prototypes faussés par la page (querySelectorAll vide, getAttribute null) n'ont rien caché : 18 relevés
+  // Les prototypes faussés par la page (querySelectorAll vide, getAttribute null) n'ont rien caché : 19 relevés
   // ci-dessus. Mutations vues par la page pendant les audits : aucune hors des deux actions (valeur, focus).
   // Témoin : un premier clic (sans audit) donne le compte de base ; son écriture ajoute 1 mutation (childList).
   await fx.page.navigate(`${site.url}/a11y`);
@@ -86,8 +89,8 @@ test('les refs rendues sont utilisables telles quelles ; la page ne voit rien (a
 test('--scope : seulement la zone (les titres sautés se jugent sur la page entière) ; zone introuvable ou frame= refusées', async () => {
   await fx.page.navigate(`${site.url}/a11y`);
   const f = await fx.page.a11y({ scope: '#inscription' });
-  assert.deepEqual(f.counts, { 'sans-nom': 3, 'erreur-non-reliee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1 }, f.text);
-  assert.match(f.text.split('\n')[0]!, /^a11y : 7 problèmes dans #inscription — page/);
+  assert.deepEqual(f.counts, { 'sans-nom': 3, 'erreur-non-reliee': 1, 'erreur-sans-invalide': 1, 'libelle-orphelin': 2, 'reference-cassee': 1 }, f.text);
+  assert.match(f.text.split('\n')[0]!, /^a11y : 8 problèmes dans #inscription — page/);
   const p = await fx.page.a11y({ scope: '#promos' });
   assert.deepEqual(p.counts, { 'sans-nom': 2, 'image-sans-alt': 3, 'role-invalide': 2 }, p.text);
   // Le titre « Promotions » (hors zone) n'est pas rapporté dans #promos ; « Pied de page » l'est dans body.
@@ -101,12 +104,12 @@ test('--scope : seulement la zone (les titres sautés se jugent sur la page enti
 test('--max : liste bornée, comptes complets, coupure annoncée', async () => {
   await fx.page.navigate(`${site.url}/a11y`);
   const r = await fx.page.a11y({ max: 3 });
-  assert.equal(r.total, 18);
+  assert.equal(r.total, 19);
   assert.equal(r.issues.length, 3);
-  assert.equal(r.omitted, 15);
+  assert.equal(r.omitted, 16);
   const lines = r.text.split('\n');
   assert.equal(lines.length, 2 + 3 + 1, r.text);
-  assert.equal(lines.at(-1), '… 15 problèmes non listés — affinez avec --max N / --scope <ref|css>');
+  assert.equal(lines.at(-1), '… 16 problèmes non listés — affinez avec --max N / --scope <ref|css>');
   assert.match(lines[1]!, /contrôle sans nom : 6 · .* · niveau de titre sauté : 2$/);
 });
 
@@ -122,16 +125,16 @@ test('expect a11y : 417 avec l\'attendu et le constaté (borné) ; --max N tolè
   await fx.page.navigate(`${site.url}/a11y`);
   await assert.rejects(fx.page.expect({ kind: 'a11y' }), (e: unknown) => {
     assert.ok(e instanceof GraspError && e.status === 417, String(e));
-    assert.match(e.message, /^attendu au plus 0 problème\(s\) d'accessibilité dans la page ; constaté : 18 problème\(s\) \(sans-nom 6, image-sans-alt 3, erreur-non-reliee 1, erreur-masquee 1, libelle-orphelin 2, reference-cassee 1, role-invalide 2, titre-saute 2\) : sans-nom e[0-9a-z]+:link/);
-    assert.match(e.message, /\| … et 13 autre\(s\)$/);
+    assert.match(e.message, /^attendu au plus 0 problème\(s\) d'accessibilité dans la page ; constaté : 19 problème\(s\) \(sans-nom 6, image-sans-alt 3, erreur-non-reliee 1, erreur-sans-invalide 1, erreur-masquee 1, libelle-orphelin 2, reference-cassee 1, role-invalide 2, titre-saute 2\) : sans-nom e[0-9a-z]+:link/);
+    assert.match(e.message, /\| … et 14 autre\(s\)$/);
     const items = (e.extra?.expect as { items: string[] }).items;
-    assert.equal(items.length, 18);
+    assert.equal(items.length, 19);
     return true;
   });
-  const ok = await fx.page.expect({ kind: 'a11y', max: 18 });
-  assert.match(ok.detail ?? '', /^18 problème\(s\) d'accessibilité toléré\(s\) \(--max 18\)/);
-  await assert.rejects(fx.page.expect({ kind: 'a11y', max: 17 }), /constaté : 18 problème/);
-  await assert.rejects(fx.page.expect({ kind: 'a11y', scope: '#inscription', max: 6 }), /attendu au plus 6 problème\(s\) d'accessibilité dans #inscription ; constaté : 7/);
+  const ok = await fx.page.expect({ kind: 'a11y', max: 19 });
+  assert.match(ok.detail ?? '', /^19 problème\(s\) d'accessibilité toléré\(s\) \(--max 19\)/);
+  await assert.rejects(fx.page.expect({ kind: 'a11y', max: 18 }), /constaté : 19 problème/);
+  await assert.rejects(fx.page.expect({ kind: 'a11y', scope: '#inscription', max: 7 }), /attendu au plus 7 problème\(s\) d'accessibilité dans #inscription ; constaté : 8/);
 });
 
 test('formulaire Malt (message aria-hidden sous un champ sans aria-*) : erreur non reliée, ref du champ', async () => {

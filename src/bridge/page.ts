@@ -435,7 +435,8 @@ const FORM_ERRORS_FN = `function (root) {
   const ariaInvalid = (f) => { const v = f.getAttribute('aria-invalid'); return v !== null && v !== 'false'; };
   const userInvalid = (f) => { try { return f.matches(':user-invalid'); } catch (e) { return false; } };
   const recs = new Map();
-  // Source du message (audit a11y) : errormessage, describedby, native, ou voisin (message visible NON relié).
+  // Source du message (audit a11y) : errormessage, describedby, native, voisin (message visible NON relié), ou
+  // decrit (message trouvé à côté, relié par aria-describedby, mais champ ni aria-invalid ni :user-invalid).
   const how = new Map();
   const used = [];
   for (const f of fields) {
@@ -469,7 +470,11 @@ const FORM_ERRORS_FN = `function (root) {
         break;
       }
     }
-    if (field && !recs.get(field) && (recs.has(field) || ERR.test(cls(field)) || ERR.test(cls(m)))) { recs.set(field, t); used.push(m); how.set(field, 'voisin'); }
+    if (field && !recs.get(field) && (recs.has(field) || ERR.test(cls(field)) || ERR.test(cls(m)))) {
+      // Relié malgré tout (aria-describedby lu seulement pour un champ invalide, plus haut) : le défaut est l'état.
+      const linked = refs(field, 'aria-describedby').some((el) => el.contains(m) || m.contains(el));
+      recs.set(field, t); used.push(m); how.set(field, linked ? 'decrit' : 'voisin');
+    }
     else if (!field && m.closest('[aria-hidden="true"]')) alerts.push(t);
   }
   const els = [];
@@ -1611,6 +1616,7 @@ export class PageController {
       const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { fields?: Array<{ i: number; t: string; s?: string }>; alerts?: string[] };
       const fields = new Map<number, string>();
       const unlinked = new Set<number>();
+      const uninvalid = new Set<number>();
       const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
       if (elsId !== undefined && meta.fields !== undefined && meta.fields.length > 0) {
         const items = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
@@ -1621,9 +1627,10 @@ export class PageController {
           const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId });
           fields.set(node.backendNodeId, f.t);
           if (f.s === 'voisin') unlinked.add(node.backendNodeId);
+          if (f.s === 'decrit') uninvalid.add(node.backendNodeId);
         }
       }
-      return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [], unlinked };
+      return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [], unlinked, uninvalid };
     } catch {
       this.isoCtx = undefined;
       return undefined;
@@ -2122,7 +2129,11 @@ export class PageController {
     {
       // Relevé déjà limité à la zone (formErrors sous scopeId).
       for (const [id, msg] of fe.fields) {
-        if (fe.unlinked?.has(id) !== true) continue;
+        if (fe.unlinked?.has(id) !== true && fe.uninvalid?.has(id) !== true) continue;
+        if (fe.uninvalid?.has(id) === true) {
+          raw.push({ kind: 'erreur-sans-invalide', backendId: id, detail: `message « ${msg.length > 60 ? `${msg.slice(0, 59)}…` : msg} » relié (aria-describedby) mais champ non marqué invalide`, fix: 'aria-invalid="true" tant que l\'erreur est affichée' });
+          continue;
+        }
         raw.push({ kind: 'erreur-non-reliee', backendId: id, detail: `message « ${msg.length > 60 ? `${msg.slice(0, 59)}…` : msg} » affiché mais non relié (ni aria-errormessage ni aria-describedby)`, fix: "aria-describedby=<id du message> (ou aria-errormessage + aria-invalid)" });
       }
       for (const a of fe.alerts) raw.push({ kind: 'erreur-masquee', who: `"${a.length > 80 ? `${a.slice(0, 79)}…` : a}"`, detail: "erreur affichée mais aria-hidden (inaudible), liée à aucun champ", fix: 'retirer aria-hidden ; role=alert pour l\'annoncer, aria-describedby pour la relier au champ' });

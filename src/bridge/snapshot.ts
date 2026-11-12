@@ -75,6 +75,8 @@ export interface FormErrors {
   alerts: string[];
   /** Champs dont le message vient d'un texte voisin NON relié (ni aria-errormessage, ni aria-describedby) : audit a11y. */
   unlinked?: Set<number>;
+  /** Champs dont le message (trouvé à côté) est relié par aria-describedby, mais qui ne sont pas marqués invalides (ni aria-invalid ni :user-invalid) : audit a11y. */
+  uninvalid?: Set<number>;
 }
 
 export interface SnapshotOptions {

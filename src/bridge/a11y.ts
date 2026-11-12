@@ -9,7 +9,7 @@
 
 import type { AXNode } from './snapshot.js';
 
-export const A11Y_KINDS = ['sans-nom', 'image-sans-alt', 'erreur-non-reliee', 'erreur-masquee', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'titre-saute'] as const;
+export const A11Y_KINDS = ['sans-nom', 'image-sans-alt', 'erreur-non-reliee', 'erreur-sans-invalide', 'erreur-masquee', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'titre-saute'] as const;
 export type A11yKind = typeof A11Y_KINDS[number];
 
 /** Libellé humain de chaque type (résumé en tête de sortie). */
@@ -17,6 +17,7 @@ export const A11Y_LABELS: Record<A11yKind, string> = {
   'sans-nom': 'contrôle sans nom',
   'image-sans-alt': 'image sans alternative',
   'erreur-non-reliee': 'erreur non reliée au champ',
+  'erreur-sans-invalide': 'erreur reliée, champ non marqué invalide',
   'erreur-masquee': 'erreur masquée (aria-hidden)',
   'libelle-orphelin': 'libellé orphelin',
   'reference-cassee': 'référence ARIA cassée',

@@ -640,12 +640,13 @@ vérifiés (rappel sur stderr à chaque appel).
 
 ```
 grasp a11y --scope '#inscription'
-a11y : 7 problèmes dans #inscription — page "Accessibilité piégée" http://127.0.0.1:8080/a11y
-  contrôle sans nom : 3 · erreur non reliée au champ : 1 · libellé orphelin : 2 · référence ARIA cassée : 1
+a11y : 8 problèmes dans #inscription — page "Accessibilité piégée" http://127.0.0.1:8080/a11y
+  contrôle sans nom : 3 · erreur non reliée au champ : 1 · erreur reliée, champ non marqué invalide : 1 · libellé orphelin : 2 · référence ARIA cassée : 1
 sans-nom ehy5t:textbox input#courriel[type="email"] — aucun nom accessible → <label for=id>, ou aria-labelledby vers le libellé visible
 sans-nom e6z62:combobox="France" [-] select#pays "France Madagascar" — aucun nom accessible → <label for=id>, ou aria-labelledby vers le libellé visible
 sans-nom euks7:checkbox (sans nom, près de "J'accepte les conditions") [ ] input#cgu[type="checkbox"] — aucun nom accessible → <label> englobant, <label for=id> ou aria-labelledby vers le texte voisin
 erreur-non-reliee euv3l:textbox "Nom" [invalide: Le nom est obligatoire] — message « Le nom est obligatoire » affiché mais non relié (ni aria-errormessage ni aria-describedby) → aria-describedby=<id du message> (ou aria-errormessage + aria-invalid)
+erreur-sans-invalide e9xr4:textbox "Prénom" [invalide: Le prénom est obligatoire] — message « Le prénom est obligatoire » relié (aria-describedby) mais champ non marqué invalide → aria-invalid="true" tant que l'erreur est affichée
 libelle-orphelin label[for="courriel-x"] "Courriel" — aucun élément d'id « courriel-x » : ne nomme aucun champ → for = id réel du champ (ou id="courriel-x" sur le champ)
 libelle-orphelin label[for="titre-form"] "Titre" — for vise span#titre-form "pas un champ", qui n'est pas un champ → for = id d'un champ (input, select, textarea) ; contrôle ARIA : aria-labelledby
 reference-cassee e7yyj:textbox "Ville" — aria-describedby → id absent : « inexistant » → id existant, ou retirer la référence
@@ -659,6 +660,7 @@ WCAG : …`.)
 | `sans-nom` | un `button`, `link`, `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider`, `spinbutton`, `menuitem*`, `tab` ou `treeitem` n'a **aucun nom accessible** (calculé par Chrome : libellé, `aria-label`, contenu, `title`, `placeholder`…) | arbre |
 | `image-sans-alt` | une image non ignorée n'a aucun nom : `<img>`, `<input type=image>`, ou élément de `role=img` explicite (`alt=""` = décorative, jamais signalée). Correction selon l'élément : `alt` pour `<img>`, `<title>` ou `aria-label` pour un `<svg role=img>`. Une icône `<svg>` inline **sans** `role` n'est pas signalée (Chrome lui donne pourtant le rôle image : elle accompagne presque toujours un texte) | arbre + DOM |
 | `erreur-non-reliee` | un champ porte un message d'erreur **affiché** que Grasp n'a trouvé qu'à côté du champ (ni `aria-errormessage` ni `aria-describedby`) | [erreurs de formulaire](#erreurs-de-formulaire) |
+| `erreur-sans-invalide` | un message d'erreur **affiché** à côté d'un champ y est bien relié par `aria-describedby`, mais le champ n'est marqué invalide ni par `aria-invalid` ni par la validation native (`:user-invalid`) : le message est lu comme une aide, l'état invalide n'est pas annoncé | erreurs de formulaire |
 | `erreur-masquee` | un message d'erreur affiché est sous `aria-hidden` et rattaché à aucun champ (ligne `alerte` du snapshot) | erreurs de formulaire |
 | `libelle-orphelin` | un `<label for>` affiché ne désigne aucun élément, ou un élément qui n'est pas un champ | DOM |
 | `reference-cassee` | `aria-labelledby`, `aria-describedby` ou `aria-errormessage` cite un id absent | DOM |
@@ -681,17 +683,17 @@ WCAG : …`.)
   libellé n'ont pas de ref (ils ne sont pas dans le snapshot) : leur description DOM les désigne.
 - **`expect a11y [--max N] [--scope <sél>]`** : tenue si l'audit relève **au plus N** problèmes (0 par défaut).
   Constat immédiat, comme `no-form-errors`. Échec : `attendu au plus 0 problème(s) d'accessibilité dans la page ;
-  constaté : 18 problème(s) (sans-nom 6, image-sans-alt 3, …) : <5 premières lignes> | … et 13 autre(s)`
+  constaté : 19 problème(s) (sans-nom 6, image-sans-alt 3, …) : <5 premières lignes> | … et 14 autre(s)`
   (50 lignes au plus dans le JSON, champ `expect.items`). Tenue avec des problèmes tolérés : note
-  `18 problème(s) d'accessibilité toléré(s) (--max 18) : …`. Utile pour figer une dette connue et refuser
+  `19 problème(s) d'accessibilité toléré(s) (--max 19) : …`. Utile pour figer une dette connue et refuser
   qu'elle augmente.
 - **Mécanisme** : `Accessibility.getFullAXTree` (le même arbre que `snap`), le relevé des
   [erreurs de formulaire](#erreurs-de-formulaire) (qui dit désormais d'où vient chaque message) et une fonction
   fixe dans le monde isolé `grasp-lecture` : autorisé avec `allowEval=false`, aucune modification de la page.
   Testé sur une page piégée qui fausse ses propres `querySelectorAll`, `getAttribute` et `getElementById` et
-  compte ses mutations : les 18 défauts sont relevés, leurs versions correctes (image `alt=""`, icônes `<svg>`
+  compte ses mutations : les 19 défauts sont relevés, leurs versions correctes (image `alt=""`, icônes `<svg>`
   sans role dans un lien, un bouton ou un paragraphe, `<svg role=img aria-label>`, bouton icône
-  avec `aria-label`, erreur reliée par `aria-describedby`, rôle à repli valide, contenu masqué) jamais, et la
+  avec `aria-label`, erreur reliée par `aria-describedby` sur un champ `aria-invalid`, rôle à repli valide, contenu masqué) jamais, et la
   page ne voit aucune mutation (`test/integration/a11y.test.ts`). Mesuré (Chrome headless local, médiane de
   7) : 16 ms sur la page piégée (`snap` : 5 ms), 194 ms sur une page de 2000 liens (`snap` : 183 ms).
 - **Ce qui n'est pas relevé** : une icône `<svg>` sans `role` ni nom (décorative ou informative, l'audit ne

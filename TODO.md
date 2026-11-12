@@ -124,6 +124,8 @@ Lecture et recette
       page piégée (`test/integration/a11y.test.ts`, `a11y-cli.test.ts`). Pas un audit WCAG.
 - [x] Audit d'accessibilité, relecture : icône `<svg>` inline sans `role` (dans un lien ou un bouton nommé)
       plus signalée `image-sans-alt` ; correction propre au `<svg role=img>` (`<title>`/`aria-label`, pas `alt`).
+- [x] Audit d'accessibilité, relecture : message d'erreur relié par `aria-describedby` à un champ sans
+      `aria-invalid` plus rapporté « non relié » : nouveau type `erreur-sans-invalide` (correction `aria-invalid`).
 - [ ] Audit d'accessibilité : contrastes (calcul sur les styles calculés), nom réduit au `placeholder`, noms
       inutiles (« cliquez ici »), outil MCP dédié, iframes.
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).

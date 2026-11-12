@@ -3,7 +3,7 @@
  *
  * Page piégée : chaque défaut relevé y figure une fois au moins, à côté de sa version correcte (qui ne doit
  * PAS être signalée) — image décorative alt="", bouton icône avec aria-label, erreur reliée par
- * aria-describedby, role à jeton de repli valide, contenu masqué (display:none) porteur de défauts, icônes
+ * aria-describedby (sans aria-invalid : signalée comme telle, jamais « non reliée »), role à jeton de repli valide, contenu masqué (display:none) porteur de défauts, icônes
  * `<svg>` inline sans aria-hidden dans un lien ou un bouton nommés par leur texte (jamais des images à signaler).
  */
 
@@ -42,6 +42,7 @@ export const A11Y_PAGE = `<!doctype html>
 <form id="inscription" onsubmit="return false">
   <label for="courriel-x">Courriel</label><input id="courriel" type="email" name="courriel">
   <div><label for="nom">Nom</label><input id="nom" aria-invalid="true"><span class="error">Le nom est obligatoire</span></div>
+  <div><label for="prenom">Prénom</label><input id="prenom" aria-describedby="prenom-err"><span id="prenom-err" class="error">Le prénom est obligatoire</span></div>
   <div><label for="tel">Téléphone</label><input id="tel" aria-invalid="true" aria-describedby="tel-err"><span id="tel-err" class="error">Numéro à 10 chiffres</span></div>
   <div><label for="ville">Ville</label><input id="ville" aria-describedby="ville-aide inexistant"><span id="ville-aide">Commune de livraison</span></div>
   <select id="pays"><option>France</option><option>Madagascar</option></select>
