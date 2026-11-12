@@ -15,7 +15,8 @@ import { runMcp } from './mcp.js';
 import { commandHelp, helpJson, skillText } from './help.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
-import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
+import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
+import { BOUNDARY_RULE, type BoundaryTag } from '../core/boundaries.js';
 import { formatReport, type RunResult } from '../control/run.js';
 import { checkRunOut, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
@@ -91,13 +92,13 @@ function renderAction(r: HttpResult, a: Args): void {
   if (typeof j.trackersBlocked === 'number' && j.trackersBlocked > 0) hint(`traqueurs bloqués : ${j.trackersBlocked} requête(s) (grasp console pour le détail)`);
   out(j.diff !== undefined ? j.diff : 'OK');
   if (j.console !== undefined) {
-    if (j.console.entries.length > 0) out(j.console.entries.map(formatEntry).join('\n'));
+    if (j.console.entries.length > 0) out(formatEntries(j.console.entries, j.console.boundary));
     consoleLosses(j.console);
     hint(`console : ${j.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${j.console.seq}`);
   }
 }
 
-interface ActionConsole { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+interface ActionConsole { entries: ConsoleEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number }
 
 /** --console : lignes écartées (au-delà de 200) et entrées perdues par le tampon, jamais tues. */
 function consoleLosses(c: { since?: unknown; omitted?: unknown; dropped?: unknown }): void {
@@ -145,7 +146,7 @@ async function consoleCmd(c: Client, a: Args): Promise<void> {
   if (a.flags.has('json')) { out(JSON.stringify(r)); return; }
   if (r.dropped > 0) hint(`AVERTISSEMENT : ${r.dropped} entrée(s) perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
   if (r.omitted > 0) hint(`${r.omitted} ligne(s) plus ancienne(s) non affichée(s) — --limit N ou --since <seq>`);
-  if (r.entries.length > 0) out(r.entries.map(formatEntry).join('\n'));
+  if (r.entries.length > 0) out(formatEntries(r.entries, r.boundary));
   hint(`seq courant : ${r.seq} — suite : grasp console --since ${r.seq}${body.clear === true ? ' (tampon vidé)' : ''}`);
 }
 
@@ -395,6 +396,7 @@ function renderSecurity(rep: any): string {
     `proxy      : ${p.proxyServer ? `${p.proxyServer}${bypass.length > 0 ? ` (contournement : ${bypass.join(', ')})` : ''}` : 'aucun (connexion directe)'}`,
     `résolution : ${rules.length > 0 ? `${rules.join(' ; ')} (allowlist appliquée au nom demandé)` : 'système'}`,
     `certificats: ${certs.length > 0 ? `NON VÉRIFIÉS pour ${certs.join(', ')} (ignoreCertErrorsFor) ; vérifiés ailleurs` : 'vérifiés'}`,
+    `frontières : ${p.contentBoundaries === true ? 'actives (contenu de la page encadré par un nonce par réponse, imitations neutralisées)' : p.contentBoundaries === false ? 'désactivées (contenu de la page rendu sans marqueurs)' : 'inconnu (serveur antérieur)'}${p.contentBoundariesSource === 'auto' ? (p.contentBoundaries === true ? ' — auto : allowlist ouverte au-delà de la boucle locale' : ' — auto : allowlist limitée à la boucle locale ; contentBoundaries=true pour les forcer (tunnel ssh -L)') : ''}`,
     `traqueurs  : ${p.blockTrackers === true ? 'bloqués (liste de Peter Lowe)' : p.blockTrackers === false ? 'non bloqués' : 'inconnu (serveur antérieur)'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
     `transport  : ${listenLine(rep)}`,
@@ -821,7 +823,12 @@ Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une sess
                entre deux commandes, même session et profil, page rechargée (« note: navigateur recyclé : … »)
 Serveur TCP  --listen IP : adresse d'écoute hors 127.0.0.1 (conteneur), opt-in, token exigé, signalé par security ;
              GRASP_URL=http://hôte:port : client vers ce serveur (au lieu de endpoint.json)
-Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
+Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json
+Frontières   contentBoundaries (auto|true|false ; auto, défaut : actif dès que l'allowlist sort de la boucle
+               locale) : snap, text, diff, notes, console et erreurs encadrés par
+               <<<GRASP_PAGE_CONTENT nonce=… source=…>>> … <<<END_GRASP_PAGE_CONTENT nonce=…>>> (nonce aléatoire
+               par réponse ; imitation du marqueur par la page remplacée par « [marqueur imité] », comptée imitations=N)
+             RÈGLE : ${BOUNDARY_RULE}`;
 
 const argv = process.argv.slice(2);
 const cmdName = argv.find((x) => !x.startsWith('-')) ?? 'help';
@@ -829,7 +836,7 @@ main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve' && 
   process.stderr.write(`ERROR: ${cmdName}: ${e.message}\n`);
   // --console sur une action en échec : les entrées produites pendant l'action suivent l'erreur.
   const entries = e instanceof CliError ? e.extra?.console : undefined;
-  if (Array.isArray(entries) && entries.length > 0) process.stderr.write(`${(entries as ConsoleEntry[]).map(formatEntry).join('\n')}\n`);
+  if (Array.isArray(entries) && entries.length > 0) process.stderr.write(`${formatEntries(entries as ConsoleEntry[], e instanceof CliError ? e.extra?.boundary as BoundaryTag | undefined : undefined)}\n`);
   if (e instanceof CliError && e.extra !== undefined) consoleLosses({ since: e.extra.consoleSince, omitted: e.extra.consoleOmitted, dropped: e.extra.consoleDropped });
   process.exit(1);
 });

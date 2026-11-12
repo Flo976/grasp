@@ -64,6 +64,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   allowConsole: { raw: 'false', value: false },
   allowPrivateNetwork: { raw: 'true', value: true },
   blockTrackers: { raw: 'false', value: false },
+  contentBoundaries: { raw: 'false', value: false },
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },

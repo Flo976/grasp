@@ -1,4 +1,5 @@
 import { GraspError, badRequest } from './errors.js';
+import { wrapTagged, type BoundaryTag } from './boundaries.js';
 
 /**
  * Console du navigateur : tampon circulaire par onglet (dans le bridge) et mise en forme compacte
@@ -38,6 +39,8 @@ export interface ConsoleResult {
   dropped: number;
   /** Lignes du niveau demandé (après fusion, hors repères de navigation) écartées par `limit` : les plus anciennes. */
   omitted: number;
+  /** Frontières de contenu actives : nonce de la réponse, pour encadrer le bloc de lignes formaté. */
+  boundary?: BoundaryTag;
 }
 
 const RANK: Record<ConsoleLevel, number> = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -260,4 +263,12 @@ export function formatEntry(e: ConsoleEntry): string {
   const frame = e.frame !== undefined ? ' [iframe]' : '';
   const n = e.count !== undefined && e.count > 1 ? ` ×${e.count}` : '';
   return `#${e.seq} ${e.level.padEnd(5)} ${e.source}${frame} ${text}${where}${n}`;
+}
+
+/**
+ * Lignes de console jointes, encadrées par le nonce de la réponse quand le bridge en a joint un (frontières de
+ * contenu) : le texte des entrées est celui de la page.
+ */
+export function formatEntries(entries: readonly ConsoleEntry[], boundary?: BoundaryTag | undefined): string {
+  return wrapTagged(entries.map(formatEntry).join('\n'), boundary, 'console');
 }

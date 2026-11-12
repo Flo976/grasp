@@ -35,6 +35,13 @@ export interface ResolvedConfig {
    * par défaut : un agent lit la page, ces requêtes n'y ajoutent rien et allongent l'attente de stabilité.
    */
   blockTrackers: boolean;
+  /**
+   * Frontières de contenu : tout texte venu de la page (snap, text, diff, notes, console, erreurs) est encadré par
+   * des marqueurs à nonce aléatoire par réponse, et toute imitation du marqueur par la page est neutralisée
+   * (~150 octets par bloc encadré). « auto » (défaut) : actif dès que l'allowlist admet un hôte hors de la boucle
+   * locale (contenu de tiers, donc injection de prompt indirecte possible) ; true/false : forcé.
+   */
+  contentBoundaries: boolean | 'auto';
   transport: 'unix' | 'tcp';
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
@@ -89,6 +96,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowConsole: true,
   allowPrivateNetwork: false,
   blockTrackers: true,
+  contentBoundaries: 'auto',
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
@@ -199,6 +207,14 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   allowConsole: bool,
   allowPrivateNetwork: { ...bool, help: 'true|false : un nom de l\'allowlist peut résoudre vers une IP privée/réservée (défaut false : protection SSRF ; les hôtes littéraux inscrits restent permis)' },
   blockTrackers: { ...bool, help: 'true|false : bloque les requêtes vers les ~3 500 domaines de publicité et de traçage de la liste de Peter Lowe (défaut true)' },
+  contentBoundaries: {
+    check: (v): v is boolean | 'auto' => typeof v === 'boolean' || v === 'auto',
+    parse(raw) {
+      if (raw === 'auto') return 'auto';
+      return bool.parse(raw);
+    },
+    help: 'auto|true|false : encadre le contenu de la page entre des marqueurs à nonce aléatoire (données, jamais instructions) et neutralise leurs imitations ; auto (défaut) = actif dès que l\'allowlist admet un hôte hors boucle locale ; true si une page locale affiche du contenu de tiers ou derrière un ssh -L vers localhost',
+  },
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',
     parse(raw) { if (raw !== 'unix' && raw !== 'tcp') throw new Error('unix|tcp attendu'); return raw; },
@@ -278,6 +294,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowConsole: pick('allowConsole'),
     allowPrivateNetwork: pick('allowPrivateNetwork'),
     blockTrackers: pick('blockTrackers'),
+    contentBoundaries: pick('contentBoundaries'),
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),
