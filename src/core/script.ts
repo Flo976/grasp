@@ -10,7 +10,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'type']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -114,6 +114,7 @@ function actionBody(a: Args, extra: Record<string, unknown>): Record<string, unk
     // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
     ...(max !== undefined ? { max } : {}), ...(scope !== undefined ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
+    ...(a.flags.has('network') ? { network: true } : {}),
     ...engineOf(a),
   };
 }
@@ -192,11 +193,31 @@ export function consoleBody(a: Args): Record<string, unknown> {
   return body;
 }
 
+/**
+ * Corps de POST /network : --since, --failed, --max (lignes, 50 par défaut), --type xhr,fetch. Transmis tel quel,
+ * le bridge valide (« --max abc » est une erreur, jamais une limite ignorée).
+ */
+export function networkBody(a: Args): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const [flag, key] of [['since', 'since'], ['max', 'limit'], ['type', 'type']] as const) {
+    const v = value(a, flag);
+    if (v === '') throw new ScriptError(`--${flag} attend une valeur`);
+    if (v !== undefined) body[key] = v;
+  }
+  if (body.limit === undefined) body.limit = 50;
+  const f = a.flags.get('failed');
+  if (f !== undefined) {
+    if (f !== true) throw new ScriptError('--failed ne prend pas de valeur');
+    body.failed = true;
+  }
+  return body;
+}
+
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
-const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
+const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
@@ -204,6 +225,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
   snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
+  network: ['since', 'failed', 'max', 'type'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], profile: [],
@@ -257,6 +279,7 @@ export function buildRequest(a: Args): StepRequest {
     case 'wait': { const w = waitRequest(a); return { cmd, method: 'POST', path: '/wait', body: w.body, timeoutMs: w.timeoutMs }; }
     case 'eval': { const [expression] = need(a, 1, 'eval <expression>'); return { cmd, method: 'POST', path: '/eval', body: { expression } }; }
     case 'console': return { cmd, method: 'POST', path: '/console', body: consoleBody(a) };
+    case 'network': return { cmd, method: 'POST', path: '/network', body: networkBody(a) };
     case 'screenshot': {
       if (a.flags.has('output')) throw new ScriptError("screenshot -o n'est pas disponible dans run (le fichier serait écrit par le serveur) : sans -o, le chemin de la capture (0600) est renvoyé");
       const q = shotQuery(a, undefined);
@@ -279,6 +302,7 @@ const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
   'url': ['regex', 'timeout'], 'title': ['regex', 'timeout'], 'value': ['regex', 'timeout'],
   'sel': ['timeout'], 'no-sel': ['timeout'],
   'no-console-errors': ['since', 'ignore'], 'no-form-errors': [],
+  'request': ['regex', 'timeout', 'since'],
 };
 const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'];
 
@@ -293,6 +317,7 @@ export const EXPECT_USAGE: Record<ExpectKind, string> = {
   'value': 'expect value <sélecteur> [~] <valeur> [--regex] [--timeout ms]',
   'no-console-errors': 'expect no-console-errors [--ignore <regex>] [--since <seq>]',
   'no-form-errors': 'expect no-form-errors',
+  'request': 'expect request [~] "<MÉTHODE> <chemin|url>" [statut (2xx)] [--regex] [--since <seq>] [--timeout ms]',
 };
 
 /**
@@ -311,7 +336,7 @@ function expectRequest(a: Args): StepRequest {
   }
   const usage = () => {
     // `~` non cité dans un terminal : la shell le remplace par le dossier personnel, d'où un argument de trop.
-    const tilde = (kind === 'url' || kind === 'title' || kind === 'value') && args.some((x) => x.startsWith('/') && x === process.env.HOME) ? " — dans un terminal, citez le ~ ('~') : la shell le remplace par votre dossier personnel" : '';
+    const tilde = (kind === 'url' || kind === 'title' || kind === 'value' || kind === 'request') && args.some((x) => x.startsWith('/') && x === process.env.HOME) ? " — dans un terminal, citez le ~ ('~') : la shell le remplace par votre dossier personnel" : '';
     return new ScriptError(`usage : grasp ${EXPECT_USAGE[kind]}${tilde}`);
   };
   const regex = a.flags.has('regex');
@@ -339,6 +364,21 @@ function expectRequest(a: Args): StepRequest {
       if (args.length !== 1) throw usage();
       body.target = args[0];
       break;
+    case 'request': {
+      // [~] "<MÉTHODE> <chemin|url>" [statut] : même ~ et --regex que url/title, statut 2xx par défaut.
+      let rest = args;
+      let match = regex ? 'regex' : 'exact';
+      if (rest[0] === '~') {
+        if (regex) throw new ScriptError(`expect ${kind} : « ~ » (contient) et --regex s'excluent`);
+        match = 'contains';
+        rest = rest.slice(1);
+      }
+      if (rest.length < 1 || rest.length > 2) throw usage();
+      body.target = rest[0];
+      body.match = match;
+      if (rest[1] !== undefined) body.status = rest[1];
+      break;
+    }
     default: if (args.length !== 0) throw usage();
   }
   for (const k of ['timeout', 'scope', 'since', 'ignore'] as const) {

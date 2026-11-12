@@ -1,5 +1,6 @@
 import { GraspError } from '../core/errors.js';
 import { formatEntry, type ConsoleEntry } from '../core/console.js';
+import { formatNet, networkLosses, type NetEntry } from '../core/network.js';
 import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
@@ -111,6 +112,9 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
       if (extra !== undefined) {
         step.result = extra;
         if (Array.isArray(extra.console) && extra.console.length > 0) step.output = (extra.console as ConsoleEntry[]).map(formatEntry).join('\n');
+        // --network sur une action en échec : les requêtes parties pendant l'action suivent aussi l'erreur.
+        const net = extra.network as { entries?: NetEntry[] } | undefined;
+        if (net !== undefined && Array.isArray(net.entries) && net.entries.length > 0) step.output = [step.output, net.entries.map(formatNet).join('\n')].filter((x) => x !== undefined && x !== '').join('\n');
         if (typeof extra.screenshot === 'string') step.screenshot = extra.screenshot;
       }
       // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
@@ -209,7 +213,9 @@ export function formatReport(rep: RunReport): string {
   return L.join('\n');
 }
 
-interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number } }
+interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }; network?: NetSliceJson }
+interface NetSliceJson { entries: NetEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+
 
 /** Pertes de console jamais tues (mêmes messages que la commande isolée). */
 function losses(c: { since?: number | undefined; omitted?: number | undefined; dropped?: number | undefined }): string[] {
@@ -235,6 +241,10 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const w = losses({ omitted: c.omitted, dropped: c.dropped });
       return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
+    case 'network': {
+      const n = j as { entries?: NetEntry[]; seq?: number; omitted?: number; dropped?: number };
+      return { output: Array.isArray(n.entries) ? n.entries.map(formatNet).join('\n') : '', detail: [...networkLosses({ omitted: n.omitted, dropped: n.dropped }, false), `seq réseau courant : ${n.seq}`].join(' ; ') };
+    }
     case 'wait': return {};
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {
@@ -251,6 +261,10 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       if (a.console !== undefined) {
         if (a.console.entries.length > 0) parts.push(a.console.entries.map(formatEntry).join('\n'));
         notes.push(...losses(a.console), `console : ${a.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${a.console.seq}`);
+      }
+      if (a.network !== undefined) {
+        if (a.network.entries.length > 0) parts.push(a.network.entries.map(formatNet).join('\n'));
+        notes.push(...networkLosses(a.network, true), `réseau : ${a.network.entries.length === 0 ? 'aucune requête, ' : ''}seq réseau courant ${a.network.seq}`);
       }
       return { output: parts.join('\n'), detail: notes.join(' ; ') };
     }

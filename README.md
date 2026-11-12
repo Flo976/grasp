@@ -550,6 +550,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `type <sél> <texte> [--delay ms]` | Frappe touche par touche, **ajoutée** à la position du curseur (autocomplétions qui réagissent à chaque touche) ; `--delay` de 0 à 1000 ms entre deux touches. `fill` reste le bon choix pour remplacer une valeur. |
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
+| `network [--since] [--failed] [--max N] [--type …]` | Requêtes de l'onglet : méthode, URL masquée, statut, durée, type ; jamais de corps. Voir [Journal réseau](#journal-réseau). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
@@ -567,6 +568,8 @@ Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire
   (les plus récentes) : les lignes écartées et les entrées perdues par le tampon sont signalées sur stderr
   (`AVERTISSEMENT : 50 ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action) — grasp console
   --since 812 --limit 1000`) et dans le JSON (`console.since`, `console.omitted`, `console.dropped`) ;
+- `--network` : requêtes parties **pendant** l'action (`#seq MÉTHODE url → statut · durée · type`, `en cours`
+  si la réponse n'est pas arrivée), 100 au plus, perte annoncée ; voir [Journal réseau](#journal-réseau) ;
 - `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur ;
 - `--engine playwright` (`click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`) : l'action
   passe par le [moteur Playwright de repli](#moteur-playwright-de-repli).
@@ -684,8 +687,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 ```
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
-  **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
-  cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console network
+  screenshot cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
@@ -742,6 +745,7 @@ FIN
 | `expect value <sél> [~] <valeur> [--regex]` | la valeur du champ (`value` ; `<select>` : valeur de l'option choisie ; éditeur riche : son texte) est égale, etc. |
 | `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` (console, exception, requête 4xx/5xx ou `net::ERR`, CSP…) depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
 | `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
+| `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant, a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
 
 - **Syntaxe, et pourquoi** : une commande `expect` suivie du **type d'assertion** (comme `session create`,
   `profiles import`), puis ses arguments positionnels dans l'ordre naturel (`value <sél> <valeur>`, comme
@@ -752,9 +756,20 @@ FIN
   pas de sens) ; `~` (« contient ») est un mot à part, lisible, et `--regex` reste explicite. Dans un
   terminal, citez le `~` (`'~'`) : la shell le remplace sinon par votre dossier personnel — l'argument de
   trop est refusé avec cette explication, jamais pris pour l'URL attendue.
-- **Réessai** : text, no-text, url, title, sel, no-sel et value sont relues toutes les 100 ms jusqu'à
+- **Réessai** : text, no-text, url, title, sel, no-sel, value et request sont relues toutes les 100 ms jusqu'à
   `--timeout` (5000 ms par défaut, 60 000 au plus ; `0` = une seule lecture) — la page réagit souvent après
   l'action précédente (XHR, route). no-console-errors et no-form-errors sont un **constat immédiat**.
+- **`expect request`** vérifie qu'un « Enregistrer » a **vraiment appelé l'API** et qu'elle a répondu :
+  `expect request "POST /api/commande" 201`. La méthode (en capitales) est facultative (`expect request
+  /api/commande` : toute méthode). Comparaison stricte par défaut, comme `url` : un motif `/chemin` est comparé
+  au **chemin** de l'URL (la chaîne de requête est ignorée, sauf si le motif contient `?`), une URL absolue à
+  origine + chemin ; `~` : l'URL contient le motif ; `--regex` : l'URL lui correspond. `~` et `--regex` portent
+  sur l'URL **masquée** (un motif ne peut pas sonder la valeur d'un `?token=`). Une requête encore en vol ne
+  compte pas : l'assertion est relue jusqu'à sa réponse, dans `--timeout`. Fenêtre : depuis la requête du
+  document courant (une requête d'une page précédente ne compte pas ; une route `pushState` ne change pas de
+  document) ; `--since <seq>` (seq **réseau**, donné par `--network` ou `grasp network`) l'élargit ou la
+  restreint. Constaté en cas d'échec : les 5 dernières requêtes correspondantes avec leur statut
+  (`… → 500 Internal Server Error`, `… → en cours`), sinon les 5 dernières xhr/fetch.
 - **Échec** : erreur 417 ; dans run, `[n] expect … → ERROR: attendu … ; constaté : …`, arrêt (sauf
   `--continue`) et code 1 ; en commande directe, `ERROR: expect: …` sur stderr et code 1. Le constaté est
   **borné** : 300 premiers caractères du texte de la page ou de la zone, 60 caractères de part et d'autre
@@ -765,7 +780,7 @@ FIN
 - Une assertion mal écrite (type inconnu, argument manquant ou de trop, option d'un autre type, expression
   régulière invalide, `--timeout` hors bornes) refuse **tout le script** avant exécution, ligne citée.
 - `--shot-on-error` : capture jointe au message, comme pour une action. `allowConsole=false` :
-  `no-console-errors` → 403, jamais un faux OK. Un sélecteur `frame=…` n'est pas pris en charge par `expect`
+  `no-console-errors` et `request` → 403, jamais un faux OK. Un sélecteur `frame=…` n'est pas pris en charge par `expect`
   (400 : `wait --sel` le sait).
 
 **Rapport** (stdout, après les étapes ; `--json` : champ `report`) :
@@ -1042,6 +1057,69 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
   `Log.enable` ni `Network.enable` (vérifié par espion CDP). `Runtime.enable` est un vecteur connu de
   détection de l'automatisation par les protections anti-bot ; à couper sur les sites qui y sont sensibles.
 
+## Journal réseau
+
+Le bridge tient, par onglet, un journal circulaire des **1000 dernières requêtes** (`seq` croissant, propre au
+journal) : méthode, URL masquée, statut, durée, type. Il est nourri par les événements du domaine CDP `Network`
+que la console et l'attente de stabilité écoutent déjà (aucun abonnement ni appel CDP de plus) ; il remplace la
+table des requêtes en vol de la console, qui y lit méthode et URL.
+
+```
+grasp network [--since <seq>] [--failed] [--max N] [--type xhr,fetch,…] [--json]
+```
+
+Sortie réelle sur le site de test (`/boutique`, quantité 13 → 500) :
+
+```
+$ grasp click text:Commander --network
+OK
+#3 POST http://127.0.0.1:45341/api/commande?qte=13 → 500 Internal Server Error · 4 ms · fetch
+réseau : seq réseau courant 3                                              (stderr)
+$ grasp network
+#1 GET http://127.0.0.1:45341/boutique → 200 OK · 27 ms · document
+#2 GET http://127.0.0.1:45341/favicon.ico → 200 OK · 14 ms · other
+#3 POST http://127.0.0.1:45341/api/commande?qte=13 → 500 Internal Server Error · 4 ms · fetch
+seq réseau courant : 3 — suite : grasp network --since 3                   (stderr)
+$ grasp expect request "POST /api/commande" --timeout 300
+ERROR: expect: attendu requête POST « /api/commande » de statut 2xx ; constaté : 1 requête(s) correspondante(s)
+depuis #0, aucune terminée de statut 2xx : #3 POST http://127.0.0.1:45341/api/commande?qte=13 → 500 Internal
+Server Error · 4 ms · fetch (après 300 ms)
+```
+
+Une requête en vol s'affiche `#7 GET http://…/api/lent?ms=10000 → en cours · 812 ms · fetch` ; une URL à jeton,
+`…/api/secret?token=***&page=2 → 401 Unauthorized`.
+
+- **Une ligne par requête** : `#seq MÉTHODE url → statut · durée · type`, puis `cache` (servie par le cache) et
+  `iframe` (cadre autre que le principal, hors processus compris). URL affichée coupée à 150 caractères (300
+  gardés dans le JSON). Requête encore en vol : `→ en cours`, avec le temps écoulé. Échec réseau :
+  `→ net::ERR_…` ; annulée (navigation qui part, `AbortController`) : `→ annulée` ; annulée par Grasp (garde,
+  traqueur) : `[bloquée par Grasp]`. Chaque saut d'une redirection a sa ligne (`→ 302 Found`). Les URL `data:`
+  et `blob:` ne sont pas journalisées. Durée : horodatages de Chrome (départ → fin du chargement).
+- **Bornes** : `--max N` (**50** par défaut au CLI, comme `console --limit`) garde les N dernières lignes après
+  filtres ; les lignes écartées et les requêtes tombées du journal sont annoncées sur stderr (et `omitted`,
+  `dropped` dans le JSON). `--failed` : statut ≥ 400, `net::ERR_…`, blocages (pas les annulations). `--type` :
+  types CDP en minuscules (`document`, `xhr`, `fetch`, `script`, `stylesheet`, `image`, `font`…), inconnu → 400.
+  Un `--since` supérieur au seq courant (journal recréé) → 409, comme la console.
+- **`--network` sur une action** (`nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`) : les
+  requêtes parties **pendant** l'action (attente de stabilité comprise), après `OK` (ou le diff, ou la console) ;
+  **100** au plus, les plus récentes, la perte annoncée (`AVERTISSEMENT : N requête(s) plus ancienne(s) non
+  affichée(s) (100 au plus par action) — grasp network --since …`) ; JSON : champ `network` (`entries`, `seq`,
+  `since`, `omitted`, `dropped`). Une requête que la page lance après la fin de l'action n'y est pas : `grasp
+  network --since <seq>`. Sur une action en échec, les requêtes suivent l'erreur, comme `--console`.
+- **Dans `grasp run`** : `network` est une commande de script, et `--network` une option des actions.
+- **Pas de corps, pas d'en-têtes — décision** : le journal reprend la garantie de la console. Grasp ne lit
+  jamais ni en-têtes (`Cookie`, `Authorization`…) ni corps de requête ou de réponse, et n'active même pas leur
+  tampon (`maxTotalBufferSize: 0`) ; l'URL passe par le même masquage que la console (identifiants retirés,
+  valeurs de `token`, `key`, `secret`, `pass`, `auth`, `session`, `sig`, `jwt`, `code`… remplacées par `***`).
+  Il n'existe **pas** d'option pour voir les corps : vérifier qu'un « Enregistrer » a abouti se fait par le
+  statut (`expect request`) et par le contenu de la page (`expect text`). Testé avec une requête qui porte un
+  `Authorization: Bearer …`, un corps et un `?token=` et reçoit une 401 au corps « secret » : aucun des trois
+  n'apparaît, ni en texte ni en JSON (`test/integration/network.test.ts`).
+- **`allowConsole=false`** : pas de domaine `Network`, donc pas de journal : `network`, `--network` et
+  `expect request` → **403** `journal réseau indisponible : allowConsole=false, le domaine CDP Network n'est pas
+  activé`, jamais une liste vide qui laisserait croire qu'aucune requête n'est partie. `grasp security` affiche
+  une ligne `réseau` qui le dit.
+
 ## Tester un serveur distant
 
 Cas d'usage : Claude vérifie une tâche (déploiement, correctif) sur un serveur distant, à travers un tunnel SSH
@@ -1296,7 +1374,8 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 
 - Token API exigé (32 octets aléatoires, `0600`, comparaison à temps constant).
 - `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Console : lecture **autorisée** (voir
-  [Console](#console-du-navigateur) pour la décision et ses garanties).
+  [Console](#console-du-navigateur) pour la décision et ses garanties), et avec elle le [journal
+  réseau](#journal-réseau), sans corps ni en-têtes, sans option pour les afficher.
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**
   (fail-closed). `*.exemple.com` = sous-domaines seulement ; `*` = tout, en opt-in explicite.
 - `file:`, `data:`, `javascript:`, `chrome:`, `view-source:` toujours bloqués.
@@ -1706,6 +1785,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - Console : les messages des workers (service workers, workers dédiés) ne sont pas capturés ; une requête
   annulée (navigation qui part, `AbortController`) n'est pas signalée ; les URL sont tronquées à 150
   caractères. Le tampon est perdu à la bascule de profil (le navigateur est relancé).
+- **Journal réseau** : mêmes angles morts que la console — requêtes des workers (service workers, workers
+  dédiés) absentes, journal perdu à la bascule de profil ou au recyclage ; une requête d'un document remplacé
+  qui ne rapporte jamais sa fin est close `annulée` à l'arrivée du nouveau document. La durée va du départ à la
+  fin du chargement vue par Chrome (pas de détail DNS/TLS/attente). `expect request` ne regarde que le statut :
+  une API qui répond 200 avec une erreur dans son corps passe (vérifiez la page avec `expect text`). Pas
+  d'outil dédié dans `grasp mcp` (accessible par l'outil `run`).
 - Captures : zone tronquée à 16 384 px de haut ou de large (limite de texture de Chrome, signalée) ; une
   page plus large que le viewport est capturée avec un viewport élargi, si bien qu'une mise en page fluide
   peut s'y redistribuer le temps de la capture ;
