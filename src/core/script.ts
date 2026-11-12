@@ -274,7 +274,7 @@ export function buildRequest(a: Args): StepRequest {
 }
 
 /** Options de chaque assertion (toutes acceptent --shot-on-error). */
-const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
+export const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
   'text': ['regex', 'scope', 'timeout'], 'no-text': ['regex', 'scope', 'timeout'],
   'url': ['regex', 'timeout'], 'title': ['regex', 'timeout'], 'value': ['regex', 'timeout'],
   'sel': ['timeout'], 'no-sel': ['timeout'],
