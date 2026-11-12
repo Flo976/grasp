@@ -7,6 +7,8 @@ export interface GraspPaths {
   configDir: string;
   configFile: string;
   tokenFile: string;
+  /** Secrets (fill … secret:NOM) : 0600, hors config.json. */
+  secretsFile: string;
   stateDir: string;
   logDir: string;
   pidFile: string;
@@ -58,6 +60,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env, home: string 
     configDir,
     configFile: join(configDir, 'config.json'),
     tokenFile: join(configDir, 'token'),
+    secretsFile: join(configDir, 'secrets.json'),
     stateDir,
     logDir: join(stateDir, 'logs'),
     pidFile: join(stateDir, 'grasp.pid'),

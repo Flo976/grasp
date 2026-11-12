@@ -33,6 +33,8 @@ function minutes(m: number): string {
 }
 import { STATE_MAX_BYTES } from '../core/state.js';
 import { describeViewport, viewportSpecOf, type ViewportSpec } from '../core/viewport.js';
+import { SecretStore } from '../core/secrets.js';
+import { redactResponse, withSecret } from './redact.js';
 
 export interface Session {
   id: string;
@@ -160,6 +162,7 @@ export function permissionTargets(paths: GraspPaths): Array<{ path: string; kind
     { path: paths.configDir, kind: 'dir' },
     { path: paths.configFile, kind: 'file' },
     { path: paths.tokenFile, kind: 'file' },
+    { path: paths.secretsFile, kind: 'file' },
     { path: paths.stateDir, kind: 'dir' },
     { path: paths.capturesDir, kind: 'dir' },
     { path: paths.dataDir, kind: 'dir' },
@@ -209,7 +212,10 @@ export async function resolveProfileRoots(browser: DiscoveredBrowser | undefined
 
 export async function startControlPlane(o: ControlPlaneOptions): Promise<ControlPlane> {
   const { paths } = o;
-  const log = o.log ?? ((m: string) => process.stderr.write(`${new Date().toISOString()} grasp: ${m}\n`));
+  const rawLog = o.log ?? ((m: string) => process.stderr.write(`${new Date().toISOString()} grasp: ${m}\n`));
+  // Journal du serveur : jamais une valeur de secret.
+  const secrets = new SecretStore(paths.secretsFile);
+  const log = (m: string) => rawLog(secrets.redactor.redact(m));
 
   // 0. Chemin de socket trop long : repli sous /tmp/grasp-<uid>/<hash>, vérifié (propriétaire, 0700, pas de lien).
   if (paths.socketFallback !== undefined) {
@@ -228,6 +234,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   // 3. Config et politique : un seul objet, gelé, partagé par le garde et le rapport.
   const { config, policy } = loadEffective(paths);
+  // Secrets : fichier trop ouvert ou invalide = refus de démarrer, comme la config.
+  secrets.refresh();
+  const secretList = secrets.list().secrets;
+  if (secretList.length > 0) {
+    log(`secrets : ${secretList.map((x) => `${x.name} (${x.domains.join(', ')})`).join(' ; ')} — valeurs masquées dans toutes les sorties`);
+    if (policy.allowEval) log('AVERTISSEMENT : allowEval=true avec des secrets : une expression eval peut lire un champ rempli et en transformer la valeur (le masquage ne reconnaît que la valeur et ses encodages usuels)');
+  }
   const transport = o.transport ?? config.transport;
   // Sockets Unix limités à 107 octets : refus explicite ici plutôt qu'un « listen EADDRINUSE » plus tard.
   checkSocketPaths(paths, transport);
@@ -662,7 +675,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try {
       if (notice !== undefined) onNotice(notice);
       if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
-      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, rq.body, {}, rq.timeoutMs);
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, withSecret(secrets, rq.path.split('?')[0]!, rq.body), {}, rq.timeoutMs);
     } catch (e) {
       if (e instanceof GraspError) throw e;
       throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
@@ -693,9 +706,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     const qs = new URLSearchParams(url.searchParams);
     qs.delete('session');
     const path = `${url.pathname}${qs.size ? `?${qs}` : ''}`;
+    // Substitution d'un secret hors du try : un secret inconnu ou refusé garde son code (404, 400), pas 502.
+    const payload = withSecret(secrets, url.pathname, body && body.length ? JSON.parse(body.toString('utf8')) as Record<string, unknown> : undefined);
     let r;
     try {
-      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, req.method ?? 'GET', path, body && body.length ? JSON.parse(body.toString('utf8')) : undefined);
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, req.method ?? 'GET', path, payload);
     } catch (e) { throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`); }
     // En-têtes x-grasp-* du bridge (dimensions d'une capture) transmis tels quels.
     const extra: Record<string, string> = {};
@@ -708,12 +723,17 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const url = new URL(req.url ?? '/', 'http://grasp');
+      // Toute réponse (JSON, texte, erreur, note) passe par le masquage des secrets ; le binaire reste tel quel.
+      secrets.refreshQuietly();
+      redactResponse(res, secrets.redactor);
       if (url.pathname === '/health' && req.method === 'GET') return sendJson(res, 200, { ok: true, pid: process.pid, sessions: sessions.size, chrome: version });
       const auth = req.headers.authorization ?? '';
       const given = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
       if (!given || !timingSafeEqual(sha(given), tokenHash)) throw new GraspError(401, 'token manquant ou invalide (Authorization: Bearer <token>)');
 
       const route = `${req.method} ${url.pathname}`;
+      // Noms et domaines des secrets, tels que le serveur les applique (jamais les valeurs).
+      if (route === 'GET /secrets') return sendJson(res, 200, secrets.list());
       if (route === 'GET /security/effective') return sendJson(res, 200, await securityReport());
       if (route === 'GET /sessions') {
         return sendJson(res, 200, [...sessions.values()].map((s) => ({

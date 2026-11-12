@@ -8,6 +8,8 @@ import { scrollSpecOf } from './scroll.js';
 import { viewportSpecOf } from '../core/viewport.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 import { compileFind, FIND_LIMIT_MAX, SNAP_MODES, type FindPattern, type FindSpec, type SnapMode } from './snapshot.js';
+import type { SecretUse } from '../core/secrets.js';
+import { redactResponse } from '../control/redact.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -45,6 +47,14 @@ export function snapReadOptions(q: URLSearchParams): { mode?: SnapMode; find?: F
   return { find: { pattern, ...(roles !== undefined ? { roles } : {}), ...(n !== undefined ? { limit: n } : {}) } };
 }
 
+/** Secret substitué par le control plane : nom et domaines (la valeur est dans `value`). */
+function secretUseOf(v: unknown): SecretUse | undefined {
+  if (v === undefined) return undefined;
+  const o = v as Record<string, unknown> | null;
+  if (o === null || typeof o !== 'object' || typeof o.name !== 'string' || !Array.isArray(o.domains) || !o.domains.every((d) => typeof d === 'string')) throw new GraspError(400, 'secretUse : { name, domains } attendu');
+  return { name: o.name, domains: o.domains as string[] };
+}
+
 function level(v: unknown): ConsoleLevel | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   if (typeof v !== 'string' || !isLevel(v)) throw new GraspError(400, `niveau inconnu « ${String(v)} » (niveaux : error, warn, info, debug)`);
@@ -57,6 +67,8 @@ function level(v: unknown): ConsoleLevel | undefined {
  */
 export function bridgeHandler(page: PageController, info: () => Record<string, unknown>, sessionOptions: () => Record<string, unknown> = () => ({})) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Toute réponse du bridge est masquée avec les secrets saisis dans la session (et leurs valeurs effectives).
+    redactResponse(res, page.secretRedactor);
     try {
       const url = new URL(req.url ?? '/', 'http://bridge');
       const q = url.searchParams;
@@ -82,7 +94,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));
         case 'POST /expect': return sendJson(res, 200, await page.expect(expectSpecOf(body), { shotOnError: opts.shotOnError }));
         case 'POST /click': return sendJson(res, 200, await page.click(str(body, 'target'), opts));
-        case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts));
+        case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts, secretUseOf(body.secretUse)));
         case 'POST /hover': return sendJson(res, 200, await page.hover(str(body, 'target'), opts));
         case 'POST /type': return sendJson(res, 200, await page.type(str(body, 'target'), str(body, 'text'), { ...opts, delay: optInt(body.delay, 'delay') }));
         case 'POST /select': return sendJson(res, 200, await page.select(str(body, 'target'), str(body, 'value'), opts));

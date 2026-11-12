@@ -18,6 +18,7 @@ import { STATE_FORMAT, STATE_VERSION, cookieAllowed, cookieOrigin, fromCdpCookie
 import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
 import { SCROLL_BUDGET_MS, SCROLL_FN, SCROLL_STEPS_DEFAULT, scrollNote, type ScrollMeasure, type ScrollReport, type ScrollSpec } from './scroll.js';
 import { describeViewport, mobileUserAgent, type ViewportSpec } from '../core/viewport.js';
+import { Redactor, secretAllowedOn, type SecretUse } from '../core/secrets.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -734,6 +735,10 @@ export class PageController {
   private fallback: 'none' | 'playwright' = 'none';
   /** Identifiants HTTP basic de la session (mémoire seulement ; jamais journalisés ni rapportés en clair). */
   private creds: readonly HttpCredential[] = [];
+  /** Secrets saisis par `fill … secret:NOM` dans cette session : masqués à la source (avant toute coupure). */
+  readonly secretRedactor = new Redactor();
+  /** Champs remplis avec un secret (backendNodeId → nom) : leur valeur est rendue `secret:NOM`, même tronquée. */
+  private readonly secretNodes = new Map<number, string>();
   /** Requêtes auxquelles des identifiants ont déjà été fournis : un second défi = identifiants refusés. */
   private readonly authTried = new Set<string>();
   /** Hôtes dont un certificat non vérifié a déjà été signalé dans la console. */
@@ -1031,7 +1036,10 @@ export class PageController {
       .catch(() => this.cdp.send('Network.enable', {}, sessionId));
   }
 
-  private log(e: NewEntry): void { this.consoleBuf.push(e); }
+  private log(e: NewEntry): void {
+    const r = this.secretRedactor;
+    this.consoleBuf.push(r.size === 0 ? e : { ...e, text: r.redact(e.text), ...(e.url !== undefined ? { url: r.redact(e.url) } : {}), ...(e.frame !== undefined ? { frame: r.redact(e.frame) } : {}) });
+  }
 
   private frameOf(sessionId: string | undefined, contextId: unknown): string | undefined {
     const frameId = this.contexts.get(`${sessionId}:${String(contextId)}`);
@@ -1756,6 +1764,7 @@ export class PageController {
       this.s<{ currentIndex: number; entries: Array<{ url: string; title: string }> }>('Page.getNavigationHistory'),
       this.isolatedContext().catch(() => undefined),
     ]);
+    this.scrubSecrets(nodes);
     const [formErrors, sourceTexts] = await Promise.all([
       this.formErrors(scopeBackendId),
       PageController.mayBeTransformed(nodes) ? this.sourceTexts(nodes) : Promise.resolve(undefined),
@@ -1787,7 +1796,7 @@ export class PageController {
       try { return await loc.ariaSnapshot({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'snap'); }
     });
     const frames = scope.split(/\s*>>\s*/).filter((x) => x.startsWith('frame=')).join(' >> ');
-    return truncateText(`cadre ${scope} (arbre ARIA de Playwright, sans refs : agissez avec « ${frames} >> <css|text:…> »)\n${aria}`, opts.maxBytes ?? this.limits.snapMax, { wholeLines: true });
+    return truncateText(`cadre ${scope} (arbre ARIA de Playwright, sans refs : agissez avec « ${frames} >> <css|text:…> »)\n${this.secretRedactor.redact(aria)}`, opts.maxBytes ?? this.limits.snapMax, { wholeLines: true });
   }
 
   /**
@@ -1863,7 +1872,7 @@ export class PageController {
     for (const n of nodes) {
       if (n.role?.value !== 'StaticText' || n.backendDOMNodeId === undefined) continue;
       const src = bySeen.get((typeof n.name?.value === 'string' ? n.name.value : '').replace(/\s+/g, ' ').trim());
-      if (src !== undefined) out.set(n.backendDOMNodeId, src);
+      if (src !== undefined) out.set(n.backendDOMNodeId, this.secretRedactor.redact(src));
     }
     return out;
   }
@@ -1928,7 +1937,38 @@ export class PageController {
       const r = await this.s<{ result: { value?: string } }>('Runtime.evaluate', { expression: 'document.body ? document.body.innerText : ""', returnByValue: true });
       t = r.result.value ?? '';
     }
-    return truncateText(t, max ?? this.limits.textMax);
+    return truncateText(this.secretRedactor.redact(t), max ?? this.limits.textMax);
+  }
+
+  /**
+   * Arbre d'accessibilité : un champ rempli avec un secret rend `secret:NOM` (même si la page a tronqué la
+   * valeur, maxlength) ; ailleurs, toute valeur saisie dans la session est masquée avant la coupure des noms.
+   */
+  private scrubSecrets(nodes: AXNode[]): void {
+    if (this.secretRedactor.size === 0) return;
+    const r = this.secretRedactor;
+    for (const n of nodes) {
+      const own = n.backendDOMNodeId !== undefined ? this.secretNodes.get(n.backendDOMNodeId) : undefined;
+      if (own !== undefined && n.value !== undefined && n.value.value !== undefined && n.value.value !== '') n.value = { ...n.value, value: `secret:${own}` };
+      for (const k of ['name', 'value', 'description'] as const) {
+        const v = n[k];
+        if (v !== undefined && typeof v.value === 'string') n[k] = { ...v, value: r.redact(v.value) };
+      }
+    }
+  }
+
+  /**
+   * Secret : la page courante doit être sur l'un de ses domaines (vérifié juste avant la saisie). La valeur
+   * n'est connue du bridge qu'à partir d'ici, pour être masquée dans toutes ses sorties.
+   */
+  private async assertSecretDomain(secret: SecretUse, sel: string): Promise<void> {
+    if (parseFrameTarget(sel) !== null) throw badRequest(`secret:${secret.name} : saisie dans une iframe (frame=…) non prise en charge — le domaine contrôlé est celui de la page`);
+    const { url } = await this.location();
+    if (!secretAllowedOn(secret.domains, url)) {
+      let host = url;
+      try { host = new URL(url).host || url; } catch { /* about:blank */ }
+      throw forbidden(`secret:${secret.name} réservé à ${secret.domains.join(', ')} : la page courante est sur ${redactUrl(host, 120)} — rien n'a été saisi`);
+    }
   }
 
   // ---------- Monde isolé de lecture : stabilité, wait, text --scope (code fixe, jamais celui de l'agent) ----------
@@ -2152,6 +2192,12 @@ export class PageController {
   }
 
   private async hasText(t: string): Promise<'ok' | 'absent'> {
+    if (this.secretRedactor.size > 0) {
+      // Secret saisi dans la session : comparaison sur le texte masqué (pas d'oracle sur une valeur recopiée).
+      const n = (s: string) => s.replace(/\s+/g, ' ');
+      const body = await this.evalIsolated<string>('document.body ? document.body.innerText : ""');
+      return n(this.secretRedactor.redact(body ?? '')).includes(n(t)) ? 'ok' : 'absent';
+    }
     const found = await this.evalIsolated<boolean>(`((t) => { const n = (s) => s.replace(/\\s+/g, ' '); return !!document.body && n(document.body.innerText).includes(n(t)); })(${JSON.stringify(t)})`);
     return found ? 'ok' : 'absent';
   }
@@ -2244,14 +2290,15 @@ export class PageController {
       case 'text': case 'no-text': {
         const zone = spec.scope !== undefined ? 'de la zone' : 'de la page';
         const raw = spec.scope !== undefined ? await this.text(EXPECT_TEXT_MAX, spec.scope) : await this.evalIsolated<string>(`document.body ? document.body.innerText.slice(0, ${EXPECT_TEXT_MAX}) : ''`);
-        const t = normSpace(raw);
+        // Comparé sur le texte MASQUÉ : sinon `--regex '^préfixe'` servirait d'oracle sur un secret recopié.
+        const t = normSpace(this.secretRedactor.redact(raw));
         const f = findText(t, spec);
         if (spec.kind === 'text') return { ok: f.index >= 0, observed: t === '' ? `aucun texte visible ${zone === 'de la zone' ? 'dans la zone' : 'dans la page'}` : `absent ; texte ${zone} : ${excerpt(t)}` };
         return { ok: f.index < 0, observed: `présent : ${around(t, f.index, f.length)}` };
       }
       case 'url': case 'title': {
         const loc = await this.location();
-        const v = spec.kind === 'url' ? loc.url : loc.title;
+        const v = this.secretRedactor.redact(spec.kind === 'url' ? loc.url : loc.title);
         return { ok: matchValue(v, spec), observed: short(v) };
       }
       case 'sel': case 'no-sel': {
@@ -2265,7 +2312,11 @@ export class PageController {
           if (e instanceof GraspError && e.status === 404) return { ok: false, observed: e.message };
           throw e;
         }
-        const v = await this.callIsolated<string>(id, VALUE_FN);
+        const raw = await this.callIsolated<string>(id, VALUE_FN);
+        // Champ marqué (fill … secret:NOM) : seule sa forme masquée est comparée, `secret:NOM` (même valeur
+        // reformatée ou tronquée par la page) ; sinon ~ et --regex reconstitueraient la valeur caractère par caractère.
+        const own = this.secretNodes.get(id);
+        const v = own !== undefined && raw !== '' ? `secret:${own}` : this.secretRedactor.redact(raw);
         return { ok: matchValue(v, spec), observed: short(v) };
       }
       default: throw badRequest(`assertion ${spec.kind} non relue`);
@@ -2823,7 +2874,24 @@ export class PageController {
     });
   }
 
-  fill(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {
+  /**
+   * `secret` : valeur substituée par le control plane (`fill … secret:NOM`). Domaine vérifié avant la saisie ;
+   * aucun message ne recopie la valeur (ni la valeur effective, qui peut en être un préfixe).
+   */
+  fill(sel: string, value: string, opts: ActionOptions = {}, secret?: SecretUse): Promise<ActionResult> {
+    if (secret === undefined) return this.fillValue(sel, value, opts);
+    return this.assertSecretDomain(secret, sel).then(() => {
+      this.secretRedactor.add(secret.name, value);
+      return this.fillValue(sel, value, opts, secret);
+    });
+  }
+
+  private fillValue(sel: string, value: string, opts: ActionOptions, secret?: SecretUse): Promise<ActionResult> {
+    // Valeur effective différente (maxlength, masque) : souvent un préfixe du secret, masqué désormais lui aussi.
+    const mismatch = (actual: string) => { if (secret !== undefined) this.secretRedactor.add(secret.name, actual); return mismatchText(actual); };
+    const mismatchText = (actual: string) => (secret !== undefined
+      ? `la valeur effective (${actual.length} caractère(s)) n'est pas celle de secret:${secret.name} (${value.length}) (maxlength, masque de saisie ?)`
+      : `la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
     let engine: 'native' | 'playwright';
     try { engine = this.engineFor(opts, sel); } catch (e) { return Promise.reject(e); }
     if (engine === 'playwright') {
@@ -2833,7 +2901,7 @@ export class PageController {
         let actual: string;
         try { actual = await l.inputValue({ timeout: 2000 }); } catch { actual = (await l.innerText({ timeout: 2000 })).trim(); value = value.trim(); }
         // Playwright respecte maxlength (valeur tronquée → 409 ici) : pas de note « au-delà de maxlength » à faire.
-        if (actual !== value) throw conflict(`la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
+        if (actual !== value) throw conflict(mismatch(actual));
       }, undefined, (_res, id) => this.invalidFieldNote(id));
     }
     let fieldId: number | undefined;
@@ -2844,7 +2912,13 @@ export class PageController {
       const isField = (info.tag === 'INPUT' && !NON_TEXT_INPUTS.has(info.type)) || info.tag === 'TEXTAREA' || info.editable;
       if (!isField) throw badRequest(`fill attend un champ de saisie, reçu <${info.tag.toLowerCase()}${info.type ? ` type=${info.type}` : ''}> — utilisez click, check ou select`);
       if (info.disabled || info.readOnly) throw conflict('champ désactivé ou en lecture seule');
-      if (info.editable && info.tag !== 'INPUT' && info.tag !== 'TEXTAREA') { fieldId = id; await this.fillEditable(id, value); return undefined; }
+      if (secret !== undefined) {
+        // Revérifié au plus près de la frappe (la page a pu naviguer depuis), puis le champ est marqué : sa valeur
+        // sera rendue secret:NOM dans les snapshots, même si la page la tronque.
+        await this.assertSecretDomain(secret, sel);
+        this.secretNodes.set(id, secret.name);
+      }
+      if (info.editable && info.tag !== 'INPUT' && info.tag !== 'TEXTAREA') { fieldId = id; await this.fillEditable(id, value, secret?.name); return undefined; }
       const prepare = async () => {
         await this.s('DOM.focus', { backendNodeId: id });
         await this.callOn(id, `function () { if (typeof this.select === 'function') this.select(); else { const r = document.createRange(); r.selectNodeContents(this); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }`);
@@ -2875,7 +2949,7 @@ export class PageController {
         actual = await this.callOn<string>(id, read);
       }
       // On vérifie l'effet, pas l'émission : une valeur tronquée (maxlength, masque) est une erreur.
-      if (actual !== value) throw conflict(`la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
+      if (actual !== value) throw conflict(mismatch(actual));
       await this.callOn(id, `function () { this.dispatchEvent(new Event('change', { bubbles: true })); }`);
       fieldId = id;
       // La saisie programmatique passe outre maxlength (mesuré sur Malt : 56 caractères pour maxlength=50).
@@ -2893,7 +2967,7 @@ export class PageController {
    * frappe ; texte final vérifié (lignes non vides comparées). Jamais de setter de <input> sur un élément
    * qui n'en est pas un (« TypeError: Illegal invocation »).
    */
-  private async fillEditable(id: number, value: string): Promise<void> {
+  private async fillEditable(id: number, value: string, secretName?: string): Promise<void> {
     const lines = value.replace(/\r\n?/g, '\n').split('\n');
     // Comparaison au rendu : espaces consécutifs repliés (le contenteditable les affiche en un, ou en insécables), lignes vides ignorées.
     const norm = (t: string) => t.split('\n').map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim()).filter((l) => l !== '').join('\n');
@@ -2925,7 +2999,8 @@ export class PageController {
     // L'éditeur peut retoucher le texte après coup (normalisation asynchrone) : on laisse une frame passer.
     await this.evalIsolated(FRAMES_FN, true).catch(() => undefined);
     const actual = norm(await this.callIsolated<string>(id, read));
-    if (actual !== want) throw conflict(`le texte effectif de l'éditeur est « ${actual.replace(/\n/g, '⏎')} » et non « ${want.replace(/\n/g, '⏎')} » (l'éditeur a-t-il refusé ou transformé la saisie ?)`);
+    if (actual !== want && secretName !== undefined) this.secretRedactor.add(secretName, actual);
+    if (actual !== want) throw conflict(secretName !== undefined ? `le texte effectif de l'éditeur (${actual.length} caractère(s)) n'est pas celui de secret:${secretName} (${want.length}) (l'éditeur a-t-il refusé ou transformé la saisie ?)` : `le texte effectif de l'éditeur est « ${actual.replace(/\n/g, '⏎')} » et non « ${want.replace(/\n/g, '⏎')} » (l'éditeur a-t-il refusé ou transformé la saisie ?)`);
   }
 
   select(sel: string, value: string, opts: ActionOptions = {}): Promise<ActionResult> {

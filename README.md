@@ -638,6 +638,8 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
+| `fill <sél> secret:NOM` | Remplit avec un **secret** du serveur : valeur jamais vue par l'agent, refusée hors des domaines du secret, rendue `secret:NOM` dans toutes les sorties. Voir [Secrets](#secrets-fill--secretnom). |
+| `secrets list`, `secrets set <NOM> --domains <hôtes>`, `secrets rm <NOM>` | Noms et domaines des secrets (jamais les valeurs) ; `set` lit la valeur sur stdin. |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
 | `check <sél> [--uncheck]` | Coche ou décoche, puis **vérifie l'état**. |
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |
@@ -1138,7 +1140,8 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `find` | `pattern`, `role`, `max`, `scope`, `nameMax` | `find <motif> --role --max --scope --name-max` |
 | `text` | `max`, `scope`, `markdown` | `text [--markdown]` |
 | `click`, `hover` | `target`, options d'action | idem |
-| `fill`, `select` | `target`, `value`, options d'action | idem |
+| `fill`, `select` | `target`, `value`, options d'action | idem ; `fill` avec `value="secret:NOM"` : [secret](#secrets-fill--secretnom) |
+| `secrets` | aucun | `secrets list` (noms et domaines) |
 | `type` | `target`, `text`, `delay`, options d'action | idem |
 | `check` | `target`, `checked` (défaut `true`), options d'action | `check [--uncheck]` |
 | `press` | `key`, `target?`, options d'action | idem |
@@ -1678,6 +1681,8 @@ POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)
 POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
+POST /fill {target, secret: "NOM", …}   valeur prise dans le magasin (404 si inconnu, 403 hors de ses domaines)
+GET  /secrets → {file, exists, secrets: [{name, domains}], error?}   (jamais les valeurs)
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
@@ -1717,6 +1722,8 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
   à chaque démarrage. Aucun proxy, aucune règle de résolution par défaut ; quand il y en a, l'allowlist porte
   sur le nom demandé. Identifiants HTTP basic : par session, en mémoire, jamais affichés
   (voir [Tester un serveur distant](#tester-un-serveur-distant)).
+- **Secrets** (`fill … secret:NOM`) : valeur gardée par le serveur, restreinte à des domaines, masquée dans
+  toutes les sorties texte (voir [Secrets](#secrets-fill--secretnom)).
 - **Protection SSRF** : un nom admis par l'allowlist qui mène à une adresse privée ou réservée est refusé
   (voir ci-dessous). Opt-out explicite : `allowPrivateNetwork=true`.
 - **Frontières de contenu** : dès que l'allowlist admet un hôte hors de la boucle locale, tout texte venu de la
@@ -1797,6 +1804,73 @@ destinée au futur `grasp skill` : constante `BOUNDARY_RULE` de `src/core/bounda
   et comptées, défaut lié à l'allowlist. Aucun code repris ; Grasp ne fait pas, comme PinchTab, de recherche de
   motifs d'injection dans le texte (`scanContent`) : un tel filtre se contourne par reformulation et produirait
   des faux positifs sur les pages qui parlent d'injection.
+
+### Secrets (`fill … secret:NOM`)
+
+Un mot de passe ou un jeton que l'agent doit saisir sans le connaître : l'humain le déclare une fois, l'agent
+n'en manipule que le **nom**.
+
+```bash
+# Humain, une fois : valeur sur stdin (jamais en argument, ni dans ps ni dans l'historique)
+read -rs MDP; printf '%s' "$MDP" | grasp secrets set MDP_PREPROD --domains preprod.exemple.com
+grasp secrets list                      # MDP_PREPROD	preprod.exemple.com   (noms et domaines, lus au serveur)
+
+# Agent : CLI, ligne de grasp run, ou outil MCP fill avec value="secret:MDP_PREPROD"
+grasp fill '#password' secret:MDP_PREPROD --snap-diff
+  ~ e4k2p:textbox "Mot de passe"="secret:MDP_PREPROD" [focus]
+```
+
+- **Magasin** : `${XDG_CONFIG_HOME:-~/.config}/grasp/secrets.json`, `{"NOM": {"value": "…", "domains": ["…"]}}`, en
+  **0600** (sinon le serveur refuse de démarrer, comme pour la config), distinct de `config.json`. Choisi plutôt
+  que des variables `GRASP_SECRET_NOM` : un secret y porte ses domaines ; l'environnement du serveur est hérité
+  par Chrome, et `grasp mcp` ou la CLI lancent le serveur depuis le shell de l'agent, qui pourrait l'afficher.
+  Relu quand il change (`secrets set` s'applique sans redémarrage) ; écriture atomique relue (règle n°4).
+  Nom : lettre puis lettres, chiffres, `_` ; valeur de 4 caractères au moins (en deçà, masquer la valeur
+  partout abîmerait les sorties).
+- **Domaines** : syntaxe de l'allowlist (`hôte`, `*.domaine` = sous-domaines), jamais `*`, ni schéma ni port.
+  Juste avant la frappe, le bridge vérifie l'hôte de la page courante : hors domaines → **403** `secret:NOM
+  réservé à preprod.exemple.com : la page courante est sur 127.0.0.1:8080 — rien n'a été saisi`. `localhost`
+  n'est pas `127.0.0.1`. Un sélecteur `frame=…` est refusé (le domaine contrôlé est celui de la page). Nom
+  inconnu → 404 (Playwright MCP tape alors le nom tel quel ; Grasp refuse). `type` refuse `secret:NOM`.
+- **Chemin de la valeur** : le client n'envoie que le nom (`{"secret": "NOM"}`) ; le control plane lit le
+  magasin et transmet la valeur au bridge avec ses domaines, par le socket privé (un `secretUse` venu d'un
+  client est refusé). Le bridge ne connaît que les secrets saisis dans sa session.
+- **Masquage** (`secret:NOM`), à deux étages :
+  - **bridge**, à la source : arbre d'accessibilité avant la coupure des noms (snap, `--snap-diff`, refs
+    candidates), `text` et `--markdown` avant la coupure du budget, console à l'enregistrement, puis toute
+    réponse du bridge. Un champ rempli avec un secret est **marqué** : sa valeur est rendue `secret:NOM` même si
+    la page la reformate ensuite. Si la valeur effective diffère (maxlength, masque de saisie : souvent un
+    préfixe), l'erreur 409 ne recopie ni l'une ni l'autre (`la valeur effective (6 caractère(s)) n'est pas celle
+    de secret:COURT (9)`) et cette valeur effective est masquée elle aussi. Les **comparaisons** se font sur
+    la forme masquée, pour qu'un code de sortie ne serve pas d'oracle (sinon `expect value #mdp --regex
+    '^<préfixe><c>'`, relancé caractère par caractère, reconstitue la valeur sans eval — le test
+    `pas d'oracle` le vérifie) : `expect value` sur un champ marqué compare `secret:NOM`
+    (seul `expect value <sél> secret:NOM` réussit), `expect text|no-text|url|title` et `wait --text`
+    comparent le texte, l'URL et le titre masqués, `text:` les noms masqués de l'arbre ;
+  - **control plane**, filet sur **toute** réponse JSON ou texte (actions, `run` et rapport de recette, erreurs,
+    note `X-Grasp-Notice`) et sur son journal, avec **toutes** les valeurs du magasin, même jamais saisies (une
+    page de réglages qui affiche une clé d'API). Une valeur retirée du magasin reste masquée jusqu'à l'arrêt.
+
+  Formes reconnues : brute, `encodeURIComponent`, formulaire (`+`), chaîne JSON, entités HTML ; et un début de
+  valeur (4 caractères ou plus) coupé par un budget de sortie (suivi de `…` ou de la ligne `… tronqué`). Coût
+  mesuré (une machine, 10 secrets de 56 caractères) : ≈ 0,01 ms pour 12 000 caractères, ≈ 1,3 ms pour la
+  réponse JSON d'un run de 224 Ko.
+- **Tests** : `test/integration/secrets.test.ts` saisit 5 secrets (champ texte, mot de passe, champ tronqué par
+  un masque, champ reformaté par la page, éditeur riche) dans une page qui les recopie partout (texte, titre,
+  console, URL d'une requête en échec, formulaire GET), puis cherche chaque valeur, ses encodages et son début
+  dans snap, text, markdown, diff, console, `run` (texte et JSON, rapport compris), erreurs, journal du serveur
+  et sur disque. Validés par **mutation** (le test passe au rouge) : contrôle de domaine désactivé, filet du
+  control plane retiré, filet du bridge retiré, marquage du champ désactivé, valeur effective non masquée,
+  bridge jamais informé du secret, `secretUse` accepté d'un client, masquage des débuts coupés retiré
+  (unitaire), et, pour l'oracle, comparaison sur la valeur brute dans `expect value`, `expect text`,
+  `wait --text`, `expect url|title` (4 mutations). Le masquage du **journal** du serveur n'est pas couvert par une mutation (aucune valeur n'y
+  arrive dans le scénario testé).
+- **Inspiration** : le serveur MCP de Playwright (microsoft/playwright, Apache-2.0, v1.56.0) —
+  `Context.lookupSecret()` (`packages/playwright/src/mcp/browser/context.ts`) et `Response._redactSecrets()`
+  (`packages/playwright/src/mcp/browser/response.ts`, qui remplace la valeur brute par `<secret>NOM</secret>`
+  dans les réponses texte). Aucun code repris ; ajoutés ici : domaines, refus d'un nom inconnu, formes
+  encodées, valeurs coupées, champ marqué, deux étages. La documentation de Playwright MCP le dit d'elle-même :
+  « a convenience and not a security feature ». Voir les limites ci-dessous.
 
 ### Protection SSRF
 
@@ -1942,6 +2016,7 @@ session sur une page simple, beaucoup plus sur une application lourde. Le test d
 | Quoi | Chemin |
 |---|---|
 | Config, token | `${XDG_CONFIG_HOME:-~/.config}/grasp/{config.json,token}` |
+| Secrets | `${XDG_CONFIG_HOME:-~/.config}/grasp/secrets.json` (0600 exigé) |
 | État, logs, PID, endpoint | `${XDG_STATE_HOME:-~/.local/state}/grasp/` |
 | Captures (sans `-o`) | `${XDG_STATE_HOME:-~/.local/state}/grasp/captures/` (0700, fichiers 0600, 50 gardées) |
 | États exportés (sans fichier) | `${XDG_STATE_HOME:-~/.local/state}/grasp/etats/` (0700, fichiers 0600, jamais purgés : à supprimer après usage) |
@@ -2245,6 +2320,24 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   le voir passer) et ne couvre que le cadre principal ; en mode attach avec une fenêtre visible, un onglet
   en arrière-plan ou une fenêtre minimisée peut empêcher la capture (erreur 504 explicite après 30 s, non
   reproduit en headless).
+
+- **Secrets** : le masquage porte sur les **sorties texte** de Grasp. Une capture d'écran ou un PDF montrent un
+  champ texte (pas un champ mot de passe) tel qu'il est affiché. Le **profil Chrome** garde ce que Chrome garde
+  de tout formulaire envoyé : constaté dans le test après un formulaire GET, la valeur dans le cache HTTP, la
+  saisie semi-automatique (`Web Data`), `Sessions/` et `ukm_db` du profil — un profil éphémère est supprimé
+  à la fermeture de la session, un profil nommé les conserve. Une valeur transformée par la page (majuscules,
+  hachage, base64) puis affichée ailleurs que dans le champ marqué n'est pas reconnue, pas plus qu'une valeur
+  recopiée par morceaux. Avec `allowEval=true`, une expression peut lire le champ et transformer la valeur
+  (avertissement au démarrage). Un agent qui a un shell sous le même utilisateur peut lire `secrets.json`
+  (0600 protège des autres utilisateurs, pas de lui) : pour l'en empêcher, faites tourner le serveur sous un
+  autre utilisateur ou dans un [conteneur](#docker). Pas de `frame=…`, pas de `type secret:NOM`. La valeur
+  `secret:NOM` ne peut pas être saisie littéralement par `fill`. Masquer révèle qu'un texte de la page est
+  la valeur d'un secret (ou son début, à une coupure). **Oracles restants** : les comparaisons du bridge
+  (`expect`, `wait --text`) ne masquent que les secrets saisis dans **sa** session ; un secret jamais saisi
+  mais affiché par la page (clé d'API) n'est masqué que dans la réponse, par le control plane, et `expect
+  text --regex` peut encore le tester. Un sélecteur CSS d'attribut (`wait --sel 'input[value^="Zq"]'`)
+  teste une page qui recopie la saisie dans un attribut (`value` synchronisé, `data-*`) ; une valeur
+  recopiée par morceaux ou transformée reste testable comme elle reste lisible.
 
 ---
 

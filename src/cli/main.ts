@@ -21,6 +21,7 @@ import { formatReport, type RunResult } from '../control/run.js';
 import { checkRunOut, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
 import { parseArgs, buildRequest, consoleBody, findQuery, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
+import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -351,6 +352,44 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
 
 const SESSION_CREATE_USAGE = 'grasp session create [--profile <nom>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -] [--viewport <LARGEURxHAUTEUR|appareil> [--mobile] [--dpr N] [--touch] [--mobile-ua]]';
 
+/**
+ * grasp secrets list | set NOM --domains a,b (valeur sur stdin) | rm NOM. `list` interroge le serveur (ce qu'il
+ * applique), jamais le fichier ; `set` et `rm` écrivent le fichier 0600, relu par le serveur à la commande suivante.
+ */
+async function secretsCmd(c: Client, a: Args, paths: GraspPaths, json: boolean): Promise<number> {
+  const sub = a.pos[0];
+  if (sub === 'list') {
+    const rep = (await c.call('GET', '/secrets')).json() as { file: string; secrets: Array<{ name: string; domains: string[] }>; error?: string };
+    if (rep.error !== undefined) throw new CliError(`magasin de secrets illisible : ${rep.error}`);
+    if (json) out(JSON.stringify(rep));
+    else if (rep.secrets.length === 0) hint(`aucun secret (${rep.file}) — grasp secrets set NOM --domains hôte (valeur sur stdin)`);
+    else out(rep.secrets.map((s) => `${s.name}\t${s.domains.join(',')}`).join('\n'));
+    return 0;
+  }
+  if (sub === 'set') {
+    const name = a.pos[1];
+    const domains = a.flags.get('domains');
+    if (name === undefined || typeof domains !== 'string' || a.pos.length > 2) throw new CliError('usage : grasp secrets set <NOM> --domains <hôte>[,*.domaine…]   (valeur sur stdin, jamais en argument)');
+    if (process.stdin.isTTY) throw new CliError('valeur attendue sur stdin, jamais en argument (ex. read -rs V; printf \'%s\' "$V" | grasp secrets set NOM --domains hôte)');
+    // Une seule ligne finale retirée (printf '%s\n', echo) ; le reste de la valeur est pris tel quel.
+    const value = (await readStdin()).replace(/\r?\n$/, '');
+    try { ensurePrivateDir(paths.configDir); setSecret(paths.secretsFile, name, value, parseDomains(domains)); } catch (e) { throw new CliError((e as Error).message); }
+    out('OK');
+    hint(`secret ${name} (${value.length} caractères) pour ${parseDomains(domains).join(', ')} écrit dans ${paths.secretsFile} — fill <sél> secret:${name}`);
+    return 0;
+  }
+  if (sub === 'rm') {
+    const name = a.pos[1];
+    if (name === undefined) throw new CliError('usage : grasp secrets rm <NOM>');
+    let removed: boolean;
+    try { removed = removeSecret(paths.secretsFile, name); } catch (e) { throw new CliError((e as Error).message); }
+    if (!removed) throw new CliError(`secret « ${name} » inconnu`);
+    out('OK');
+    return 0;
+  }
+  throw new CliError('usage : grasp secrets list | set <NOM> --domains <hôtes> (valeur sur stdin) | rm <NOM>');
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     if (process.stdin.isTTY) { reject(new CliError('--http-auth - : identifiants attendus sur stdin (ex. printf \'%s\\n\' "$PREPROD_AUTH" | grasp session create --http-auth -)')); return; }
@@ -612,6 +651,7 @@ async function main(argv: string[]): Promise<number> {
       if (rep.diskDiffers) hint(`AVERTISSEMENT : ${rep.configFile} a changé depuis le démarrage ; la politique ci-dessus est celle appliquée. Redémarrez (grasp stop && grasp serve) pour appliquer le fichier.`);
       return 0;
     }
+    case 'secrets': return secretsCmd(c, a, paths, json);
     case 'config': {
       const sub = a.pos[0];
       if (sub === 'path') { out(paths.configFile); return 0; }
@@ -807,6 +847,9 @@ Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés 
                stockage Web de l'origine AFFICHÉE (allowlist), code fixe sans eval ; exige allowCookies ;
                get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1
 Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
+Secrets      secrets list | set <NOM> --domains <hôtes> (valeur sur stdin) | rm <NOM>
+               fill <sél> secret:NOM : valeur prise côté serveur, refusée hors des domaines du secret, masquée
+               (secret:NOM) dans toutes les sorties ; list = noms et domaines, jamais les valeurs
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 Aide         help [commande] [--json]   --json : commandes, options et types, outils MCP (grasp-help/1)
              skill                      mode d'emploi pour un agent IA (SKILL.md de Claude Code)

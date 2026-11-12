@@ -224,6 +224,7 @@ Image Docker
       `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
       ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
       sans être décrite : rouge ; l'ancien test restait vert).
+
 ## Navigation et défilement
 
 - [x] **`back`, `forward`, `reload [--hard]`, `scroll`** (branche `feat/navigation-historique`) : historique de
@@ -236,3 +237,24 @@ Image Docker
       allowlist n'est qu'une note `cadre bloqué`) ; serveur injoignable → 502 `navigation échouée`, comme nav.
       Reste : défilement horizontal, molette réelle (`Input.dispatchMouseEvent` `mouseWheel`) pour les pages qui
       n'écoutent que `wheel`, `scroll` dans une iframe (`frame=…`).
+
+## Secrets jamais vus par l'agent
+
+- [x] **`fill <sél> secret:NOM`** (CLI, `grasp run`, MCP) : valeur prise dans `~/.config/grasp/secrets.json`
+      (0600, hors config ; préféré à `GRASP_SECRET_NOM` : domaines portés par le secret, environnement hérité
+      par Chrome et par le shell de l'agent), restreinte à des domaines (403 avant toute frappe sinon), masquée
+      `secret:NOM` dans toutes les sorties texte (bridge à la source + filet du control plane, journal compris ;
+      encodages URL/formulaire/JSON/HTML, débuts coupés par un budget, champ marqué, valeur effective tronquée).
+      `grasp secrets list|set|rm`, outil MCP `secrets`. Inspiré de Playwright MCP (`lookupSecret`,
+      `_redactSecrets`, Apache-2.0), sans code repris. Tests : `test/unit/secrets.test.ts`,
+      `test/integration/secrets.test.ts`, 8 mutations détectées (README « Secrets »).
+- [x] **Pas d'oracle** : `expect value|text|url|title` et `wait --text` comparent la forme masquée (un champ
+      marqué vaut `secret:NOM`) ; sinon `expect value --regex '^préfixe'` reconstituait la valeur sans eval.
+      4 mutations détectées. Restent : secret affiché mais jamais saisi dans la session, sélecteur CSS
+      d'attribut sur une page qui recopie la saisie (README, Limites connues).
+- [ ] Captures et PDF non masqués (un champ texte rempli s'y voit) : flouter les champs marqués avant capture ?
+- [ ] Profil Chrome : cache HTTP, `Web Data` (saisie semi-automatique), `Sessions/` gardent une valeur envoyée
+      par formulaire ; persistant pour un profil nommé. Désactiver la saisie semi-automatique pour les sessions
+      qui utilisent un secret ?
+- [ ] `frame=…` (secret dans une iframe de connexion) : contrôler le domaine du cadre, pas de la page.
+- [ ] Masquage du journal du serveur non couvert par un test de mutation.

@@ -291,7 +291,17 @@ const TOOLS: Tool[] = [
     },
   },
   actionTool('click', ['target'], 'Clic souris réel au centre de l\'élément, livraison vérifiée. Sélecteur ambigu ou ref disparue → erreur avec les refs candidates, jamais de choix arbitraire.', { target: TARGET, ...ACTION_PROPS }, ['target']),
-  actionTool('fill', ['target', 'value'], 'Remplace le contenu d\'un champ (ou d\'un éditeur riche) et vérifie la valeur effective.', { target: TARGET, value: S('Valeur.'), ...ACTION_PROPS }, ['target', 'value']),
+  actionTool('fill', ['target', 'value'], 'Remplace le contenu d\'un champ (ou d\'un éditeur riche) et vérifie la valeur effective. Mot de passe ou jeton : value="secret:NOM" (outil secrets) — la valeur est prise côté serveur, refusée hors des domaines du secret, et rendue secret:NOM dans toutes les sorties.', { target: TARGET, value: S('Valeur, ou secret:NOM pour un secret du serveur.'), ...ACTION_PROPS }, ['target', 'value']),
+  {
+    name: 'secrets', readOnly: true,
+    description: 'Secrets utilisables avec fill value="secret:NOM" : noms et domaines autorisés, jamais les valeurs.',
+    props: {},
+    async run(c) {
+      const r = (await c.call('GET', '/secrets')).json() as { secrets: Array<{ name: string; domains: string[] }>; error?: string };
+      if (r.error !== undefined) return { content: [{ type: 'text', text: `magasin de secrets illisible : ${r.error}` }], isError: true };
+      return text(r.secrets.length === 0 ? 'aucun secret (l\'utilisateur les déclare : grasp secrets set NOM --domains hôte)' : r.secrets.map((s) => `secret:${s.name} — ${s.domains.join(', ')}`).join('\n'));
+    },
+  },
   actionTool('type', ['target', 'text'], 'Frappe touche par touche, ajoutée à la position du curseur (autocomplétions). Pour remplacer une valeur, préférez fill.', { target: TARGET, text: S('Texte à taper.'), delay: I('Délai entre deux touches, 0 à 1000 ms.'), ...ACTION_PROPS }, ['target', 'text']),
   actionTool('select', ['target', 'value'], 'Choisit une option d\'un <select> natif, par valeur ou libellé (options listées si absente).', { target: TARGET, value: S('Valeur ou libellé de l\'option.'), ...ACTION_PROPS }, ['target', 'value']),
   actionTool('check', ['target'], 'Coche (ou décoche avec checked=false) une case ou un bouton radio, puis vérifie l\'état.', { target: TARGET, checked: B('true (défaut) pour cocher, false pour décocher.'), ...ACTION_PROPS }, ['target'],
