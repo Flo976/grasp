@@ -82,6 +82,8 @@ limite la lecture à une zone.
   profil Chrome existant ([détails](#profils)).
 - 🪟 **Chrome Windows depuis WSL2**, pour les sites qui bloquent Chrome headless
   ([détails](#mode-windows-chromeexe-depuis-wsl2)).
+- 🛰️ **Recette sur un serveur distant** à travers un tunnel SSH : vhost joint par son vrai nom, proxy
+  `ssh -D`, préprod en HTTP basic, certificat accepté hôte par hôte ([détails](#tester-un-serveur-distant)).
 - 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
@@ -248,11 +250,15 @@ grasp doctor                           # signale le mode windows, démarre chrom
 - **Lancement** : `chrome.exe --user-data-dir=<chemin Windows via wslpath -w> --remote-debugging-port=<port>
   --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows
   --disable-renderer-backgrounding --disable-background-timer-throttling
-  --disable-features=CalculateNativeWinOcclusion [--headless=new]` (une fenêtre recouverte ou minimisée, un
+  --disable-features=CalculateNativeWinOcclusion [--proxy-server=… --host-resolver-rules=…] [--headless=new]` (une fenêtre recouverte ou minimisée, un
   écran éteint ne mettent ni le rendu ni les minuteries en veille ; mêmes drapeaux sous Linux, fusionnés dans
   l'unique `--disable-features`), connexion à `127.0.0.1:<port>` (voir « Port DevTools » ci-dessous :
   port tiré par Grasp hors de la plage éphémère de Linux et des plages exclues de Windows).
-  **WSL doit être en `networkingMode=mirrored`** ; sinon erreur explicite qui le dit.
+  **WSL doit être en `networkingMode=mirrored`** ; sinon erreur explicite qui le dit. Les drapeaux réseau
+  ([Tester un serveur distant](#tester-un-serveur-distant)) sont les mêmes que sous Linux, un argument chacun
+  (l'interop WSL cite elle-même ceux qui contiennent des espaces) ; chrome.exe résout et se connecte côté
+  Windows, et un `ssh -L` lancé dans WSL lui est joignable sur `127.0.0.1` grâce au mode mirrored (testé avec
+  `GRASP_TEST_WINDOWS=1` : vhost par son nom, certificat listé, basic auth).
 - **Cycle de vie** : pas de groupe de processus ni de `PDEATHSIG` au-delà de la frontière WSL. Arrêt
   par CDP `Browser.close` ; à défaut, PowerShell (`Get-CimInstance Win32_Process`) retrouve les
   `chrome.exe` dont la ligne de commande porte **exactement ce `--user-data-dir`** et les tue. Le
@@ -766,6 +772,168 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
   `Log.enable` ni `Network.enable` (vérifié par espion CDP). `Runtime.enable` est un vecteur connu de
   détection de l'automatisation par les protections anti-bot ; à couper sur les sites qui y sont sensibles.
 
+## Tester un serveur distant
+
+Cas d'usage : Claude vérifie une tâche (déploiement, correctif) sur un serveur distant, à travers un tunnel SSH
+déjà ouvert, souvent via un serveur de rebond, sur des sites servis en vhosts Apache derrière un vrai nom de
+domaine. **Aucun de ces réglages n'est actif par défaut**, et aucun n'affaiblit le garde : l'allowlist et
+l'interception `Fetch` s'appliquent toujours au **nom demandé** dans l'URL, jamais à l'adresse vers laquelle
+une règle le mappe ni au proxy qui le résout.
+
+| Besoin | Réglage | Effet dans Chrome |
+|---|---|---|
+| Site servi sur un port local du tunnel | rien : `localhost` est dans l'allowlist par défaut | — |
+| Vhost qui n'attend que son vrai nom (`Host:`) | `hostResolverRules` (config) | `--host-resolver-rules` |
+| Voir le réseau du rebond (noms internes, DNS) | `proxyServer` (config) ou `--proxy` (session) | `--proxy-server`, `--proxy-bypass-list` |
+| Certificat qui ne correspond pas au nom | `ignoreCertErrorsFor` (config, hôtes listés) | CDP `Security`, par onglet |
+| Préprod protégée par HTTP basic | `--http-auth` (session, jamais en config) | CDP `Fetch.authRequired` |
+
+Proxy et règles de résolution sont des **drapeaux de lancement** : ils prennent effet au prochain `grasp serve`
+(une session les reçoit à son démarrage), et le mode attach (`cdpUrl`) les refuse au démarrage plutôt que de
+les ignorer. `grasp security` et `grasp doctor` les affichent. Mêmes drapeaux pour chrome.exe
+([Mode Windows](#mode-windows-chromeexe-depuis-wsl2)).
+
+### Tunnel `ssh -L` simple
+
+Le site écoute sur le port 80 du serveur ; on le ramène sur un port local :
+
+```bash
+ssh -f -N -L 8080:127.0.0.1:80 ubuntu@serveur.exemple.com      # via un rebond : ajoutez -J ubuntu@rebond.exemple.com
+grasp nav http://localhost:8080/
+```
+
+Rien à configurer : `localhost` et `127.0.0.1` sont dans l'allowlist par défaut. Limite : Apache reçoit
+`Host: localhost:8080` et sert son vhost **par défaut**, pas forcément le bon site. Dès qu'il y a plusieurs
+vhosts, passez à la règle de résolution.
+
+### Vhost joint par son vrai nom (`hostResolverRules`)
+
+```bash
+ssh -f -N -L 8443:127.0.0.1:443 -L 8080:127.0.0.1:80 ubuntu@serveur.exemple.com
+grasp config set allowedDomains '127.0.0.1,localhost,[::1],site.exemple.com'
+grasp config set hostResolverRules 'MAP site.exemple.com:443 127.0.0.1:8443, MAP site.exemple.com:80 127.0.0.1:8080'
+grasp stop; grasp serve &
+grasp nav https://site.exemple.com/
+```
+
+Chrome se connecte à `127.0.0.1:8443` mais garde le nom partout : URL, `Host: site.exemple.com`, SNI. Le vhost
+répond comme en production, **avec son vrai certificat** (aucune dérogation TLS nécessaire). Le motif peut
+porter un port (`site.exemple.com:443`) pour envoyer http et https dans deux tunnels ; sans port
+(`MAP site.exemple.com 127.0.0.1:8443`), tous les ports vont à la cible. `*.exemple.com` et `EXCLUDE motif`
+sont acceptés.
+
+- **Syntaxe validée au démarrage** (`MAP <motif>[:port] <cible>[:port]` ou `EXCLUDE <motif>`) : Chrome ignore en
+  silence une règle mal formée ; Grasp refuse de démarrer (et `config set` refuse d'écrire).
+- **Allowlist sur le nom** : `allowedDomains=["127.0.0.1"]` n'autorise **pas** `site.exemple.com` mappé sur
+  `127.0.0.1` (403, aucune requête ne part), et autoriser le nom n'autorise pas l'adresse. Testé.
+
+### Proxy SOCKS d'un `ssh -D` (`proxyServer`)
+
+Pour voir les sites exactement comme depuis le rebond (noms internes, `/etc/hosts` et DNS du rebond, filtrage
+par IP source) :
+
+```bash
+ssh -f -N -D 1080 ubuntu@rebond.exemple.com
+grasp config set proxyServer socks5://127.0.0.1:1080
+grasp config set allowedDomains 'intranet.exemple.lan,*.exemple.lan'
+grasp stop; grasp serve &
+grasp nav http://intranet.exemple.lan/
+# ou pour une seule session, sans toucher à la config :
+grasp session create --proxy socks5://127.0.0.1:1080
+```
+
+- Schémas `socks5://`, `socks4://`, `http://`, `https://` ; jamais d'identifiants dans l'URL (Chrome ne les
+  utilise pas : refus explicite). En SOCKS5, Chrome **envoie le nom** au proxy : la résolution DNS se fait sur
+  le rebond (vérifié par le proxy de test, qui reçoit `site.distant.test:80`).
+- Chrome **ne fait jamais passer la boucle locale** (`localhost`, `127.0.0.1`) par un proxy ; pour l'y forcer :
+  `grasp config set proxyBypassList '<-loopback>'`. `proxyBypassList` accepte aussi `*.local`, `10.0.0.0/8`…
+- Une requête qui passe par le proxy est résolue **par le proxy** : `hostResolverRules` ne s'y applique pas.
+- Un nom hors allowlist est annulé dans le navigateur **avant** de partir : le proxy ne le voit jamais (testé).
+- `--proxy` par session surcharge `proxyServer` pour cette session seulement ; `grasp security` le montre
+  (`session s… : proxy socks5://… (propre à la session)`).
+
+### Certificats (`ignoreCertErrorsFor`)
+
+Utile quand le nom ne correspond pas au certificat (`https://localhost:8443/` à travers un tunnel) ou pour une
+préprod au certificat auto-signé. Préférez d'abord `hostResolverRules`, qui garde le vrai nom et donc un
+certificat valide.
+
+```bash
+grasp config set ignoreCertErrorsFor 'preprod.exemple.com'
+```
+
+- **Jamais par défaut**, jamais `*` (refusé) : liste d'hôtes (`*.exemple.com` = sous-domaines), même sémantique
+  que l'allowlist.
+- **Limité aux hôtes listés**, pas global : Grasp active `Security.setOverrideCertificateErrors` sur ses
+  onglets (et iframes, popups), puis accepte ou refuse chaque `Security.certificateError` selon le nom de la
+  requête. Un autre hôte au même certificat est refusé (testé : même serveur, deux noms, un seul listé). Le
+  réglage vaut par onglet : en mode attach, les autres onglets de l'utilisateur ne sont pas touchés.
+- **Avertissement à chaque démarrage** (`AVERTISSEMENT : certificats TLS NON vérifiés pour …`), ligne
+  `certificats: NON VÉRIFIÉS pour …` dans `grasp security`, `warn` dans `grasp doctor`, et une entrée console
+  `certificat TLS NON vérifié accepté pour <hôte>` (une fois par hôte et par session).
+
+### Préprod en HTTP basic (`--http-auth`)
+
+Les identifiants sont donnés **à la session**, jamais à la config :
+
+```bash
+# Recommandé : sur stdin (un par ligne), hors de `ps` et de l'historique du shell.
+printf '%s\n' "$PREPROD_AUTH" | grasp session create --http-auth -     # PREPROD_AUTH=recette:motdepasse@preprod.exemple.com
+# Possible, mais visible dans `ps` et l'historique :
+grasp session create --http-auth 'recette:motdepasse@preprod.exemple.com:8443'
+```
+
+API : `POST /sessions {"httpAuth": ["recette:motdepasse@preprod.exemple.com"]}` (chaîne ou tableau). Le mot de
+passe peut contenir `:` et `@` (coupure au **dernier** `@` et au **premier** `:`).
+
+- **Hôte de l'allowlist exigé** à la création (sinon 403), et identifiants fournis **seulement** à cet hôte (et
+  à ce port s'il est précisé), sur un défi du **serveur** (jamais d'un proxy), pour une URL de l'allowlist.
+  Un autre hôte, même servi par la même machine, reçoit son 401 sans identifiants (testé).
+- `Fetch.authRequired` (interception des documents) : Chrome réutilise ensuite les identifiants acceptés
+  pour les sous-ressources du même espace de protection (feuilles de style, scripts, images : testé).
+- **Un seul essai** : identifiants refusés → page 401 affichée, entrée console `authentification HTTP refusée
+  par <hôte>`, pas de boucle.
+- **Jamais écrits ni affichés** : transmis au bridge par le canal IPC, gardés en mémoire (control plane, pour
+  relancer le bridge à une bascule de profil, et bridge) ; absents de la config, d'`instances.json`, des
+  journaux du serveur et de Chrome, de la console, de `session list` et de `grasp security`
+  (`auth HTTP preprod.exemple.com (identifiants masqués)`, JSON `{"host": …, "credentials": "***"}`). Les
+  messages d'erreur ne recopient jamais la valeur reçue. Le test de bout en bout parcourt tous les fichiers
+  écrits par Grasp et Chrome à la recherche du mot de passe.
+- En `http://`, les identifiants voyagent en clair : à travers un tunnel SSH, c'est le tunnel qui chiffre ;
+  ailleurs, préférez `https://`.
+
+### Exemple de recette complète
+
+Vérifier un correctif déployé sur une préprod protégée, servie en vhost derrière un rebond :
+
+```bash
+# 1. Tunnel (le rebond voit la préprod sur son réseau interne)
+ssh -f -N -J ubuntu@rebond.exemple.com -L 8443:127.0.0.1:443 deploy@preprod.exemple.com
+
+# 2. Grasp : le vrai nom, joint par le tunnel ; rien d'autre n'est autorisé
+grasp config set allowedDomains 'preprod.exemple.com'
+grasp config set hostResolverRules 'MAP preprod.exemple.com:443 127.0.0.1:8443'
+grasp stop 2>/dev/null; grasp serve &
+grasp security                       # allowlist, résolution, certificats : vérifier avant d'agir
+
+# 3. Session avec les identifiants de la préprod, lus dans l'environnement
+export GRASP_SESSION=$(printf '%s\n' "$PREPROD_AUTH" | grasp session create --http-auth -)
+
+# 4. La vérification elle-même, en un aller-retour
+grasp run <<'FIN'
+nav https://preprod.exemple.com/commande/42 --console
+wait --text "Commande n° 42"
+text --scope main
+console --level error
+FIN
+
+# 5. Fin
+grasp session close
+```
+
+Une étape qui échoue arrête le script avec un code non nul (`ERROR: run: étape N …`) ; `--console` sur `nav` et
+`console --level error` remontent les erreurs JavaScript et les requêtes en 4xx/5xx de la page.
+
 ## API HTTP (control plane)
 
 `Authorization: Bearer <token>` obligatoire (sauf `GET /health`). Session :
@@ -774,8 +942,8 @@ ne sont pas liées à une session (`GET /profiles` utilise la session, si elle e
 renvoyer `current`).
 
 ```
-GET  /health                  GET  /security/effective
-POST /sessions {profile?}     GET  /sessions            DELETE /sessions/:id
+GET  /health                  GET  /security/effective  (policy, bridges, sessionOptions : proxy, hôtes httpAuth masqués)
+POST /sessions {profile?, proxyServer?, httpAuth?}      GET  /sessions            DELETE /sessions/:id
 POST /sessions/:id/profile {name}                      bascule de profil, même id
 GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
@@ -822,6 +990,10 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**
   (fail-closed). `*.exemple.com` = sous-domaines seulement ; `*` = tout, en opt-in explicite.
 - `file:`, `data:`, `javascript:`, `chrome:`, `view-source:` toujours bloqués.
+- Certificats TLS **vérifiés** ; `ignoreCertErrorsFor` ne déroge que pour des hôtes listés, avec un avertissement
+  à chaque démarrage. Aucun proxy, aucune règle de résolution par défaut ; quand il y en a, l'allowlist porte
+  sur le nom demandé. Identifiants HTTP basic : par session, en mémoire, jamais affichés
+  (voir [Tester un serveur distant](#tester-un-serveur-distant)).
 
 ### Surface d'exposition Linux
 
@@ -902,7 +1074,8 @@ grasp security                            # politique telle que le garde l'appli
 
 Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
 `allowCookies`, `allowConsole` (lecture console, `true` par défaut), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
-déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe). Une modification prend effet au redémarrage du
+déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe), `proxyServer`,
+`proxyBypassList`, `hostResolverRules`, `ignoreCertErrorsFor` (voir [Tester un serveur distant](#tester-un-serveur-distant)). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
 
 Limites de lecture (transmises au bridge à son lancement, à côté de la politique gelée, dont elles ne font
@@ -982,6 +1155,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - **Port DevTools** : la preuve d'identité repose sur l'annonce `DevTools listening on …` du stderr de
   Chrome ; si une enveloppe détourne entièrement ce stderr, Grasp accepte la réponse du port (libre au
   lancement) tant que son processus vit.
+- **Accès distant** : `Security.setOverrideCertificateErrors`, sur lequel repose `ignoreCertErrorsFor` hôte par
+  hôte, est marqué déprécié dans le protocole (fonctionne sur Chrome 150 Linux et 157 Windows) ; s'il disparaît,
+  le bridge refuse de démarrer en le disant, sans repli global. `--http-auth` sur la ligne de commande est
+  visible dans `ps` le temps de l'appel : préférez `--http-auth -`. Un seul `--http-auth` en ligne de commande
+  (plusieurs : une ligne chacun sur stdin, ou l'API). Identifiants fournis sur défi d'un document ; une
+  sous-ressource d'un autre hôte protégé n'en reçoit pas. Pas d'authentification auprès d'un proxy.
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
   par Grasp…]`) lorsqu'il échoue, sans le bloquer.

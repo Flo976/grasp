@@ -59,7 +59,8 @@ before(async () => {
 after(async () => { http.closeAllConnections(); https.closeAllConnections?.(); await new Promise((r) => http.close(r)); await new Promise((r) => https.close(r)); });
 
 test('hostResolverRules : le vhost est joint par son vrai nom (Host:), port réécrit comme un ssh -L', async () => {
-  const rules = [`MAP site.exemple.test 127.0.0.1:${httpPort}`];
+  // Motif avec port (site.exemple.test:80) : http et https d'un même nom peuvent viser deux tunnels distincts.
+  const rules = [`MAP site.exemple.test:80 127.0.0.1:${httpPort}`];
   const fx = await openPage({ allowedDomains: ['site.exemple.test'], hostResolverRules: rules });
   try {
     // Port 80 dans l'URL, servi par 127.0.0.1:<port> : la règle porte aussi le port.

@@ -27,17 +27,24 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 
 ## Recette sur serveur distant (Claude vérifie une tâche à travers un tunnel)
 
-- [ ] **Résolution d'hôte** : clé `hostResolverRules` → `--host-resolver-rules="MAP site.exemple.com
+- [x] **Résolution d'hôte** : clé `hostResolverRules` → `--host-resolver-rules="MAP site.exemple.com
       127.0.0.1:8443"`. Avec un `ssh -L`, le vhost Apache attend son vrai nom (`Host:`), pas `localhost`.
-- [ ] **Proxy** : clé `proxyServer` → `--proxy-server=socks5://127.0.0.1:1080` (tunnel `ssh -D`), pour
-      voir le site exactement comme depuis le serveur de rebond.
-- [ ] **Certificats** : option explicite (jamais par défaut) pour accepter un certificat qui ne correspond
-      pas au nom via tunnel, signalée par `grasp security`.
-- [ ] **Authentification HTTP basic** (préprod protégée) : identifiants fournis à la session, jamais
-      écrits dans les journaux.
+      Fait : syntaxe validée au démarrage, motif avec port (`site.exemple.com:443`), allowlist sur le nom ;
+      mêmes drapeaux pour chrome.exe (test réel `GRASP_TEST_WINDOWS=1`).
+- [x] **Proxy** : clé `proxyServer` → `--proxy-server=socks5://127.0.0.1:1080` (tunnel `ssh -D`), pour
+      voir le site exactement comme depuis le serveur de rebond. Fait : `proxyBypassList`, `--proxy` par
+      session (rapporté par `grasp security`), refus en mode attach ; testé avec proxys SOCKS5 et HTTP locaux.
+- [x] **Certificats** : option explicite (jamais par défaut) pour accepter un certificat qui ne correspond
+      pas au nom via tunnel, signalée par `grasp security`. Fait : `ignoreCertErrorsFor`, limitée aux hôtes
+      listés (`Security.certificateError` par onglet, jamais `*`), avertissement à chaque démarrage.
+- [x] **Authentification HTTP basic** (préprod protégée) : identifiants fournis à la session, jamais
+      écrits dans les journaux. Fait : `grasp session create --http-auth u:mdp@hôte | -` (stdin), via
+      `Fetch.authRequired`, hôte de l'allowlist seulement, un seul essai ; masqués partout (testé sur disque).
 - [ ] **Recette scriptée** : `grasp run --assert` (ou `expect`) qui échoue avec un code ≠ 0 et un
       rapport lisible quand un texte attendu manque, pour enchaîner « déployer → vérifier » sans
       interprétation.
 - [ ] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
       fin de `run`, avec capture en cas d'échec.
-- [ ] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples).
+- [x] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples). Fait :
+      `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
+      recette complète. À compléter quand `run --assert` et le rapport de recette existeront.
