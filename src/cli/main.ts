@@ -30,7 +30,17 @@ class CliError extends Error {
 const out = (s: string) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
 const hint = (s: string) => process.stderr.write(`${s}\n`);
 
+/** GRASP_URL=http://hôte:port : serveur TCP désigné explicitement (ex. conteneur publié sur l'hôte). */
+function endpointFromUrl(raw: string): Endpoint {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new CliError(`GRASP_URL=${raw} : URL invalide (http://hôte:port attendu)`); }
+  if (u.protocol !== 'http:' || u.port === '' || (u.pathname !== '/' && u.pathname !== '')) throw new CliError(`GRASP_URL=${raw} : http://hôte:port attendu (port explicite, sans chemin)`);
+  return { transport: 'tcp', host: u.hostname.replace(/^\[|\]$/g, ''), port: Number(u.port) };
+}
+
 function endpointOf(paths: GraspPaths): Endpoint {
+  const url = process.env.GRASP_URL;
+  if (url) return endpointFromUrl(url);
   if (existsSync(paths.endpointFile)) return JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint;
   return { transport: 'unix', socketPath: paths.socketPath };
 }
@@ -255,6 +265,14 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
   throw new CliError(`le serveur (pid ${pid}) n'a pas répondu à SIGTERM en ${timeout} ms : SIGKILL envoyé, ${groups} groupe(s) Chrome tué(s), socket nettoyé`);
 }
 
+function listenLine(rep: any): string {
+  const l = rep.listen;
+  if (l === undefined || 'socket' in l) return `${rep.transport}${l ? ` (${l.socket})` : ''}`;
+  return l.exposed
+    ? `tcp ${l.host}:${l.port} — EXPOSÉ hors boucle locale (--listen) : token seul, sans TLS`
+    : `tcp ${l.host}:${l.port}`;
+}
+
 function renderSecurity(rep: any): string {
   const p = rep.policy;
   const onoff = (b: boolean) => (b ? 'AUTORISÉ' : 'désactivé');
@@ -267,7 +285,7 @@ function renderSecurity(rep: any): string {
     `cookies    : ${onoff(p.allowCookies)}`,
     `console    : ${p.allowConsole ? 'AUTORISÉ (lecture seule ; Runtime.enable actif)' : 'désactivé'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
-    `transport  : ${rep.transport}`,
+    `transport  : ${listenLine(rep)}`,
     `sessions   : ${Object.keys(rep.bridges).length}`,
   ];
   return lines.join('\n');
@@ -290,6 +308,7 @@ async function main(argv: string[]): Promise<number> {
         paths, env, home,
         transport: a.flags.has('tcp') ? 'tcp' : undefined,
         port: typeof port === 'string' ? Number(port) : undefined,
+        listen: typeof a.flags.get('listen') === 'string' ? a.flags.get('listen') as string : undefined,
       });
       if (cp.endpoint.transport === 'tcp') hint(`TCP ${cp.endpoint.host}:${cp.endpoint.port} — token exigé (${paths.tokenFile})`);
       await new Promise<void>((resolve) => {
@@ -480,7 +499,7 @@ async function main(argv: string[]): Promise<number> {
 
 const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessibilité, CDP direct)
 
-Serveur      serve [--tcp [--port N]] | stop | status | doctor | daemon install|uninstall|status
+Serveur      serve [--tcp [--port N] [--listen IP]] | stop | status | doctor | daemon install|uninstall|status
 Sessions     session create [--profile <nom>] | session list | session close [id]
 Profils      profiles [--json]                       liste (* = profil de la session courante)
              profiles create <nom> [--use-when "…"]  profil vide (un --user-data-dir possédé par Grasp)
@@ -560,6 +579,8 @@ Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
                retiré ou remplacé → 409 avec les homonymes (jamais de clic sur l'un d'eux), sinon 404 avec les
                3 candidats les plus proches ; ref d'une page précédente → 404 ; text: introuvable : noms proches
 Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une session
+Serveur TCP  --listen IP : adresse d'écoute hors 127.0.0.1 (conteneur), opt-in, token exigé, signalé par security ;
+             GRASP_URL=http://hôte:port : client vers ce serveur (au lieu de endpoint.json)
 Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
 
 const argv = process.argv.slice(2);

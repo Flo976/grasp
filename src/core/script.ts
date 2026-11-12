@@ -8,7 +8,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'listen']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -204,7 +204,7 @@ const RUN_GLOBAL: Record<string, string> = {
   session: "une ligne ne change pas de session : grasp run --session <id> (un run par session)",
   json: 'la sortie est celle du run : grasp run --json',
   continue: 'option du run : grasp run --continue',
-  port: 'option de grasp serve', tcp: 'option de grasp serve',
+  port: 'option de grasp serve', tcp: 'option de grasp serve', listen: 'option de grasp serve',
   profile: 'pour basculer de profil au milieu du script : une ligne « profile <nom> »',
 };
 

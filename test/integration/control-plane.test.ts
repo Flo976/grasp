@@ -111,6 +111,47 @@ test('control plane : TCP sur 127.0.0.1 uniquement, token exigé', async () => {
   }
 });
 
+test('control plane : --listen hors boucle locale = opt-in explicite, token exigé, signalé par grasp security', async () => {
+  const t = makeTestEnv();
+  // Refus : --listen sans --tcp, et nom d'hôte au lieu d'une IP littérale.
+  const noTcp = await runCli(t.env, ['serve', '--listen', '0.0.0.0']);
+  assert.notEqual(noTcp.code, 0);
+  assert.match(noTcp.stderr, /--listen exige --tcp/);
+  const name = await runCli(t.env, ['serve', '--tcp', '--port', '0', '--listen', 'localhost']);
+  assert.notEqual(name.code, 0);
+  assert.match(name.stderr, /IP littérale/);
+
+  const srv = await startServer(t.env, ['--tcp', '--port', '0', '--listen', '0.0.0.0']);
+  try {
+    assert.match(srv.stderr(), /AVERTISSEMENT : control plane exposé hors boucle locale sur 0\.0\.0\.0:\d+/);
+    const ep = JSON.parse(readFileSync(srv.paths.endpointFile, 'utf8'));
+    assert.equal(ep.host, '127.0.0.1', 'endpoint.json : adresse où se connecter, pas le joker');
+    assert.equal((await request(ep, 'GET', '/sessions')).status, 401, 'token exigé');
+    const sec = await runCli(t.env, ['security', '--json']);
+    assert.equal(sec.code, 0, sec.stderr);
+    assert.deepEqual(JSON.parse(sec.stdout).listen, { host: '0.0.0.0', port: ep.port, exposed: true });
+    const txt = await runCli(t.env, ['security']);
+    assert.ok(txt.stdout.includes(`transport  : tcp 0.0.0.0:${ep.port} — EXPOSÉ hors boucle locale`), txt.stdout);
+    // Client désigné par GRASP_URL, sans endpoint.json (cas de l'hôte face à un conteneur publié).
+    const other = makeTestEnv();
+    try {
+      const cfg = join(other.env.XDG_CONFIG_HOME!, 'grasp');
+      mkdirSync(cfg, { recursive: true, mode: 0o700 });
+      writeFileSync(join(cfg, 'token'), srv.token(), { mode: 0o600 });
+      const st = await runCli({ ...other.env, GRASP_URL: `http://127.0.0.1:${ep.port}` }, ['status']);
+      assert.equal(st.code, 0, st.stderr);
+      assert.match(st.stdout, /en cours/);
+      const bad = await runCli({ ...other.env, GRASP_URL: `http://127.0.0.1:${ep.port}/x` }, ['status']);
+      assert.notEqual(bad.code, 0);
+      assert.match(bad.stderr, /GRASP_URL/);
+    } finally { other.cleanup(); }
+  } finally {
+    srv.proc.kill('SIGTERM');
+    await waitExit(srv.proc);
+    t.cleanup();
+  }
+});
+
 test('control plane : un second serve refuse de démarrer tant que le premier tourne', async () => {
   const t = makeTestEnv();
   const srv = await startServer(t.env);
