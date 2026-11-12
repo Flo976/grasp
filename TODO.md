@@ -94,7 +94,10 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       "POST /api/…" [2xx|201|4xx,5xx]` pour vérifier qu'un « Enregistrer » a vraiment appelé l'API. Fait (branche
       `feat/journal-reseau`, `src/core/network.ts`) : nourri par les événements Network déjà écoutés (console,
       stabilité), sans corps ni en-têtes et sans option pour les voir ; `allowConsole=false` → 403 explicite.
-      Tests : `test/unit/network.test.ts`, `test/integration/network.test.ts`. Reste : outil MCP dédié.
+      Tests : `test/unit/network.test.ts`, `test/integration/network.test.ts`. Après relecture : fenêtre de
+      `expect request` étendue au début de la dernière action (fetch puis navigation, formulaire POST en PRG),
+      requête d'avant la fenêtre citée avec son `--since`, méthode insensible à la casse et motif strict
+      impossible refusé en 400, cas positif « réponse arrivée pendant --timeout » testé. Reste : outil MCP dédié.
 - [x] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
       fin de `run`, avec capture en cas d'échec. — Fait : `run --report` (d'office avec `expect`), texte
       compact et `--json` (`report`) ; capture prise juste après chaque échec (chemin seulement).

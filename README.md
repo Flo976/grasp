@@ -745,7 +745,7 @@ FIN
 | `expect value <sél> [~] <valeur> [--regex]` | la valeur du champ (`value` ; `<select>` : valeur de l'option choisie ; éditeur riche : son texte) est égale, etc. |
 | `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` (console, exception, requête 4xx/5xx ou `net::ERR`, CSP…) depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
 | `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
-| `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant, a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
+| `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant ou de la dernière action (le plus ancien des deux), a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
 
 - **Syntaxe, et pourquoi** : une commande `expect` suivie du **type d'assertion** (comme `session create`,
   `profiles import`), puis ses arguments positionnels dans l'ordre naturel (`value <sél> <valeur>`, comme
@@ -768,11 +768,16 @@ FIN
   au **chemin** de l'URL (la chaîne de requête est ignorée, sauf si le motif contient `?`), une URL absolue à
   origine + chemin ; `~` : l'URL contient le motif ; `--regex` : l'URL lui correspond. `~` et `--regex` portent
   sur l'URL **masquée** (un motif ne peut pas sonder la valeur d'un `?token=`). Une requête encore en vol ne
-  compte pas : l'assertion est relue jusqu'à sa réponse, dans `--timeout`. Fenêtre : depuis la requête du
-  document courant (une requête d'une page précédente ne compte pas ; une route `pushState` ne change pas de
-  document) ; `--since <seq>` (seq **réseau**, donné par `--network` ou `grasp network`) l'élargit ou la
-  restreint. Constaté en cas d'échec : les 5 dernières requêtes correspondantes avec leur statut
-  (`… → 500 Internal Server Error`, `… → en cours`), sinon les 5 dernières xhr/fetch.
+  compte pas : l'assertion est relue jusqu'à sa réponse, dans `--timeout`. Fenêtre : depuis le **plus ancien** de deux repères — la requête
+  du document courant, et le début de la dernière action (`nav`, clic, saisie, touche, `eval`…). Un
+  « Enregistrer » qui poste puis change de page reste donc vu : `fetch` POST suivi de `location.href`, et
+  formulaire POST classique en PRG (POST → 302 → GET), testés tous deux. Une requête d'un document précédent
+  ne compte plus dès l'action suivante (`nav` compris) ; une route `pushState` ne change pas de document.
+  `--since <seq>` (seq **réseau**, donné par `--network` ou `grasp network`) l'élargit ou la restreint.
+  Constaté en cas d'échec : les 5 dernières requêtes correspondantes avec leur statut
+  (`… → 500 Internal Server Error`, `… → en cours`), sinon les 5 dernières xhr/fetch, et la dernière requête
+  correspondante **d'avant la fenêtre** s'il y en a une, avec le `--since` qui la reprend (`requête
+  correspondante plus ancienne, hors de la fenêtre : #6 POST … → 302 Found · … — relancez avec --since 5`).
 - **Échec** : erreur 417 ; dans run, `[n] expect … → ERROR: attendu … ; constaté : …`, arrêt (sauf
   `--continue`) et code 1 ; en commande directe, `ERROR: expect: …` sur stderr et code 1. Le constaté est
   **borné** : 300 premiers caractères du texte de la page ou de la zone, 60 caractères de part et d'autre

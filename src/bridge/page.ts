@@ -665,6 +665,11 @@ export class PageController {
   private readonly netLog = new NetworkLog();
   /** seq réseau juste avant la requête du document courant du cadre principal (expect request). */
   private docNetSeq = 0;
+  /**
+   * seq réseau au début de la dernière action (nav, clic, saisie, eval…) : un « Enregistrer » qui poste puis change
+   * de page (fetch puis location, formulaire POST en PRG) a sa requête AVANT le document courant (expect request).
+   */
+  private actNetSeq: number | undefined;
   /** Requêtes réseau annulées par le garde : déjà signalées comme « bloqué par Grasp ». */
   private readonly blockedNet = new Set<string>();
   /** Liste de traqueurs (blockTrackers=true), sinon undefined : aucun motif Fetch au-delà des documents. */
@@ -1474,6 +1479,7 @@ export class PageController {
     if (opts.network === true) this.assertNetwork();
     const seq = this.consoleBuf.seq;
     const netSeq = this.netLog.seq;
+    this.actNetSeq = netSeq;
     const trk0 = this.trackersBlocked;
     try {
       const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
@@ -2100,16 +2106,18 @@ export class PageController {
   }
 
   /**
-   * expect request : une requête terminée du journal, depuis `since` (défaut : début du document courant, sa
-   * propre requête comprise), de méthode et d'URL correspondantes, avec un statut attendu (2xx par défaut).
-   * Constaté borné : les 5 dernières requêtes correspondantes (statut, en cours), sinon les 5 dernières xhr/fetch.
+   * expect request : une requête terminée du journal, depuis `since` (défaut : le plus ancien du début du document
+   * courant, sa propre requête comprise, et du début de la dernière action — un « Enregistrer » qui poste puis
+   * change de page reste vu), de méthode et d'URL correspondantes, avec un statut attendu (2xx par défaut).
+   * Constaté borné : les 5 dernières requêtes correspondantes (statut, en cours), sinon les 5 dernières xhr/fetch,
+   * et la dernière correspondante d'avant la fenêtre s'il y en a une (avec le --since qui la reprend).
    */
   private observeRequest(spec: ExpectSpec): { ok: boolean; observed: string } {
     this.assertNetwork();
     const pat = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
     const want = spec.status ?? DEFAULT_REQUEST_STATUS;
     const okStatus = parseStatus(want);
-    let since = spec.since ?? this.docNetSeq;
+    let since = spec.since ?? Math.min(this.docNetSeq, this.actNetSeq ?? this.docNetSeq);
     let note = '';
     if (since > this.netLog.seq) { note = ` (journal recréé : seq ${since} > seq courant ${this.netLog.seq}, relu depuis le début)`; since = 0; }
     const r = this.netLog.query({ since });
@@ -2120,7 +2128,10 @@ export class PageController {
     if (same.length > 0) return { ok: false, observed: `${same.length} requête(s) correspondante(s) depuis #${since}, aucune terminée de statut ${want} : ${show(same)}${lost}${note}` };
     const api = r.entries.filter((e) => e.type === 'xhr' || e.type === 'fetch');
     const others = api.length > 0 ? `dernières xhr/fetch : ${show(api)}` : `aucune requête xhr/fetch (${r.entries.length} requête(s) d'autres types)`;
-    return { ok: false, observed: `aucune requête correspondante depuis #${since} ; ${others}${lost}${note}` };
+    // Requête correspondante juste avant la fenêtre (action antérieure, --since trop récent) : dite, avec la reprise.
+    const prev = since > 0 ? this.netLog.query({}).entries.filter((e) => e.seq <= since && requestMatches(e, pat, spec.match ?? 'exact')).at(-1) : undefined;
+    const hint = prev !== undefined ? ` ; requête correspondante plus ancienne, hors de la fenêtre : ${formatNet(prev)} — relancez avec --since ${prev.seq - 1}` : '';
+    return { ok: false, observed: `aucune requête correspondante depuis #${since} ; ${others}${hint}${lost}${note}` };
   }
 
   /** Erreurs de formulaire de la page : lignes des champs invalides du snapshot, puis alertes hors arbre. */
@@ -2323,6 +2334,7 @@ export class PageController {
     this.lastDialog = null;
     const seq = this.consoleBuf.seq;
     const netSeq = this.netLog.seq;
+    this.actNetSeq = netSeq;
     const t0 = Date.now();
     const nav0 = this.navCount;
     const loads0 = this.loadStarts;
@@ -3018,6 +3030,7 @@ export class PageController {
   /** eval avec le type du résultat : `undefined` (el.click(), form.submit()) n'a pas de valeur JSON. */
   async evaluateTyped(expression: string): Promise<{ value?: unknown; type: string }> {
     if (!this.policy.allowEval) throw forbidden('eval est désactivé (grasp config set allowEval true pour l\'autoriser)');
+    this.actNetSeq = this.netLog.seq;
     const r = await this.s<{ result: { value?: unknown; type: string; subtype?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
     if (r.exceptionDetails) throw badRequest(`exception : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     const type = r.result.subtype === 'null' ? 'null' : r.result.type;

@@ -149,6 +149,32 @@ test('expect request relue jusqu\'au délai : la réponse arrive après l\'actio
   assert.match(r.stderr, /aucune terminée de statut 2xx : #\d+ GET .*\/api\/lent\?ms=10000 → en cours/);
 });
 
+test('expect request : un « Enregistrer » qui change de page (fetch puis navigation, formulaire POST en PRG) reste vu', async () => {
+  // fetch POST puis location.href : la requête précède le nouveau document, mais fait partie de la dernière action.
+  assert.equal((await cli(['nav', `${site.url}/enregistrer-nav`])).code, 0);
+  assert.equal((await cli(['click', '#fetch-nav'])).code, 0);
+  await cli(['wait', 'text:Commander', '--timeout', '5000']);
+  const f = await cli(['expect', 'request', 'POST /api/commande', '--timeout', '500']);
+  assert.equal(f.code, 0, f.stderr);
+
+  // Formulaire POST classique : POST → 302 → GET /boutique. Le saut de redirection ne fait pas sortir le POST.
+  assert.equal((await cli(['nav', `${site.url}/enregistrer-nav`])).code, 0);
+  assert.equal((await cli(['click', '#prg'])).code, 0);
+  await cli(['wait', 'text:Commander', '--timeout', '5000']);
+  const p = await cli(['expect', 'request', 'POST /redirect-to', '3xx', '--timeout', '500']);
+  assert.equal(p.code, 0, p.stderr);
+
+  // Méthode en minuscules : reconnue (normalisée en capitales), jamais un faux « aucune requête ».
+  assert.equal((await cli(['expect', 'request', 'get /boutique', '--timeout', '500'])).code, 0);
+
+  // Requête hors de la fenêtre par défaut (action suivante sans requête, nouveau document) : le constaté la cite et
+  // propose --since.
+  assert.equal((await cli(['nav', `${site.url}/boutique`])).code, 0);
+  const old = await cli(['expect', 'request', 'POST /redirect-to', '3xx', '--timeout', '0']);
+  assert.equal(old.code, 1);
+  assert.match(old.stderr, /requête correspondante plus ancienne, hors de la fenêtre : #(\d+) POST .*\/redirect-to.* → 302 Found .* — relancez avec --since \d+/);
+});
+
 test('sécurité : ni en-têtes, ni corps, ni jeton dans le journal ; URL masquée', async () => {
   assert.equal((await cli(['nav', `${site.url}/console`])).code, 0);
   const r = await cli(['click', '#secret', '--network']);
