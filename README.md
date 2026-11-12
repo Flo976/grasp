@@ -100,6 +100,9 @@ limite la lecture à une zone.
   ligne, sans dépendance ajoutée ([détails](#serveur-mcp)).
 - 📝 **Texte en Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), même budget et
   même `--scope` que `text` ([détails](#sortie-markdown)).
+- ♿ **Audit d'accessibilité** : `grasp a11y` relève contrôles sans nom, images sans alt, erreurs non reliées,
+  libellés orphelins, rôles invalides, titres sautés, avec ref et correction ; `expect a11y` en recette (relevé
+  partiel, pas un audit WCAG) ([détails](#audit-daccessibilité)).
 - ✅ **Recette scriptée** : `expect text|url|title|sel|value|no-console-errors|no-form-errors…`, code non nul et
   rapport (console, requêtes 4xx/5xx, formulaire, capture à l'échec) ([détails](#recette--expect-et-rapport-de-run)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
@@ -634,8 +637,9 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `snap --outline` / `snap --interactive` | Lecture partielle, mêmes refs : repères et titres (avec leur volume) / éléments actionnables et leur contexte. Voir [Lecture progressive](#lecture-progressive). |
 | `find <texte\|/regex/> [--role r] [--max N] [--scope …]` | Lignes du snapshot qui correspondent (options de listes fermées comprises), avec leur conteneur ; 30 au plus par défaut. |
 | `text [--max N] [--scope <ref\|css\|frame=…>] [--markdown]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée) ; `--markdown` : le même contenu visible en Markdown (voir [Sortie Markdown](#sortie-markdown)). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
+| `a11y [--scope <ref\|css>] [--max N] [--json]` | Audit d'accessibilité : une ligne par problème vérifiable (contrôle sans nom, image sans alt, erreur non reliée ou masquée, libellé orphelin, référence ARIA cassée, rôle invalide, titre sauté), ref et correction ; 30 listés par défaut. Pas un audit WCAG. Voir [Audit d'accessibilité](#audit-daccessibilité). |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
-| `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
+| `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire, accessibilité) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
 | `fill <sél> secret:NOM` | Remplit avec un **secret** du serveur : valeur jamais vue par l'agent, refusée hors des domaines du secret, rendue `secret:NOM` dans toutes les sorties. Voir [Secrets](#secrets-fill--secretnom). |
@@ -858,6 +862,78 @@ par l'action, pas par la suivante), `alert`, `beforeunload` accepté par `nav` e
 et par `nav`, dialogue de minuterie hors action ; CLI, `run` et MCP de bout en bout. Le défaut sûr a été
 vérifié par mutation (défaut « tout accepter » réinjecté → tests unitaires et d'intégration au rouge).
 
+### Audit d'accessibilité
+
+`grasp a11y [--scope <ref|css>] [--max N] [--json]` (`GET /a11y`, aussi sur une ligne de `grasp run`) relève les
+défauts d'accessibilité **vérifiables sans interprétation**, une ligne par problème, avec la ref du nœud quand il en a
+une (utilisable telle quelle : `click`, `fill`, `snap --scope`) et une correction suggérée. Ce n'est **pas** un
+audit WCAG : contrastes, navigation au clavier, focus, ordre de lecture et pertinence des textes ne sont pas
+vérifiés (rappel sur stderr à chaque appel).
+
+```
+grasp a11y --scope '#inscription'
+a11y : 8 problèmes dans #inscription — page "Accessibilité piégée" http://127.0.0.1:8080/a11y
+  contrôle sans nom : 3 · erreur non reliée au champ : 1 · erreur reliée, champ non marqué invalide : 1 · libellé orphelin : 2 · référence ARIA cassée : 1
+sans-nom ehy5t:textbox input#courriel[type="email"] — aucun nom accessible → <label for=id>, ou aria-labelledby vers le libellé visible
+sans-nom e6z62:combobox="France" [-] select#pays "France Madagascar" — aucun nom accessible → <label for=id>, ou aria-labelledby vers le libellé visible
+sans-nom euks7:checkbox (sans nom, près de "J'accepte les conditions") [ ] input#cgu[type="checkbox"] — aucun nom accessible → <label> englobant, <label for=id> ou aria-labelledby vers le texte voisin
+erreur-non-reliee euv3l:textbox "Nom" [invalide: Le nom est obligatoire] — message « Le nom est obligatoire » affiché mais non relié (ni aria-errormessage ni aria-describedby) → aria-describedby=<id du message> (ou aria-errormessage + aria-invalid)
+erreur-sans-invalide e9xr4:textbox "Prénom" [invalide: Le prénom est obligatoire] — message « Le prénom est obligatoire » relié (aria-describedby) mais champ non marqué invalide → aria-invalid="true" tant que l'erreur est affichée
+libelle-orphelin label[for="courriel-x"] "Courriel" — aucun élément d'id « courriel-x » : ne nomme aucun champ → for = id réel du champ (ou id="courriel-x" sur le champ)
+libelle-orphelin label[for="titre-form"] "Titre" — for vise span#titre-form "pas un champ", qui n'est pas un champ → for = id d'un champ (input, select, textarea) ; contrôle ARIA : aria-labelledby
+reference-cassee e7yyj:textbox "Ville" — aria-describedby → id absent : « inexistant » → id existant, ou retirer la référence
+```
+
+(Page piégée du site de test, `test/helpers/a11ysite.ts` ; stderr : `note: relevé automatique partiel, pas un audit
+WCAG : …`.)
+
+| Type | Relevé quand | Source |
+|---|---|---|
+| `sans-nom` | un `button`, `link`, `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider`, `spinbutton`, `menuitem*`, `tab` ou `treeitem` n'a **aucun nom accessible** (calculé par Chrome : libellé, `aria-label`, contenu, `title`, `placeholder`…) | arbre |
+| `image-sans-alt` | une image non ignorée n'a aucun nom : `<img>`, `<input type=image>`, ou élément de `role=img` explicite (`alt=""` = décorative, jamais signalée). Correction selon l'élément : `alt` pour `<img>`, `<title>` ou `aria-label` pour un `<svg role=img>`. Une icône `<svg>` inline **sans** `role` n'est pas signalée (Chrome lui donne pourtant le rôle image : elle accompagne presque toujours un texte) | arbre + DOM |
+| `erreur-non-reliee` | un champ porte un message d'erreur **affiché** que Grasp n'a trouvé qu'à côté du champ (ni `aria-errormessage` ni `aria-describedby`) | [erreurs de formulaire](#erreurs-de-formulaire) |
+| `erreur-sans-invalide` | un message d'erreur **affiché** à côté d'un champ y est bien relié par `aria-describedby`, mais le champ n'est marqué invalide ni par `aria-invalid` ni par la validation native (`:user-invalid`) : le message est lu comme une aide, l'état invalide n'est pas annoncé | erreurs de formulaire |
+| `erreur-masquee` | un message d'erreur affiché est sous `aria-hidden` et rattaché à aucun champ (ligne `alerte` du snapshot) | erreurs de formulaire |
+| `libelle-orphelin` | un `<label for>` affiché ne désigne aucun élément, ou un élément qui n'est pas un champ | DOM |
+| `reference-cassee` | `aria-labelledby`, `aria-describedby` ou `aria-errormessage` cite un id absent | DOM |
+| `role-invalide` | un attribut `role` n'a **aucun** jeton valide (WAI-ARIA 1.2, DPUB, Graphics ; rôles abstraits refusés ; `role="toggle button"` est valide par son repli) ; correction proposée pour un rôle en français (`bouton` → `button`) ou une faute de frappe | DOM |
+| `titre-saute` | un titre descend de plus d'un niveau après le précédent (`h1` puis `h3`) | arbre |
+
+- **Portée** : la page telle qu'affichée. Le contenu masqué (`display: none`, `hidden`, menu fermé) n'est pas
+  audité — ouvrez le menu, puis refaites l'audit ; le contenu des iframes non plus (comme le snapshot).
+  `--scope <ref|css>` restreint l'audit au sous-arbre ; l'ordre des titres se juge quand même sur la page
+  entière (un `h3` de la zone qui suit un `h1` hors zone est signalé). Une zone absente de l'arbre → 404 ;
+  `frame=…` → 400.
+- **Sortie** : en-tête (nombre de problèmes, page), une ligne de comptes par type, puis une ligne par problème :
+  `<type> <qui> — <constat> → <correction>`. `<qui>` est la ligne du snapshot quand le nœud a une ref (avec la
+  description DOM pour un contrôle sans nom : `input#courriel[type="email"]`), sinon une description DOM
+  (`img[src="…"]`, `label[for="…"] "texte"`). **30 problèmes listés** par défaut, `--max N` de 1 à 500 ; les
+  comptes portent toujours sur tous, et la coupure est annoncée en dernière ligne. `--json` : `{url, title,
+  total, counts, issues: [{kind, ref?, who, detail, fix}], omitted, text, note}`. Code de sortie 0 même avec des
+  problèmes : pour faire échouer une recette, `expect a11y`.
+- **Refs** : celles du snapshot complet (même hash), mémorisées comme après un `snap`. Une image sans nom ou un
+  libellé n'ont pas de ref (ils ne sont pas dans le snapshot) : leur description DOM les désigne.
+- **`expect a11y [--max N] [--scope <sél>]`** : tenue si l'audit relève **au plus N** problèmes (0 par défaut).
+  Constat immédiat, comme `no-form-errors`. Échec : `attendu au plus 0 problème(s) d'accessibilité dans la page ;
+  constaté : 19 problème(s) (sans-nom 6, image-sans-alt 3, …) : <5 premières lignes> | … et 14 autre(s)`
+  (50 lignes au plus dans le JSON, champ `expect.items`). Tenue avec des problèmes tolérés : note
+  `19 problème(s) d'accessibilité toléré(s) (--max 19) : …`. Utile pour figer une dette connue et refuser
+  qu'elle augmente.
+- **Mécanisme** : `Accessibility.getFullAXTree` (le même arbre que `snap`), le relevé des
+  [erreurs de formulaire](#erreurs-de-formulaire) (qui dit désormais d'où vient chaque message) et une fonction
+  fixe dans le monde isolé `grasp-lecture` : autorisé avec `allowEval=false`, aucune modification de la page.
+  Testé sur une page piégée qui fausse ses propres `querySelectorAll`, `getAttribute` et `getElementById` et
+  compte ses mutations : les 19 défauts sont relevés, leurs versions correctes (image `alt=""`, icônes `<svg>`
+  sans role dans un lien, un bouton ou un paragraphe, `<svg role=img aria-label>`, bouton icône
+  avec `aria-label`, erreur reliée par `aria-describedby` sur un champ `aria-invalid`, rôle à repli valide, contenu masqué) jamais, et la
+  page ne voit aucune mutation (`test/integration/a11y.test.ts`). Mesuré (Chrome headless local, médiane de
+  7) : 16 ms sur la page piégée (`snap` : 5 ms), 194 ms sur une page de 2000 liens (`snap` : 183 ms).
+- **Ce qui n'est pas relevé** : une icône `<svg>` sans `role` ni nom (décorative ou informative, l'audit ne
+  tranche pas : `aria-hidden="true"` si décorative, `role="img"` + `<title>` sinon), un nom présent mais
+  inutile (`aria-label="bouton"`, « cliquez ici »), un champ nommé par son seul `placeholder` (Chrome en fait
+  un nom), les contrastes, l'ordre de tabulation, les pièges
+  au clavier, la langue de la page, les tableaux sans en-têtes, les doublons d'id hors références ARIA.
+
 ### Livraison vérifiée des entrées
 
 `Input.dispatchMouseEvent` répond OK même quand l'événement n'atteint jamais la page : vu en banc sur
@@ -916,8 +992,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 ```
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
-  **même syntaxe que la CLI** : `nav back forward reload scroll snap find text click fill select check press wait
-  expect eval console network screenshot cookies storage upload profile viewport`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  **même syntaxe que la CLI** : `nav back forward reload scroll snap find text a11y click fill select check press
+  wait expect eval console network screenshot cookies storage upload profile viewport`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
@@ -990,6 +1066,7 @@ FIN
 | `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` (console, exception, requête 4xx/5xx ou `net::ERR`, CSP…) depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
 | `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
 | `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant ou de la dernière action (le plus ancien des deux), a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
+| `expect a11y [--max N] [--scope <sél>]` | l'[audit d'accessibilité](#audit-daccessibilité) relève au plus N problèmes (0 par défaut) |
 
 - **Syntaxe, et pourquoi** : une commande `expect` suivie du **type d'assertion** (comme `session create`,
   `profiles import`), puis ses arguments positionnels dans l'ordre naturel (`value <sél> <valeur>`, comme
@@ -1002,7 +1079,7 @@ FIN
   trop est refusé avec cette explication, jamais pris pour l'URL attendue.
 - **Réessai** : text, no-text, url, title, sel, no-sel, value et request sont relues toutes les 100 ms jusqu'à
   `--timeout` (5000 ms par défaut, 60 000 au plus ; `0` = une seule lecture) — la page réagit souvent après
-  l'action précédente (XHR, route). no-console-errors et no-form-errors sont un **constat immédiat**.
+  l'action précédente (XHR, route). no-console-errors, no-form-errors et a11y sont un **constat immédiat**.
 - **`expect request`** vérifie qu'un « Enregistrer » a **vraiment appelé l'API** et qu'elle a répondu :
   `expect request "POST /api/commande" 201`. La méthode est facultative (`expect request /api/commande` :
   toute méthode) ; GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT et TRACE sont reconnues quelle que
@@ -2353,6 +2430,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   telle classe près d'un champ serait pris pour une erreur. La note « formulaire invalide » d'un `click` est
   calculée juste après le clic (sans attendre la stabilité si `--snap-diff` n'est pas demandé) : une
   validation asynchrone (serveur) peut arriver après. Le contenu des iframes n'est pas relevé.
+- **Audit d'accessibilité** : relevé partiel, pas un audit WCAG (ni contrastes, ni clavier, ni focus, ni ordre de
+  lecture, ni pertinence des noms : `aria-label="bouton"` passe). Un champ nommé par son seul `placeholder` n'est
+  pas signalé (Chrome en fait un nom accessible). `erreur-non-reliee` et `erreur-masquee` héritent de
+  l'heuristique des erreurs de formulaire (voir ci-dessus) : un message sans allure d'erreur n'est pas vu, et un
+  toast d'erreur placé après un formulaire peut être rattaché au dernier champ qui le précède. Contenu masqué
+  et iframes non audités ; 300 problèmes DOM au plus par appel. Pas d'outil MCP dédié (accessible par `run`).
 - **`navigator.webdriver`** : seul l'effet du port 0 est corrigé. D'autres signaux d'automatisation
   restent (CDP attaché, `Runtime.enable` si la console est active — voir `allowConsole`).
 - **Port DevTools** : la preuve d'identité repose sur l'annonce `DevTools listening on …` du stderr de

@@ -105,6 +105,7 @@ const EXPECT_SUMMARY: Record<ExpectKind, string> = {
   'no-console-errors': 'aucune erreur console depuis le début du document',
   'no-form-errors': 'aucun champ invalide ni alerte',
   'request': 'requête réseau vue (« MÉTHODE chemin|url » [statut], 2xx par défaut ; exige allowConsole)',
+  'a11y': 'au plus N problèmes relevés par l\'audit d\'accessibilité (grasp a11y), 0 par défaut',
 };
 
 export const COMMANDS: readonly CommandSpec[] = [

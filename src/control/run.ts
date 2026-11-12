@@ -255,6 +255,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const t = typeof result === 'string' ? result.replace(/\n$/, '') : '';
       return t === '' && cmd === 'text' ? { detail: 'aucun texte visible' } : { output: t };
     }
+    case 'a11y': return { output: typeof j.text === 'string' ? j.text : '' };
     case 'eval': return { output: renderEval(j) };
     case 'cookies': return { output: JSON.stringify(result) };
     // -o : le chemin définitif est posé par la CLI, qui écrit le fichier ; ici, le nom demandé.

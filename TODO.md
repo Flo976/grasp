@@ -174,6 +174,17 @@ Lecture et recette
       --markdown` et `snap|text --role|--limit` comme l'API et `grasp run`.
 - [ ] Lecture progressive : mesurer les gains sur des pages réelles ; volume des `banner`/`contentinfo` sans nom
       (non émis par le snapshot) ; `--role` par familles (`textbox` + `searchbox`) ?
+- [x] **Audit d'accessibilité** : `grasp a11y [--scope] [--max] [--json]` et `expect a11y [--max N]`
+      (branche `feat/audit-a11y`). Arbre d'accessibilité + relevé des erreurs de formulaire + DOM (monde isolé,
+      autorisé sans eval) : contrôles sans nom, images sans alt, erreur visible non reliée ou masquée, `<label for>`
+      orphelin, référence ARIA cassée, rôle invalide, titre sauté ; ref et correction par problème. Testé sur une
+      page piégée (`test/integration/a11y.test.ts`, `a11y-cli.test.ts`). Pas un audit WCAG.
+- [x] Audit d'accessibilité, relecture : icône `<svg>` inline sans `role` (dans un lien ou un bouton nommé)
+      plus signalée `image-sans-alt` ; correction propre au `<svg role=img>` (`<title>`/`aria-label`, pas `alt`).
+- [x] Audit d'accessibilité, relecture : message d'erreur relié par `aria-describedby` à un champ sans
+      `aria-invalid` plus rapporté « non relié » : nouveau type `erreur-sans-invalide` (correction `aria-invalid`).
+- [ ] Audit d'accessibilité : contrastes (calcul sur les styles calculés), nom réduit au `placeholder`, noms
+      inutiles (« cliquez ici »), outil MCP dédié, iframes.
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
 - [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`
       ignorée : l'étape en cours va à son terme) ; pas d'outils dédiés `expect` ni `state` (accessibles par `run`).

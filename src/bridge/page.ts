@@ -20,6 +20,7 @@ import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
 import { SCROLL_BUDGET_MS, SCROLL_FN, SCROLL_STEPS_DEFAULT, scrollNote, type ScrollMeasure, type ScrollReport, type ScrollSpec } from './scroll.js';
 import { describeViewport, mobileUserAgent, type ViewportSpec } from '../core/viewport.js';
 import { Redactor, secretAllowedOn, type SecretUse } from '../core/secrets.js';
+import { A11Y_DEFAULT_MAX, A11Y_DESC_FN, A11Y_DOM_FN, A11Y_KINDS, A11Y_MAX, A11Y_NOTE, axIssues, domIssue, imageFix, renderA11y, scopeNodes, type A11yIssue, type A11yKind, type A11yReport, type DomItem, type RawIssue } from './a11y.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -455,18 +456,21 @@ const FORM_ERRORS_FN = `function (root) {
   const ariaInvalid = (f) => { const v = f.getAttribute('aria-invalid'); return v !== null && v !== 'false'; };
   const userInvalid = (f) => { try { return f.matches(':user-invalid'); } catch (e) { return false; } };
   const recs = new Map();
+  // Source du message (audit a11y) : errormessage, describedby, native, voisin (message visible NON relié), ou
+  // decrit (message trouvé à côté, relié par aria-describedby, mais champ ni aria-invalid ni :user-invalid).
+  const how = new Map();
   const used = [];
   for (const f of fields) {
     const strong = ariaInvalid(f) || userInvalid(f);
     let msg = '';
-    for (const el of refs(f, 'aria-errormessage')) if (shown(el) && norm(el.innerText)) { msg = norm(el.innerText); used.push(el); break; }
+    for (const el of refs(f, 'aria-errormessage')) if (shown(el) && norm(el.innerText)) { msg = norm(el.innerText); used.push(el); how.set(f, 'errormessage'); break; }
     if (!msg && strong) {
       const ds = refs(f, 'aria-describedby').filter((el) => shown(el) && norm(el.innerText));
       const errs = ds.filter(errorish);
       const pick = errs.length ? errs : ds;
-      if (pick.length) { msg = pick.map((el) => norm(el.innerText)).join(' '); used.push(...pick); }
+      if (pick.length) { msg = pick.map((el) => norm(el.innerText)).join(' '); used.push(...pick); how.set(f, 'describedby'); }
     }
-    if (!msg && userInvalid(f) && f.validationMessage) msg = norm(f.validationMessage);
+    if (!msg && userInvalid(f) && f.validationMessage) { msg = norm(f.validationMessage); how.set(f, 'native'); }
     if (strong || msg) recs.set(f, msg);
   }
   const cands = [...scope.querySelectorAll('[role=alert],[aria-live=assertive],[class*=err i],[class*=invalid i],[id*=err i],[id*=invalid i]')].slice(0, 500)
@@ -487,12 +491,16 @@ const FORM_ERRORS_FN = `function (root) {
         break;
       }
     }
-    if (field && !recs.get(field) && (recs.has(field) || ERR.test(cls(field)) || ERR.test(cls(m)))) { recs.set(field, t); used.push(m); }
+    if (field && !recs.get(field) && (recs.has(field) || ERR.test(cls(field)) || ERR.test(cls(m)))) {
+      // Relié malgré tout (aria-describedby lu seulement pour un champ invalide, plus haut) : le défaut est l'état.
+      const linked = refs(field, 'aria-describedby').some((el) => el.contains(m) || m.contains(el));
+      recs.set(field, t); used.push(m); how.set(field, linked ? 'decrit' : 'voisin');
+    }
     else if (!field && m.closest('[aria-hidden="true"]')) alerts.push(t);
   }
   const els = [];
   const metaFields = [];
-  for (const [f, t] of recs) { if (els.length >= 100) break; metaFields.push({ i: els.length, t: t.slice(0, 300) }); els.push(f); }
+  for (const [f, t] of recs) { if (els.length >= 100) break; metaFields.push({ i: els.length, t: t.slice(0, 300), s: how.get(f) || '' }); els.push(f); }
   return { meta: JSON.stringify({ fields: metaFields, alerts: alerts.slice(0, 20) }), els };
 }`;
 
@@ -1890,8 +1898,10 @@ export class PageController {
       if (res.exceptionDetails !== undefined || res.result.objectId === undefined) return undefined;
       type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
       const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
-      const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { fields?: Array<{ i: number; t: string }>; alerts?: string[] };
+      const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { fields?: Array<{ i: number; t: string; s?: string }>; alerts?: string[] };
       const fields = new Map<number, string>();
+      const unlinked = new Set<number>();
+      const uninvalid = new Set<number>();
       const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
       if (elsId !== undefined && meta.fields !== undefined && meta.fields.length > 0) {
         const items = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
@@ -1901,9 +1911,11 @@ export class PageController {
           if (objectId === undefined) continue;
           const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId });
           fields.set(node.backendNodeId, f.t);
+          if (f.s === 'voisin') unlinked.add(node.backendNodeId);
+          if (f.s === 'decrit') uninvalid.add(node.backendNodeId);
         }
       }
-      return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [] };
+      return { fields, alerts: Array.isArray(meta.alerts) ? meta.alerts : [], unlinked, uninvalid };
     } catch {
       this.isoCtx = undefined;
       return undefined;
@@ -2310,6 +2322,15 @@ export class PageController {
       }
       return { ok: true, kind: spec.kind, waited: Date.now() - t0, ...(note !== undefined ? { detail: note } : {}) };
     }
+    if (spec.kind === 'a11y') {
+      if (spec.scope !== undefined && parseFrameTarget(spec.scope) !== null) throw badRequest('expect a11y --scope : zone frame=… non prise en charge');
+      const r = await this.a11y({ scope: spec.scope, max: 50 });
+      const tolerated = spec.max ?? 0;
+      const items = r.issues.map((i) => `${i.kind} ${i.who} — ${i.detail}`);
+      const counts = A11Y_KINDS.filter((k) => (r.counts[k] ?? 0) > 0).map((k) => `${k} ${r.counts[k]}`).join(', ');
+      if (r.total > tolerated) throw fail(`${r.total} problème(s) (${counts}) : ${list(items)}`, items.slice(0, 50));
+      return { ok: true, kind: spec.kind, waited: Date.now() - t0, ...(r.total > 0 ? { detail: `${r.total} problème(s) d'accessibilité toléré(s) (--max ${tolerated}) : ${counts}` } : {}) };
+    }
     if (spec.kind === 'no-form-errors') {
       const items = await this.formErrorLines();
       if (items.length > 0) throw fail(`${items.length} erreur(s) : ${list(items)}`, items.slice(0, 50));
@@ -2414,6 +2435,135 @@ export class PageController {
     // Relevé DOM impossible (navigation en cours) : les champs invalides de l'arbre restent rapportés.
     const alerts = fe !== undefined ? fe.alerts : [];
     return [...snap.invalid.map((i) => i.line), ...alerts.map((a) => `alerte "${a.length > 200 ? `${a.slice(0, 200)}…` : a}"`)];
+  }
+
+  // ---------- Audit d'accessibilité (grasp a11y, expect a11y) : lecture seule, code fixe ----------
+
+  /**
+   * Défauts d'accessibilité vérifiables de la page (ou de la zone `scope`) : arbre d'accessibilité (contrôles sans
+   * nom, images sans alternative, titres sautés), relevé des erreurs de formulaire (message visible non relié,
+   * message masqué par aria-hidden) et DOM (libellés orphelins, références ARIA cassées, rôles invalides), dans le
+   * monde isolé de lecture : autorisé avec allowEval=false. Les refs données sont mémorisées comme celles d'un snap.
+   * `max` : problèmes listés (30 par défaut, 500 au plus) ; les comptes portent sur tous.
+   */
+  async a11y(opts: { scope?: string | undefined; max?: number | undefined } = {}): Promise<A11yReport> {
+    const max = opts.max ?? A11Y_DEFAULT_MAX;
+    if (!Number.isInteger(max) || max < 1 || max > A11Y_MAX) throw badRequest(`max : entier de 1 à ${A11Y_MAX} attendu (problèmes listés)`);
+    const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
+    if (scope !== undefined && parseFrameTarget(scope) !== null) throw badRequest("a11y --scope : zone frame=… non prise en charge (l'audit porte sur le cadre principal)");
+    const scopeId = scope !== undefined ? await this.resolve(scope) : undefined;
+    const [{ nodes }, loc] = await Promise.all([
+      this.s<{ nodes: AXNode[] }>('Accessibility.getFullAXTree'),
+      this.location(),
+      this.isolatedContext().catch(() => undefined),
+    ]);
+    const inZone = scopeId !== undefined ? scopeNodes(nodes, scopeId) : undefined;
+    if (scopeId !== undefined && inZone === undefined) throw notFound(`la zone ${scope ?? ''} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
+    const [fe, dom] = await Promise.all([this.formErrors(scopeId), this.a11yDom(scopeId)]);
+    // Relevé des erreurs de formulaire impossible : erreur, jamais un audit faussement propre.
+    if (fe === undefined) throw new GraspError(503, 'audit : relevé des erreurs de formulaire impossible (page en transition ?) — réessayez après grasp wait');
+    // Refs : celles du snapshot complet (mêmes hash), mémorisées pour être utilisables telles quelles.
+    const snap = buildSnapshot(nodes, { url: loc.url, title: loc.title, maxBytes: 1, formErrors: fe });
+    this.remember(snap);
+    const refOf = new Map<number, string>();
+    for (const [ref, id] of snap.refs) if (!refOf.has(id)) refOf.set(id, ref);
+    const raw: RawIssue[] = axIssues(nodes, (n) => inZone === undefined || inZone.has(n.nodeId));
+    {
+      // Images sans nom : l'élément DOM décide (icône <svg> sans role → non signalée ; correction selon l'élément).
+      // DOM.describeNode : lecture CDP, aucun code exécuté dans la page.
+      const drop = new Set<RawIssue>();
+      await Promise.all(raw.filter((r) => r.kind === 'image-sans-alt' && r.backendId !== undefined).map(async (r) => {
+        const d = await this.s<{ node: { localName?: string; nodeName: string; attributes?: string[] } }>('DOM.describeNode', { backendNodeId: r.backendId }).catch(() => undefined);
+        if (d === undefined) return;
+        const at = d.node.attributes !== undefined ? d.node.attributes : [];
+        let role: string | undefined;
+        for (let i = 0; i + 1 < at.length; i += 2) if (at[i] === 'role') role = at[i + 1];
+        const fix = imageFix(d.node.localName ?? d.node.nodeName, role);
+        if (fix === undefined) drop.add(r); else r.fix = fix;
+      }));
+      if (drop.size > 0) raw.splice(0, raw.length, ...raw.filter((r) => !drop.has(r)));
+    }
+    {
+      // Relevé déjà limité à la zone (formErrors sous scopeId).
+      for (const [id, msg] of fe.fields) {
+        if (fe.unlinked?.has(id) !== true && fe.uninvalid?.has(id) !== true) continue;
+        if (fe.uninvalid?.has(id) === true) {
+          raw.push({ kind: 'erreur-sans-invalide', backendId: id, detail: `message « ${msg.length > 60 ? `${msg.slice(0, 59)}…` : msg} » relié (aria-describedby) mais champ non marqué invalide`, fix: 'aria-invalid="true" tant que l\'erreur est affichée' });
+          continue;
+        }
+        raw.push({ kind: 'erreur-non-reliee', backendId: id, detail: `message « ${msg.length > 60 ? `${msg.slice(0, 59)}…` : msg} » affiché mais non relié (ni aria-errormessage ni aria-describedby)`, fix: "aria-describedby=<id du message> (ou aria-errormessage + aria-invalid)" });
+      }
+      for (const a of fe.alerts) raw.push({ kind: 'erreur-masquee', who: `"${a.length > 80 ? `${a.slice(0, 79)}…` : a}"`, detail: "erreur affichée mais aria-hidden (inaudible), liée à aucun champ", fix: 'retirer aria-hidden ; role=alert pour l\'annoncer, aria-describedby pour la relier au champ' });
+    }
+    raw.push(...dom);
+    const order = (k: A11yKind) => A11Y_KINDS.indexOf(k);
+    raw.sort((a, b) => order(a.kind) - order(b.kind)); // tri stable : l'ordre du document est conservé par type
+    const counts: Partial<Record<A11yKind, number>> = {};
+    for (const r of raw) counts[r.kind] = (counts[r.kind] ?? 0) + 1;
+    const issues: A11yIssue[] = [];
+    for (const r of raw.slice(0, max)) {
+      const ref = r.backendId !== undefined ? refOf.get(r.backendId) : undefined;
+      let who = r.who;
+      if (ref !== undefined) {
+        // Ligne du snapshot (rôle, nom, contexte d'un bouton sans nom, [invalide: …]) ; sinon ref:rôle + description DOM.
+        const line = snap.entries.get(ref);
+        if (line !== undefined) {
+          who = line;
+          // Contrôle sans nom : sa ligne ne dit pas quel élément c'est ; la description DOM le relie au code (id, type).
+          if (r.kind === 'sans-nom' && r.backendId !== undefined) {
+            const d = await this.callIsolated<string>(r.backendId, A11Y_DESC_FN).catch(() => '');
+            if (d !== '') who = `${who} ${d}`;
+          }
+        } else {
+          const d = who ?? (r.backendId !== undefined ? await this.callIsolated<string>(r.backendId, A11Y_DESC_FN).catch(() => '') : '');
+          who = `${ref}:${snap.meta.get(ref)?.role ?? r.role ?? '?'}${d !== '' ? ` ${d}` : ''}`;
+        }
+      } else if (who === undefined && r.backendId !== undefined) {
+        who = await this.callIsolated<string>(r.backendId, A11Y_DESC_FN).catch(() => '');
+      }
+      issues.push({ kind: r.kind, ...(ref !== undefined ? { ref } : {}), who: who !== undefined && who !== '' ? who : `(${r.role ?? 'élément'} sans description)`, detail: r.detail, fix: r.fix });
+    }
+    const report = { url: loc.url, title: loc.title, total: raw.length, counts, issues, omitted: Math.max(0, raw.length - issues.length) };
+    return { ...report, text: renderA11y(report, scope), note: A11Y_NOTE };
+  }
+
+  /** Problèmes DOM de l'audit (A11Y_DOM_FN) sous `root`, avec le backendNodeId de chaque élément. Page en transition → aucun. */
+  private async a11yDom(root?: number): Promise<RawIssue[]> {
+    const group = 'grasp-a11y';
+    try {
+      const ctx = await this.isolatedContext();
+      type Res = { result: { objectId?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } };
+      let res: Res;
+      if (root === undefined) res = await this.s<Res>('Runtime.evaluate', { contextId: ctx, expression: `(${A11Y_DOM_FN})(document)`, objectGroup: group });
+      else {
+        const { object } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId: root, executionContextId: ctx, objectGroup: group });
+        res = await this.s<Res>('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function () { return (${A11Y_DOM_FN})(this); }`, objectGroup: group });
+      }
+      // Bug du code fixe de Grasp : erreur visible, jamais un audit « propre » par défaut.
+      if (res.exceptionDetails !== undefined) throw new GraspError(500, `script interne de Grasp en échec : ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text}`);
+      if (res.result.objectId === undefined) return [];
+      type Props = { result: Array<{ name: string; value?: { value?: unknown; objectId?: string } }> };
+      const props = await this.s<Props>('Runtime.getProperties', { objectId: res.result.objectId, ownProperties: true });
+      const meta = JSON.parse(String(props.result.find((p) => p.name === 'meta')?.value?.value ?? '{}')) as { items?: DomItem[] };
+      const items = meta.items !== undefined ? meta.items : [];
+      const elsId = props.result.find((p) => p.name === 'els')?.value?.objectId;
+      const byIndex = new Map<number, string | undefined>();
+      if (elsId !== undefined && items.length > 0) {
+        const els = await this.s<Props>('Runtime.getProperties', { objectId: elsId, ownProperties: true });
+        for (const p of els.result) if (/^[0-9]+$/.test(p.name)) byIndex.set(Number(p.name), p.value?.objectId);
+      }
+      const out: RawIssue[] = [];
+      for (const it of items) {
+        const objectId = byIndex.get(it.i);
+        const id = objectId !== undefined ? (await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId }).catch(() => undefined))?.node.backendNodeId : undefined;
+        out.push(domIssue(it, id));
+      }
+      return out;
+    } catch (e) {
+      if (e instanceof GraspError && e.status === 500) throw e;
+      this.isoCtx = undefined;
+      throw new GraspError(503, `audit DOM impossible (page en transition ?) : ${(e as Error).message} — réessayez après grasp wait`);
+    } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
   }
 
   // ---------- Sélecteurs : ref e5, CSS #id, texte text:Valider ----------

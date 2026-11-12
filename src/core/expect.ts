@@ -6,7 +6,7 @@ import { DEFAULT_REQUEST_STATUS, parseRequestTarget, parseStatus } from './netwo
  * des scripts (core/script.ts), le bridge qui observe la page, et le rapport de `grasp run`.
  */
 
-export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'request'] as const;
+export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'request', 'a11y'] as const;
 export type ExpectKind = typeof EXPECT_KINDS[number];
 /** exact : égalité ; contains : contient (`~`) ; regex : expression régulière JavaScript (`--regex`). */
 export type ExpectMatch = 'exact' | 'contains' | 'regex';
@@ -28,13 +28,15 @@ export interface ExpectSpec {
   ignore?: string;
   /** request : statut attendu (« 2xx » par défaut, « 201 », « 2xx,304 »). */
   status?: string;
+  /** a11y : nombre de problèmes d'accessibilité tolérés (défaut 0). */
+  max?: number;
 }
 
 /** Réessai par défaut : la page vient souvent de réagir à l'action précédente (XHR, route, rendu). */
 export const EXPECT_DEFAULT_MS = 5000;
 export const EXPECT_MAX_MS = 60_000;
 
-/** Assertions relues jusqu'au délai ; console et formulaire : constat immédiat. request : la réponse peut être en route. */
+/** Assertions relues jusqu'au délai ; console, formulaire et accessibilité : constat immédiat. request : la réponse peut être en route. */
 export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'request']);
 
 export function isExpectKind(k: string): k is ExpectKind { return (EXPECT_KINDS as readonly string[]).includes(k); }
@@ -106,6 +108,7 @@ export function describeExpected(spec: ExpectSpec): string {
       const how = spec.match === 'regex' ? `d'URL correspondant à /${p.url}/` : spec.match === 'contains' ? `d'URL contenant ${q(p.url)}` : q(p.url);
       return `requête ${p.method !== undefined ? `${p.method} ` : ''}${how} de statut ${spec.status ?? DEFAULT_REQUEST_STATUS}`;
     }
+    case 'a11y': return `au plus ${spec.max ?? 0} problème(s) d'accessibilité ${spec.scope !== undefined ? `dans ${spec.scope}` : 'dans la page'}`;
   }
 }
 
@@ -139,7 +142,7 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
     parseStatus(status);
     spec.status = status.trim();
   }
-  for (const k of ['timeout', 'since'] as const) {
+  for (const k of ['timeout', 'since', 'max'] as const) {
     const v = body[k];
     if (v === undefined || v === null || v === '') continue;
     const n = Number(v);
