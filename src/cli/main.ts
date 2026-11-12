@@ -876,7 +876,7 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
 Historique   history [--since <seq>] [--limit N (50)] [--clear]   commandes de la session (500 au plus, en mémoire)
              history --as-run [--expect] [--since <seq>] [-o f]   script grasp run rejouable : refs → text:<nom>
                (nom unique) ou CSS stable vérifié unique ; lectures et échecs omis ; mots de passe masqués
-               (ligne commentée) ; --expect : url, titre et premier titre de l'état final
+               (ligne commentée), fill … secret:NOM rejoué tel quel ; --expect : url, titre et premier titre de l'état final
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
@@ -893,11 +893,12 @@ Réseau       network [--since <seq>] [--failed] [--max N (50)] [--type xhr,fetc
 Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
-Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
+Actions      nav <url> | click <sél> | fill <sél> <valeur|secret:NOM> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél] | hover <sél> | type <sél> <texte> [--delay ms]
                type : touche par touche, AJOUTÉ au curseur (autocomplétions) ; --delay 0 à 1000 ms entre deux touches
              back | forward | reload [--hard]   historique de l'onglet (route pushState comprise), rechargement
-               (--hard : sans cache) ; garde appliqué (URL de l'entrée rejugée), même attente que nav ; note « retour : url »
+               (--hard : sans cache) ; garde appliqué (URL de l'entrée rejugée), même attente que nav ; note « retour : url » ;
+               --dialog et --network comme nav (beforeunload refusé par --dialog dismiss : 409 aussitôt)
              scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]   défile la page, ou le
                conteneur <sél> (élément non défilant sans option : amené dans la vue) ; défaut : un écran vers le bas ;
                --until-stable : jusqu'en bas, pas après pas avec attente de stabilité, tant que du contenu apparaît
