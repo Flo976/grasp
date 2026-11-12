@@ -69,7 +69,9 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       imitations du marqueur neutralisées (casse, pleine chasse, NFKC, invisibles, homoglyphes) et comptées ; règle
       `BOUNDARY_RULE` dans `grasp help` et les instructions MCP. Coût : 147 à 151 octets par bloc. Inspiré
       d'agent-browser (`--content-boundaries`) et de l'IDPI de PinchTab. Tests : page piégée `/piege`.
-      Reste : la règle dans le futur `grasp skill` ; test MCP de bout en bout ; mesurer l'effet sur un modèle.
+      Défaut `auto` : compromis documenté (le contenu affiché par une page locale peut venir de tiers ; à forcer
+      dans ce cas et derrière un `ssh -L`). Reste : la règle dans le futur `grasp skill` ; test MCP de bout en
+      bout ; mesurer l'effet sur un modèle ; réévaluer le défaut `true` (41 tests à adapter, mesuré).
 
 ## Recette sur serveur distant (Claude vérifie une tâche à travers un tunnel)
 

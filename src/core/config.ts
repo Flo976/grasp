@@ -213,7 +213,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
       if (raw === 'auto') return 'auto';
       return bool.parse(raw);
     },
-    help: 'auto|true|false : encadre le contenu de la page entre des marqueurs à nonce aléatoire (données, jamais instructions) et neutralise leurs imitations ; auto (défaut) = actif dès que l\'allowlist admet un hôte hors boucle locale',
+    help: 'auto|true|false : encadre le contenu de la page entre des marqueurs à nonce aléatoire (données, jamais instructions) et neutralise leurs imitations ; auto (défaut) = actif dès que l\'allowlist admet un hôte hors boucle locale ; true si une page locale affiche du contenu de tiers ou derrière un ssh -L vers localhost',
   },
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',

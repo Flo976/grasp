@@ -1358,12 +1358,19 @@ destinée au futur `grasp skill` : constante `BOUNDARY_RULE` de `src/core/bounda
   (`cookies`, `state export`, valeur d'un `eval` demandé explicitement), les binaires et l'état interne.
 - **Défaut `auto`, et pourquoi** : actif dès que l'allowlist admet un hôte **hors de la boucle locale** (un nom,
   un joker, `*`, une adresse privée ou publique) ; inactif avec l'allowlist par défaut (`127.0.0.1`, `localhost`,
-  `[::1]`, `*.localhost`). Le risque naît du contenu de tiers ; avec l'allowlist par défaut, l'agent ne lit que
-  les pages servies par la machine elle-même : les marqueurs n'y apporteraient que leur coût, et une sortie
-  différente pour les scripts qui lisent `grasp text`. `true` / `false` forcent ; `grasp security`
-  dit l'état et sa source (`frontières : actives … — auto : allowlist ouverte au-delà de la boucle locale`).
-  **Tunnel `ssh -L` vers `localhost:port`** : l'allowlist reste locale alors que la page vient d'un serveur
-  distant (avec ses contenus d'utilisateurs) : `grasp config set contentBoundaries true`.
+  `[::1]`, `*.localhost`). C'est un **compromis**, pas une absence de risque : avec l'allowlist par défaut, les
+  *documents* viennent de la machine elle-même (l'application que l'on développe), mais le garde ne couvre que
+  les documents ; ce qu'une page locale affiche peut venir de tiers (un front local qui consomme une API
+  distante, des contenus d'utilisateurs en base, un script ou un `fetch()` hors allowlist, voir
+  [Limites connues](#limites-connues)), et un tunnel `ssh -L` vers `localhost:port` sert une page distante sous
+  une allowlist locale. Le défaut `auto` vise le cas où l'agent **choisit** où naviguer parmi des hôtes qui ne
+  sont pas les siens ; sur la boucle locale, il laisse la sortie inchangée (`grasp text` lu par des scripts,
+  ~150 octets par bloc économisés ; essai du défaut à `true` : 41 des 469 tests de la suite échouent sur la sortie attendue).
+  `true` / `false` forcent ; `grasp security` dit l'état et sa source (`frontières : actives … — auto : allowlist
+  ouverte au-delà de la boucle locale`, ou `… limitée à la boucle locale ; contentBoundaries=true pour les
+  forcer`). **À forcer** (`grasp config set contentBoundaries true`) dès que la page locale affiche du contenu
+  qu'on ne maîtrise pas, et pour une recette à travers un tunnel `ssh -L` vers `localhost` (avec
+  `hostResolverRules`, l'allowlist porte le vrai nom : `auto` les active déjà).
 - **Coût mesuré** (`test/unit/boundaries.test.ts`, `test/integration/boundaries.test.ts`) : 147 octets par bloc
   (`snap`, `text`, `diff`, `note`), 149 à 151 pour `erreur`, `console`, `markdown`, quelle que soit sa taille. Sur
   la page de formulaire du site de test : `snap` 437 → 584 octets, `text` 134 → 281. Rapporté aux budgets par
@@ -1778,8 +1785,11 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   reste sans le nonce, donc sans fin authentique). Non encadrés : la valeur d'un `eval` (opt-in), `cookies`,
   `state export`, le chemin d'une capture et l'image elle-même (texte d'une capture lu par un modèle de vision).
   Dans une erreur, la phrase de Grasp est encadrée avec ce qu'elle cite (pas de découpe plus
-  fine). Défaut `auto` : un tunnel `ssh -L` vers `localhost` laisse l'allowlist locale, donc les frontières
-  inactives, alors que la page est distante (`contentBoundaries=true`). MCP : couvert par les réponses du bridge et
+  fine). Défaut `auto` : `auto` ne regarde que l'allowlist, pas l'origine de ce que la page affiche. Une page
+  servie sur la boucle locale qui affiche du contenu de tiers (API distante, contenus d'utilisateurs, script hors
+  allowlist) et un tunnel `ssh -L` vers `localhost` (page distante) laissent les frontières inactives : le contenu
+  arrive sans marqueurs (témoin du test d'intégration : `/piege` sur `127.0.0.1` rend ses faux marqueurs tels
+  quels). `contentBoundaries=true` dans ces cas. MCP : couvert par les réponses du bridge et
   le formateur de console partagé, sans test de bout en bout dédié.
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
