@@ -371,9 +371,12 @@ Suites de l'intégration :
   Poser la valeur pour une origine avant le premier chargement, comme `state import`.
 - [ ] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
   true`, ce qui pousse un agent à contourner le skill. Proposer plutôt les alternatives (`storage`, `expect`, `find`).
-- [ ] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
+- [x] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
   `expect not-clipped <sél>`, ou boîtes englobantes en option de `snap`/`find` (une image alt="" n'est pas dans
-  l'arbre a11y).
+  l'arbre a11y). Fait : `expect in-viewport <sél> [--fully]` (largeur du viewport ; `--fully` : visible sans
+  défiler), `expect not-clipped <sél>` (ancêtre overflow hidden/clip, bord du viewport), `expect
+  no-horizontal-overflow` (éléments qui dépassent cités), `--boxes` sur `snap` et `find` (`@x,y LxH`) ; mesures
+  en monde isolé, CSS/ref/text:, CLI, run, MCP, history --as-run. Test : `mise-en-page.test.ts` (360x800).
 - [ ] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
   (« pas de meta viewport → largeur de mise en page 980 »).
 - [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques

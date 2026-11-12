@@ -6,7 +6,7 @@ import { DEFAULT_REQUEST_STATUS, parseRequestTarget, parseStatus } from './netwo
  * des scripts (core/script.ts), le bridge qui observe la page, et le rapport de `grasp run`.
  */
 
-export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'request', 'a11y'] as const;
+export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'request', 'a11y', 'in-viewport', 'not-clipped', 'no-horizontal-overflow'] as const;
 export type ExpectKind = typeof EXPECT_KINDS[number];
 /** exact : égalité ; contains : contient (`~`) ; regex : expression régulière JavaScript (`--regex`). */
 export type ExpectMatch = 'exact' | 'contains' | 'regex';
@@ -30,6 +30,8 @@ export interface ExpectSpec {
   status?: string;
   /** a11y : nombre de problèmes d'accessibilité tolérés (défaut 0). */
   max?: number;
+  /** in-viewport : aussi verticalement, à la position de défilement courante (défaut : largeur seulement). */
+  fully?: boolean;
 }
 
 /** Réessai par défaut : la page vient souvent de réagir à l'action précédente (XHR, route, rendu). */
@@ -37,7 +39,7 @@ export const EXPECT_DEFAULT_MS = 5000;
 export const EXPECT_MAX_MS = 60_000;
 
 /** Assertions relues jusqu'au délai ; console, formulaire et accessibilité : constat immédiat. request : la réponse peut être en route. */
-export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'request']);
+export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'request', 'in-viewport', 'not-clipped', 'no-horizontal-overflow']);
 
 export function isExpectKind(k: string): k is ExpectKind { return (EXPECT_KINDS as readonly string[]).includes(k); }
 
@@ -109,6 +111,9 @@ export function describeExpected(spec: ExpectSpec): string {
       return `requête ${p.method !== undefined ? `${p.method} ` : ''}${how} de statut ${spec.status ?? DEFAULT_REQUEST_STATUS}`;
     }
     case 'a11y': return `au plus ${spec.max ?? 0} problème(s) d'accessibilité ${spec.scope !== undefined ? `dans ${spec.scope}` : 'dans la page'}`;
+    case 'in-viewport': return spec.fully === true ? `élément ${spec.target ?? ''} entièrement dans le viewport (sans défiler)` : `élément ${spec.target ?? ''} dans la largeur du viewport`;
+    case 'not-clipped': return `élément ${spec.target ?? ''} non rogné (ni par un ancêtre overflow hidden/clip, ni par le bord du viewport)`;
+    case 'no-horizontal-overflow': return 'aucun débordement horizontal de la page';
   }
 }
 
@@ -142,6 +147,11 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
     parseStatus(status);
     spec.status = status.trim();
   }
+  if (body.fully !== undefined && body.fully !== null && body.fully !== false) {
+    if (body.fully !== true) throw badRequest('« fully » : booléen attendu');
+    if (kind !== 'in-viewport') throw badRequest(`« fully » ne s'applique qu'à expect in-viewport`);
+    spec.fully = true;
+  }
   for (const k of ['timeout', 'since', 'max'] as const) {
     const v = body[k];
     if (v === undefined || v === null || v === '') continue;
@@ -150,7 +160,7 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
     if (k === 'timeout' && n > EXPECT_MAX_MS) throw badRequest(`timeout : ${EXPECT_MAX_MS} ms au plus`);
     spec[k] = n;
   }
-  const needs = { target: ['sel', 'no-sel', 'value', 'request'], expected: ['text', 'no-text', 'url', 'title', 'value'] } as const;
+  const needs = { target: ['sel', 'no-sel', 'value', 'request', 'in-viewport', 'not-clipped'], expected: ['text', 'no-text', 'url', 'title', 'value'] } as const;
   if ((needs.target as readonly string[]).includes(kind) && spec.target === undefined) throw badRequest(kind === 'request' ? 'expect request : requête attendue (ex. "POST /api/commande")' : `expect ${kind} : sélecteur requis`);
   if ((needs.expected as readonly string[]).includes(kind) && spec.expected === undefined) throw badRequest(`expect ${kind} : valeur attendue requise`);
   if ((kind === 'text' || kind === 'no-text') && spec.match !== 'regex' && normSpace(spec.expected ?? '') === '') throw badRequest(`expect ${kind} : texte non vide attendu`);

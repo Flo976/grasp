@@ -828,13 +828,15 @@ Profils      profiles [--json]                       liste (* = profil de la ses
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
              profiles rm <nom>                       refusé si une session l'utilise
              profile <nom>                           bascule la session courante (Chrome relancé, même id)
-Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N]   budget 12000 octets par défaut (config snapMax)
+Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N] [--boxes]   budget 12000 octets par défaut (config snapMax)
                --name-max N : noms coupés à N caractères (défaut 80, textes 100), coupure toujours marquée « … » ;
                0 = noms entiers (titres longs) ; les refs n'en dépendent pas ; aussi sur une ligne de run
                --outline : repères et titres seulement (volume de chaque repère : lignes, actionnables), pour s'orienter
                --interactive : éléments actionnables et champs, avec leurs conteneurs et titres ; texte brut omis
                refs identiques au snapshot complet ; dernière ligne « … lecture partielle (--mode) : N lignes sur M »
-             find <texte|/regex/> [--role r[,r2]] [--max N (30)] [--scope <sél>]   lignes du snapshot qui correspondent
+               --boxes : chaque ligne à ref suivie de sa boîte « @x,y LxH » (px CSS arrondis, coin haut-gauche dans le
+               document, défilement compris ; « @aucune-boîte » si non rendu), viewport rappelé sous l'en-tête ; aussi sur find
+             find <texte|/regex/> [--role r[,r2]] [--max N (30)] [--scope <sél>] [--boxes]   lignes du snapshot qui correspondent
                (nom entier, valeur, texte ; sans casse ni accents ; options des listes fermées comprises), avec leur
                conteneur « (dans eXX:row "…") » ; --role text = texte brut ; refs identiques au snapshot complet
              text [--max N] [--scope <ref|css|frame=…>] [--markdown]   4000 caractères par défaut (config textMax)
@@ -871,6 +873,13 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
              expect request [~] "POST /api/commande" [2xx|201|4xx,5xx] [--regex] [--since <seq>]
                requête terminée avec ce statut (2xx par défaut) depuis le début du document courant
              expect a11y [--max N] [--scope <sél>]                    au plus N problèmes (grasp a11y), 0 par défaut
+             expect in-viewport <sél> [--fully]                       tient dans la LARGEUR du viewport (plus bas dans la
+               page : accepté) ; --fully : entièrement visible sans défiler, à la position de défilement courante
+             expect not-clipped <sél>                                 ni rogné par un ancêtre overflow hidden/clip (sur l'axe
+               qu'il rogne ; auto/scroll : non), ni au-delà de la largeur du viewport
+             expect no-horizontal-overflow                            la page ne défile pas horizontalement ; échec : les
+               éléments les plus externes qui dépassent, avec leur position et leur largeur
+               sélecteur : CSS (unique ; img alt="" comprise), ref ou text: ; mesures dans le monde isolé (sans eval)
                relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console, formulaire et a11y : immédiat) ;
                échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture
 Historique   history [--since <seq>] [--limit N (50)] [--clear]   commandes de la session (500 au plus, en mémoire)

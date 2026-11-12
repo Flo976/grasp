@@ -107,7 +107,8 @@ limite la lecture à une zone.
 - ♿ **Audit d'accessibilité** : `grasp a11y` relève contrôles sans nom, images sans alt, erreurs non reliées,
   libellés orphelins, rôles invalides, titres sautés, avec ref et correction ; `expect a11y` en recette (relevé
   partiel, pas un audit WCAG) ([détails](#audit-daccessibilité)).
-- ✅ **Recette scriptée** : `expect text|url|title|sel|value|request|a11y|no-console-errors|no-form-errors…`, code non
+- ✅ **Recette scriptée** : `expect text|url|title|sel|value|request|a11y|no-console-errors|no-form-errors…`, mise en
+  page mobile sans eval (`expect in-viewport|not-clipped <sél>`, `expect no-horizontal-overflow`, `find --boxes`), code non
   nul et rapport (console, requêtes 4xx/5xx, formulaire, capture à l'échec) ([détails](#recette--expect-et-rapport-de-run)).
 - 🗺️ **Recette multi-pages** : `grasp diff` compare deux environnements page par page, `grasp audit` passe un
   sitemap au crible (statut, console, requêtes, formulaire, liens internes cassés) ([détails](#recette-multi-pages--diff-et-audit)).
@@ -529,6 +530,24 @@ esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
   `find « … » : aucune correspondance`, code 0 (ce n'est pas une erreur). La ligne `… élagué : …` du snapshot
   complet est gardée : derrière une fenêtre modale ou avec une iframe non parcourue, « aucune correspondance » ne
   veut pas dire que la cible est absente de la page.
+- **`--boxes`** (`?boxes=1`, sur `snap` dans toutes ses formes et sur `find`) : chaque ligne à ref est suivie de
+  la **boîte** de son élément, `@x,y LxH` en px CSS arrondis — coin haut-gauche dans le **document** (défilement
+  compris, donc indépendant de la position de défilement), largeur, hauteur ; `@aucune-boîte` pour un élément non
+  rendu. Une ligne sous l'en-tête le rappelle avec la taille du viewport :
+
+  ```
+  $ grasp find Valider --boxes          # viewport 360x800 --mobile
+  page "Mise en page" http://127.0.0.1:46363/mise-en-page
+  boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document (défilement compris) ; viewport 360x800
+  find « Valider » : 1 correspondance
+  e9kfo:button "Valider" @20,280 200x40
+  ```
+
+  Mesure en un appel dans le monde isolé (nœuds des lignes rendues résolus, puis une fonction fixe de Grasp reçoit
+  tous les objets : aucun eval, permis avec `allowEval=false`), 2 000 nœuds au plus. Les lignes rallongées restent
+  dans le budget (`--max`) ; refs et diff n'en dépendent pas. Les lignes de texte brut n'ont pas de boîte, et un
+  élément hors de l'arbre d'accessibilité (image `alt=""`) n'a pas de ligne : pour lui, `expect in-viewport` /
+  `not-clipped` par CSS ([Recette](#recette--expect-et-rapport-de-run)). Refusé sur `text`, `a11y` et une zone `frame=…`.
 - **Refusé, jamais ignoré** (400) : `--outline` avec `--interactive`, `find` avec un mode, `role`/`limit` sans
   `find`, motif vide, expression invalide ; une zone `frame=…` (arbre ARIA de Playwright, sans refs). La CLI refuse
   aussi avant tout envoi : `find x --outline|--interactive|--markdown`, `snap|text --role|--limit` (message
@@ -651,13 +670,13 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `nav <url>` | Navigue (soumis à l'allowlist). |
 | `back`, `forward`, `reload [--hard]` | Historique de l'onglet (route `pushState` comprise) et rechargement, garde appliqué, même attente que `nav`. Voir [Historique et défilement](#historique-et-défilement). |
 | `scroll [<sél>] [--by px \| --to top\|bottom] [--until-stable [--max-steps N]]` | Défile la page ou un conteneur ; `--until-stable` : jusqu'à ce que plus rien n'apparaisse (défilement infini), nœuds apparus comptés. |
-| `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
+| `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N] [--boxes]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). `--boxes` : position et taille de chaque élément (`@x,y LxH`, voir [Lecture progressive](#lecture-progressive)). |
 | `snap --outline` / `snap --interactive` | Lecture partielle, mêmes refs : repères et titres (avec leur volume) / éléments actionnables et leur contexte. Voir [Lecture progressive](#lecture-progressive). |
-| `find <texte\|/regex/> [--role r] [--max N] [--scope …]` | Lignes du snapshot qui correspondent (options de listes fermées comprises), avec leur conteneur ; 30 au plus par défaut. |
+| `find <texte\|/regex/> [--role r] [--max N] [--scope …] [--boxes]` | Lignes du snapshot qui correspondent (options de listes fermées comprises), avec leur conteneur ; 30 au plus par défaut ; `--boxes` : position et taille. |
 | `text [--max N] [--scope <ref\|css\|frame=…>] [--markdown]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée) ; `--markdown` : le même contenu visible en Markdown (voir [Sortie Markdown](#sortie-markdown)). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `a11y [--scope <ref\|css>] [--max N] [--json]` | Audit d'accessibilité : une ligne par problème vérifiable (contrôle sans nom, image sans alt, erreur non reliée ou masquée, libellé orphelin, référence ARIA cassée, rôle invalide, titre sauté), ref et correction ; 30 listés par défaut. Pas un audit WCAG. Voir [Audit d'accessibilité](#audit-daccessibilité). |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
-| `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire, accessibilité) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
+| `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire, accessibilité, mise en page : dans le viewport, rogné, débordement horizontal) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
 | `fill <sél> secret:NOM` | Remplit avec un **secret** du serveur : valeur jamais vue par l'agent, refusée hors des domaines du secret, rendue `secret:NOM` dans toutes les sorties. Voir [Secrets](#secrets-fill--secretnom). |
@@ -1168,6 +1187,9 @@ FIN
 | `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
 | `expect request [~] "<MÉTHODE> <chemin\|url>" [statut] [--regex] [--since <seq>]` | une requête **terminée** du [journal réseau](#journal-réseau), depuis le début du document courant ou de la dernière action (le plus ancien des deux), a cette méthode, cette URL et ce statut (`2xx` par défaut ; `201`, `4xx`, `2xx,304`) |
 | `expect a11y [--max N] [--scope <sél>]` | l'[audit d'accessibilité](#audit-daccessibilité) relève au plus N problèmes (0 par défaut) |
+| `expect in-viewport <sél> [--fully]` | la boîte de l'élément tient dans la **largeur** du viewport (un élément plus bas dans la page, atteint en défilant, est accepté) ; `--fully` : entièrement visible **sans défiler**, à la position de défilement courante (les deux axes) |
+| `expect not-clipped <sél>` | l'élément n'est **rogné** ni par un ancêtre `overflow: hidden\|clip` (sur l'axe qu'il rogne), ni par le bord droit ou gauche du viewport |
+| `expect no-horizontal-overflow` | la page ne **défile pas horizontalement** (largeur défilable ≤ largeur du viewport) ; échec : les éléments qui dépassent |
 
 - **Syntaxe, et pourquoi** : une commande `expect` suivie du **type d'assertion** (comme `session create`,
   `profiles import`), puis ses arguments positionnels dans l'ordre naturel (`value <sél> <valeur>`, comme
@@ -1178,7 +1200,8 @@ FIN
   pas de sens) ; `~` (« contient ») est un mot à part, lisible, et `--regex` reste explicite. Dans un
   terminal, citez le `~` (`'~'`) : la shell le remplace sinon par votre dossier personnel — l'argument de
   trop est refusé avec cette explication, jamais pris pour l'URL attendue.
-- **Réessai** : text, no-text, url, title, sel, no-sel, value et request sont relues toutes les 100 ms jusqu'à
+- **Réessai** : text, no-text, url, title, sel, no-sel, value, request, in-viewport, not-clipped et
+  no-horizontal-overflow sont relues toutes les 100 ms jusqu'à
   `--timeout` (5000 ms par défaut, 60 000 au plus ; `0` = une seule lecture) — la page réagit souvent après
   l'action précédente (XHR, route). no-console-errors, no-form-errors et a11y sont un **constat immédiat**.
 - **`expect request`** vérifie qu'un « Enregistrer » a **vraiment appelé l'API** et qu'elle a répondu :
@@ -1208,6 +1231,55 @@ FIN
   dans le JSON de l'étape, champ `expect`). Exemple :
   `attendu texte « Commande enregistrée » dans la page ; constaté : absent ; texte de la page : « Boutique
   Quantité Courriel Commander Erreur serveur, réessayez » (après 5000 ms)`.
+- **Mise en page mobile, sans eval** (retour d'essai réel : une image `alt=""` n'est pas dans l'arbre
+  d'accessibilité, et ni `snap` ni `find` ne donnaient de positions) :
+
+  ```bash
+  grasp run <<'FIN'
+  viewport 360x800 --mobile
+  nav https://preprod.exemple.com/fiche/42
+  expect no-horizontal-overflow
+  expect not-clipped '.fiche img'          # image décorative alt="" : désignée en CSS
+  expect in-viewport text:Ajouter          # le bouton tient dans la largeur
+  expect in-viewport '#cta' --fully        # et celui-ci est visible sans défiler
+  FIN
+  ```
+
+  Mesures prises dans le **monde isolé** de Grasp par du code fixe (jamais l'eval de l'agent : permises avec
+  `allowEval=false`), en px CSS ; viewport = viewport de **mise en page** (`clientWidth` × `clientHeight` de
+  l'élément qui défile, barre de défilement exclue — sans `<meta viewport>` en `--mobile`, 980 px). Sélecteur :
+  mêmes formes que `expect value` — CSS (unique : plusieurs correspondances → 409 qui le dit), ref ou `text:` ; un
+  élément hors de l'arbre d'accessibilité (`img alt=""`) se désigne en CSS. Tolérance de 0,5 px (sous-pixel).
+  - `in-viewport` juge la boîte (`getBoundingClientRect`) dans le **document** : défilement horizontal compris, un
+    élément plus bas reste « dans la largeur ». C'est le défaut utile d'une recette mobile (« ce bloc tient-il en
+    360 px ? ») ; `--fully` y ajoute la hauteur, à la position de défilement courante (« visible sans défiler »).
+    Ne regarde pas les ancêtres : pour un élément coupé par sa carte, `not-clipped`.
+  - `not-clipped` remonte la **chaîne des blocs conteneurs** (un élément `position: absolute` échappe à l'overflow
+    d'un ancêtre non positionné ; un élément `fixed`, à tous sauf un ancêtre transformé), html et body exclus (leur
+    overflow passe au viewport) : chaque ancêtre en `overflow-x` / `overflow-y` `hidden` ou `clip` rogne sur son
+    axe, contre sa boîte de remplissage. `auto` / `scroll` ne rognent **pas** (on y défile : un tableau de 700 px
+    dans un conteneur qui défile est accepté). Le bord du viewport compte aussi, pour la part de l'élément que
+    laisse voir le plus proche conteneur en `overflow-x` ≠ `visible`.
+  - `no-horizontal-overflow` compare `scrollWidth` et `clientWidth` de l'élément qui défile, puis cite les
+    éléments **les plus externes** dont le bord droit dépasse (5 dans le message, 20 dans `items`), hors de ceux
+    contenus par un conteneur en `overflow-x` ≠ `visible` et des éléments fixes ; 5 000 éléments examinés au plus
+    (dépassement annoncé). Viewport en `overflow-x: hidden` (posé sur html ou body) : la page ne défile pas mais le
+    contenu qui dépasse est **rogné** ; l'assertion échoue quand même et le dit.
+
+  Messages (page de test `/mise-en-page`, 360x800 `--mobile`) :
+
+  ```
+  attendu aucun débordement horizontal de la page ; constaté : largeur du document 520 px > viewport 360 px (+160 px) ; 1 élément(s) dépassent : div#bandeau.bandeau.promo x=0 largeur 520 (+160 px)
+  attendu élément #photo non rogné (ni par un ancêtre overflow hidden/clip, ni par le bord du viewport) ; constaté : boîte x=20 y=120 400x200 ; rogné par div.carte (overflow hidden, zone x=20 y=120 300x150) : 100 px à droite, 50 px en bas
+  attendu élément #photo dans la largeur du viewport ; constaté : boîte x=20 y=120 400x200 ; viewport 360x800 : dépasse de 60 px à droite
+  attendu élément #loin entièrement dans le viewport (sans défiler) ; constaté : boîte x=0 y=2354 300x50 ; viewport 360x800 : dépasse de 1604 px en bas
+  ```
+
+  Élément non rendu (`display: none`, détaché) : `aucune boîte : élément non rendu …`. Les descriptions
+  d'éléments (`div.carte`) viennent de la page : encadrées comme tout message d'erreur quand les
+  [frontières de contenu](#frontières-de-contenu-injection-de-prompt) sont actives. Non pris en compte :
+  `clip-path`, `contain: paint` sans overflow, contenu des iframes, pseudo-éléments (un `::before` qui déborde :
+  « aucun élément identifié »).
 - Une assertion mal écrite (type inconnu, argument manquant ou de trop, option d'un autre type, expression
   régulière invalide, `--timeout` hors bornes) refuse **tout le script** avant exécution, ligne citée.
 - `--shot-on-error` : capture jointe au message, comme pour une action. `allowConsole=false` :
@@ -1595,8 +1667,8 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `back`, `forward` | options d'action | idem |
 | `reload` | `hard`, options d'action | `reload [--hard]` |
 | `scroll` | `target?`, `by`, `to`, `untilStable`, `maxSteps`, options d'action | `scroll [<sél>] [--by] [--to] [--until-stable [--max-steps]]` |
-| `snap` | `max`, `scope`, `nameMax`, `mode` (`outline` \| `interactive`) | `snap --max --scope --name-max [--outline\|--interactive]` |
-| `find` | `pattern`, `role`, `max`, `scope`, `nameMax` | `find <motif> --role --max --scope --name-max` |
+| `snap` | `max`, `scope`, `nameMax`, `mode` (`outline` \| `interactive`), `boxes` | `snap --max --scope --name-max [--outline\|--interactive] [--boxes]` |
+| `find` | `pattern`, `role`, `max`, `scope`, `nameMax`, `boxes` | `find <motif> --role --max --scope --name-max [--boxes]` |
 | `text` | `max`, `scope`, `markdown` | `text [--markdown]` |
 | `click`, `hover` | `target`, options d'action | idem |
 | `fill`, `select` | `target`, `value`, options d'action | idem ; `fill` avec `value="secret:NOM"` : [secret](#secrets-fill--secretnom) |
@@ -1871,6 +1943,9 @@ Mise en page mobile
 - **Mode Windows** (chrome.exe, fenêtré ou non) : mêmes appels CDP, la page est rendue à la taille émulée dans la
   fenêtre existante, sans la redimensionner. Non testé sur chrome.exe (`GRASP_TEST_WINDOWS=1` non lancé pour
   cette fonction).
+- **Vérifier la mise en page** à cette taille, sans eval ni capture : `expect no-horizontal-overflow`,
+  `expect not-clipped <sél>`, `expect in-viewport <sél> [--fully]`, et `find|snap --boxes` pour les positions
+  (voir [Recette](#recette--expect-et-rapport-de-run)).
 - **Script** : `viewport` est une commande de [`grasp run`](#grasp-run--plusieurs-commandes-en-un-appel) (mêmes
   options ; une option inconnue refuse le script) ; le serveur MCP l'atteint par son outil `run`, dont la
   description annonce la commande et sa syntaxe courte (liste tirée des commandes de `run`, testée).
@@ -2203,7 +2278,7 @@ DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?, console?, shotOnError?}
 POST /back  POST /forward  POST /reload {hard?}   (mêmes options que /navigate) → {ok, url, title, detail?, diff?}
 POST /scroll {target?, by?, to?, untilStable?, maxSteps?, …}  → {ok, scroll: {how, from, to, max, height, added, steps, settled?, stoppedBy?}, detail}
-GET  /snap?max=&scope=&nameMax=&mode=outline|interactive   GET /snap?find=<texte|/regex/>&role=&limit=&scope=
+GET  /snap?max=&scope=&nameMax=&mode=outline|interactive&boxes=1   GET /snap?find=<texte|/regex/>&role=&limit=&scope=&boxes=1
 GET /text?max=&scope=&markdown=1   GET /location   GET /pdf
 POST /wait {text? | sel? | idle?, timeout?}
 GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
@@ -2763,6 +2838,11 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
+- Mise en page (`expect in-viewport|not-clipped|no-horizontal-overflow`, `--boxes`) : géométrie du **document
+  principal** seulement (pas d'iframe, pas de sélecteur `frame=…`) ; `clip-path`, `contain: paint` et les
+  pseudo-éléments ne sont pas examinés ; un sélecteur CSS doit désigner un seul élément (pas de « tous les `img` ») ;
+  `no-horizontal-overflow` ne cherche que le débordement à droite (écriture de gauche à droite) et examine
+  5 000 éléments au plus. Testé en headless à 360x800 `--mobile` (page `/mise-en-page`), pas sur chrome.exe.
 - **Historique et défilement** : `back`/`forward` ne voient que l'historique de l'onglet de la session (un popup
   n'est pas pilotable) ; une page restaurée depuis le cache aller-retour n'est pas re-téléchargée, si bien que
   seul le pré-contrôle du garde la juge. Un `history.back()` lancé par **la page elle-même** n'y passe pas :

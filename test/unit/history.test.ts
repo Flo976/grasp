@@ -78,6 +78,12 @@ test('history : la ligne reconstruite depuis la requête redonne exactement la m
     "expect request '~' /api/ --since 4 --timeout 2000",
     "expect request 'GET /api/v\\d+/x' --regex",
     'expect a11y --max 3 --scope main',
+    // Mise en page sans eval (in-viewport, not-clipped, no-horizontal-overflow) et boîtes de snap/find.
+    "expect in-viewport '#photo' --fully --timeout 0",
+    'expect not-clipped e5k2 --shot-on-error',
+    'expect no-horizontal-overflow --timeout 2000',
+    'snap --interactive --boxes',
+    'find Valider --boxes --max 3',
   ];
   for (const l of lines) {
     const rq = rqOf(l);
@@ -242,4 +248,17 @@ test('history --as-run : un saut de ligne ne casse jamais le script ni n\'y inje
 
 test('history : état final sans valeur sur plusieurs lignes', () => {
   assert.deepEqual(finalExpects({ url: 'http://h/', title: 'a\nb' }, undefined), ['expect url http://h/']);
+});
+
+test('history --as-run : expect in-viewport / not-clipped sur une ref → sélecteur durable, assertion gardée', () => {
+  const es = [
+    entry(1, 'expect in-viewport e5k2 --fully', { target: { given: 'e5k2', durable: 'text:Valider', how: 'text', role: 'button', name: 'Valider', secret: false } }),
+    entry(2, 'expect not-clipped e9 --timeout 0', { target: { given: 'e9', durable: '.carte > img', how: 'css', secret: false } }),
+    entry(3, 'expect no-horizontal-overflow'),
+  ];
+  assert.equal(wantsTarget(es[0]!.line), true);
+  const out = asRunScript(es, { sessionId: 's1' });
+  assert.match(out, /^expect in-viewport text:Valider --fully$/m);
+  assert.match(out, /^expect not-clipped '\.carte > img' --timeout 0 {3}# e9$/m);
+  assert.match(out, /^expect no-horizontal-overflow$/m);
 });

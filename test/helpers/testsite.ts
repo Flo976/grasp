@@ -24,6 +24,33 @@ export const FORM_PAGE = `<!doctype html>
 </main>
 </body></html>`;
 
+/**
+ * Mise en page mobile (à voir en 360x800) : bandeau de 520 px qui fait déborder la page, image décorative
+ * (alt="", hors arbre a11y) de 400x200 rognée par sa carte overflow:hidden de 300x150, bouton correct, bloc
+ * correct mais 2000 px plus bas, tableau large dans un conteneur overflow-x:auto (ne déborde pas la page).
+ * `propre` : bandeau à 100 % (aucun débordement) ; `masque` : body en overflow-x:hidden (débordement rogné) ;
+ * `tardif` : le bandeau ne revient à 100 % qu'après 600 ms (mise en page qui se stabilise : assertion relue).
+ */
+export function miseEnPage(o: { propre?: boolean; masque?: boolean; tardif?: boolean } = {}): string {
+  return `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mise en page</title>
+<style>html,body{margin:0} ${o.masque === true ? 'body{overflow-x:hidden}' : ''}
+#bandeau{width:${o.propre === true ? '100%' : '520px'};height:40px;background:#c00;color:#fff}
+.carte{margin-left:20px;width:300px;height:150px;overflow:hidden;background:#eee}
+#photo{display:block;width:400px;height:200px}
+#valider{margin:10px 20px;width:200px;height:40px}
+#defile{overflow-x:auto;width:300px} #defile table{width:700px}
+#loin{margin-top:2000px;width:300px;height:50px;background:#0a0}</style></head>
+<body><div id="bandeau" class="bandeau promo">Promotion</div>
+<h1>Fiche produit</h1>
+<div class="carte"><img id="photo" alt="" src="/carre.svg"></div>
+<button id="valider">Valider</button>
+<div id="defile"><table><tr><td>Colonne large</td><td>Autre colonne</td></tr></table></div>
+<p id="loin">Pied de fiche</p><p id="cache" style="display:none">Caché</p>
+${o.tardif === true ? `<script>setTimeout(() => { document.getElementById('bandeau').style.width = '100%'; }, 600);</script>` : ''}
+</body></html>`;
+}
+
 /** Page haute (3100 px) à zones colorées : capture du viewport, page entière, découpe d'élément. */
 export const CAPTURE_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Capture</title>
@@ -982,6 +1009,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cible-ssrf') { res.end('<!doctype html><title>Cible SSRF</title><p>service interne</p>'); return; }
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
+    if (u.pathname === '/mise-en-page') { res.end(miseEnPage({ propre: u.searchParams.has('propre'), masque: u.searchParams.has('masque'), tardif: u.searchParams.has('tardif') })); return; }
+    if (u.pathname === '/carre.svg') { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#36c"/></svg>'); return; }
     if (u.pathname === '/viewport') { res.end(viewportPage(String(req.headers['user-agent'] ?? ''))); return; }
     if (u.pathname === '/coffre') { res.end(COFFRE_PAGE); return; }
     if (u.pathname === '/coffre-recu') {

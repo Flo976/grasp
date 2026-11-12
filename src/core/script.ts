@@ -195,6 +195,7 @@ export function readQuery(a: Args): string {
     if (a.flags.get(modes[0]!) !== true) throw new ScriptError(`--${modes[0]} ne prend pas de valeur`);
     q.set('mode', modes[0]!);
   }
+  if (a.flags.has('boxes')) q.set('boxes', boxesFlag(a));
   return q.size > 0 ? `?${q}` : '';
 }
 
@@ -220,7 +221,15 @@ export function findQuery(a: Args): string {
     if (!/^\d+$/.test(nm)) throw new ScriptError('--name-max attend un entier positif ou nul (0 = noms entiers)');
     q.set('nameMax', nm);
   }
+  if (a.flags.has('boxes')) q.set('boxes', boxesFlag(a));
   return `?${q}`;
+}
+
+/** `--boxes` (snap, find) : boîte de chaque ligne à ref ; ailleurs refusé, jamais ignoré. */
+function boxesFlag(a: Args): string {
+  if (a.cmd !== 'snap' && a.cmd !== 'find') throw new ScriptError(`--boxes ne s'applique qu'à snap et find (${a.cmd} ne rend pas de lignes d'éléments)`);
+  if (a.flags.get('boxes') !== true) throw new ScriptError('--boxes ne prend pas de valeur');
+  return '1';
 }
 
 const SHOT_FORMATS: Record<string, string> = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp' };
@@ -342,7 +351,7 @@ const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-o
 export const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
-  snap: ['max', 'scope', 'name-max', 'outline', 'interactive'], find: ['role', 'max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'], a11y: ['max', 'scope'],
+  snap: ['max', 'scope', 'name-max', 'outline', 'interactive', 'boxes'], find: ['role', 'max', 'scope', 'name-max', 'boxes'], text: ['max', 'scope', 'markdown'], a11y: ['max', 'scope'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
   network: ['since', 'failed', 'max', 'type'],
@@ -350,7 +359,7 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], storage: [], profile: [], tabs: [], tab: [],
   viewport: VIEWPORT_FLAGS,
-  expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'],
+  expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'fully', 'shot-on-error'],
   // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
   back: NAV_FLAGS, forward: NAV_FLAGS, reload: [...NAV_FLAGS, 'hard'],
   scroll: [...NAV_FLAGS, 'by', 'to', 'until-stable', 'max-steps'],
@@ -501,8 +510,9 @@ export const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
   'sel': ['timeout'], 'no-sel': ['timeout'],
   'no-console-errors': ['since', 'ignore'], 'no-form-errors': [],
   'request': ['regex', 'timeout', 'since'], 'a11y': ['max', 'scope'],
+  'in-viewport': ['fully', 'timeout'], 'not-clipped': ['timeout'], 'no-horizontal-overflow': ['timeout'],
 };
-const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'];
+const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'fully', 'shot-on-error'];
 
 /** Usage de chaque assertion (messages d'erreur, aide). */
 export const EXPECT_USAGE: Record<ExpectKind, string> = {
@@ -517,6 +527,9 @@ export const EXPECT_USAGE: Record<ExpectKind, string> = {
   'no-form-errors': 'expect no-form-errors',
   'request': 'expect request [~] "<MÉTHODE> <chemin|url>" [statut (2xx)] [--regex] [--since <seq>] [--timeout ms]',
   'a11y': 'expect a11y [--max N] [--scope <sél>]',
+  'in-viewport': 'expect in-viewport <sélecteur> [--fully] [--timeout ms]',
+  'not-clipped': 'expect not-clipped <sélecteur> [--timeout ms]',
+  'no-horizontal-overflow': 'expect no-horizontal-overflow [--timeout ms]',
 };
 
 /**
@@ -559,7 +572,7 @@ function expectRequest(a: Args): StepRequest {
       body.target = args[0];
       compared(args.slice(1));
       break;
-    case 'sel': case 'no-sel':
+    case 'sel': case 'no-sel': case 'in-viewport': case 'not-clipped':
       if (args.length !== 1) throw usage();
       body.target = args[0];
       break;
@@ -583,6 +596,10 @@ function expectRequest(a: Args): StepRequest {
   for (const k of ['timeout', 'scope', 'since', 'ignore', 'max'] as const) {
     const v = value(a, k);
     if (v !== undefined) body[k] = v;
+  }
+  if (a.flags.has('fully')) {
+    if (a.flags.get('fully') !== true) throw new ScriptError('--fully ne prend pas de valeur');
+    body.fully = true;
   }
   if (a.flags.has('shot-on-error')) body.shotOnError = true;
   try { expectSpecOf(body); } catch (e) { throw new ScriptError((e as Error).message); }
