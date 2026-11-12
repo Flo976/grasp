@@ -2,7 +2,8 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { openPage } from '../helpers/chrome.js';
 import { startHttpProxy, startSocks5Proxy } from '../helpers/proxy.js';
@@ -13,6 +14,7 @@ import { makeTestEnv } from '../helpers/env.js';
 import { runCli, startServer, waitExit } from '../helpers/server.js';
 import { resolvePaths } from '../../src/core/paths.js';
 import { request } from '../../src/core/http.js';
+import { windowsLocalAppData } from '../../src/browser/windows.js';
 
 /**
  * Recette sur serveur distant, reproduite en local : un vhost qui n'attend que son vrai nom (Host:), joint par
@@ -233,4 +235,40 @@ test('bout en bout (CLI) : identifiants pour un hôte hors allowlist refusés, s
     } finally { await proxy.close(); }
     assert.ok(!srv.stderr().includes(PASS));
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); t.cleanup(); }
+});
+
+const EXE = process.env.GRASP_TEST_WINDOWS_CHROME ?? '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe';
+const skipWin = process.env.GRASP_TEST_WINDOWS !== '1' ? 'GRASP_TEST_WINDOWS=1 pour lancer le test chrome.exe réel' : false;
+
+test('windows (réel) : chrome.exe reçoit les mêmes drapeaux — vhost par son nom, certificat listé, préprod en basic auth', { skip: skipWin, timeout: 180_000 }, async () => {
+  const root = join(await windowsLocalAppData(), `grasp-test-${randomBytes(3).toString('hex')}`);
+  const t = makeTestEnv();
+  const paths = resolvePaths(t.env, t.env.HOME);
+  mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.configFile, JSON.stringify({
+    chromePath: EXE, headless: true, windowsProfilesDir: root,
+    allowedDomains: ['preprod.exemple.test', 'site.exemple.test'],
+    // WSL en mode mirrored : 127.0.0.1 est la boucle locale partagée, chrome.exe joint nos serveurs.
+    hostResolverRules: [`MAP preprod.exemple.test 127.0.0.1:${httpPort}`, `MAP site.exemple.test 127.0.0.1:${httpsPort}`],
+    ignoreCertErrorsFor: ['site.exemple.test'],
+  }), { mode: 0o600 });
+  const srv = await startServer(t.env);
+  try {
+    const created = await runCli(t.env, ['session', 'create', '--http-auth', '-'], `recette:${PASS}@preprod.exemple.test\n`);
+    assert.equal(created.code, 0, created.stderr);
+    const env = { ...t.env, GRASP_SESSION: created.stdout.trim() };
+    const nav = await runCli(env, ['nav', 'http://preprod.exemple.test/']);
+    assert.equal(nav.code, 0, nav.stderr);
+    assert.match((await runCli(env, ['text'])).stdout, /Préprod protégée/);
+    assert.equal((await runCli(env, ['nav', 'https://site.exemple.test/'])).code, 0);
+    assert.match((await runCli(env, ['text'])).stdout, /Bienvenue sur site\.exemple\.test/);
+    assert.ok(!srv.stderr().includes(PASS));
+  } finally {
+    srv.proc.kill('SIGTERM');
+    await waitExit(srv.proc, 60_000);
+    t.cleanup();
+    for (let i = 0; i < 10 && existsSync(root); i++) {
+      try { rmSync(root, { recursive: true, force: true }); } catch { await new Promise((r) => setTimeout(r, 1000)); }
+    }
+  }
 });
