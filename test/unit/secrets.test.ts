@@ -27,6 +27,8 @@ test('buildRequest : fill secret:NOM envoie le nom, jamais une valeur ; run et C
   const line = buildRequest(parseArgs(splitLine('fill #mdp secret:MDP --snap-diff')));
   assert.deepEqual(line.body, rq.body);
   assert.deepEqual(buildRequest(parseArgs(['fill', '#x', 'texte'])).body, { target: '#x', value: 'texte' });
+  // type ne tape jamais « secret:NOM » tel quel (l'agent croirait avoir saisi le secret).
+  assert.throws(() => buildRequest(parseArgs(['type', '#x', 'secret:MDP'])), /type ne prend pas de secret .*fill <sélecteur> secret:MDP/);
 });
 
 test('parseSecrets : format strict, messages sans la valeur', () => {

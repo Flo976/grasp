@@ -6,6 +6,7 @@ import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 import type { SecretUse } from '../core/secrets.js';
+import { redactResponse } from '../control/redact.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -39,6 +40,8 @@ function level(v: unknown): ConsoleLevel | undefined {
  */
 export function bridgeHandler(page: PageController, info: () => Record<string, unknown>, sessionOptions: () => Record<string, unknown> = () => ({})) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Toute réponse du bridge est masquée avec les secrets saisis dans la session (et leurs valeurs effectives).
+    redactResponse(res, page.secretRedactor);
     try {
       const url = new URL(req.url ?? '/', 'http://bridge');
       const q = url.searchParams;

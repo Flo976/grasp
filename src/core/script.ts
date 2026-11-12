@@ -259,6 +259,8 @@ export function buildRequest(a: Args): StepRequest {
     case 'hover': { const [target] = need(a, 1, 'hover <sélecteur>'); return { cmd, method: 'POST', path: '/hover', body: actionBody(a, { target }) }; }
     case 'type': {
       const [target, text] = need(a, 2, 'type <sélecteur> <texte> [--delay ms]');
+      // Jamais tapé tel quel : l'agent croirait avoir saisi le secret.
+      if (secretRef(text!) !== undefined) throw new ScriptError(`type ne prend pas de secret (${text}) : utilisez fill <sélecteur> ${text}`);
       const delay = value(a, 'delay');
       return { cmd, method: 'POST', path: '/type', body: actionBody(a, { target, text, ...(delay !== undefined ? { delay } : {}) }) };
     }

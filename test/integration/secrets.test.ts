@@ -29,8 +29,8 @@ let env: NodeJS.ProcessEnv;
 function forms(v: string): string[] {
   return [...new Set([v, encodeURIComponent(v), new URLSearchParams({ x: v }).toString().slice(2), v.slice(0, 8)])];
 }
-// COURT.slice(0, 6) : ce que garde un champ maxlength=6.
-const ALL = [...[JETON, COURT, LONG, NOTE, AILLEURS].flatMap(forms), COURT.slice(0, 6)];
+// COURT.slice(0, 6) : ce que garde le masque de saisie ; COURT.toUpperCase() : la valeur reformatée par la page.
+const ALL = [...[JETON, COURT, LONG, NOTE, AILLEURS].flatMap(forms), COURT.slice(0, 6), COURT.toUpperCase()];
 
 function assertNoLeak(what: string, s: string): void {
   for (const f of ALL) assert.ok(!s.includes(f), `${what} : fuite de « ${f} » dans :\n${s.slice(0, 3000)}`);
@@ -106,11 +106,20 @@ test('fill secret:NOM : saisi dans la page, masqué dans snap, text, markdown, d
     const r = await cli('fill', sel, `secret:${name}`);
     assert.ok(r.code === 0 || /secret:COURT/.test(r.stderr), r.stderr);
   }
+  // Masque de saisie qui tronque à 6 caractères : 409 sans recopier ni la valeur ni la valeur effective (un
+  // préfixe), et le champ reste rendu secret:COURT dans les snapshots.
+  const masque = await cli('fill', '#masque', 'secret:COURT');
+  assert.notEqual(masque.code, 0);
+  assert.match(masque.stderr, /la valeur effective \(6 caractère\(s\)\) n'est pas celle de secret:COURT \(9\)/);
+  // Valeur reformatée par la page APRÈS la vérification (change → majuscules) : seul le marquage du champ la couvre.
+  assert.equal((await cli('fill', '#maj', 'secret:COURT')).code, 0);
   assert.equal((await cli('fill', '#editeur', 'secret:NOTE')).code, 0);
   const snap = await cli('snap');
   assert.match(snap.stdout, /textbox "Jeton"="secret:JETON"/);
   assert.match(snap.stdout, /textbox "Clé longue"="secret:LONG"/, 'valeur longue (coupée à 80) rendue sous son nom');
   assert.match(snap.stdout, /textbox "Code court"="secret:COURT"/);
+  assert.match(snap.stdout, /textbox "Code masqué"="secret:COURT"/, 'préfixe gardé par la page, rendu sous le nom du secret');
+  assert.match(snap.stdout, /textbox "Code reformaté"="secret:COURT"/, "valeur reformatée par la page, rendue sous le nom du secret");
   assert.match(snap.stdout, /textbox "Note"="secret:NOTE"/, 'éditeur riche');
   assert.match(snap.stdout, /"Note : secret:NOTE"/, 'texte recopié par la page');
   const text = await cli('text');

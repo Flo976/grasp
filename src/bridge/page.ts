@@ -706,7 +706,7 @@ export class PageController {
   /** Identifiants HTTP basic de la session (mémoire seulement ; jamais journalisés ni rapportés en clair). */
   private creds: readonly HttpCredential[] = [];
   /** Secrets saisis par `fill … secret:NOM` dans cette session : masqués à la source (avant toute coupure). */
-  private readonly secretRedactor = new Redactor();
+  readonly secretRedactor = new Redactor();
   /** Champs remplis avec un secret (backendNodeId → nom) : leur valeur est rendue `secret:NOM`, même tronquée. */
   private readonly secretNodes = new Map<number, string>();
   /** Requêtes auxquelles des identifiants ont déjà été fournis : un second défi = identifiants refusés. */
@@ -2614,7 +2614,9 @@ export class PageController {
   }
 
   private fillValue(sel: string, value: string, opts: ActionOptions, secret?: SecretUse): Promise<ActionResult> {
-    const mismatch = (actual: string) => (secret !== undefined
+    // Valeur effective différente (maxlength, masque) : souvent un préfixe du secret, masqué désormais lui aussi.
+    const mismatch = (actual: string) => { if (secret !== undefined) this.secretRedactor.add(secret.name, actual); return mismatchText(actual); };
+    const mismatchText = (actual: string) => (secret !== undefined
       ? `la valeur effective (${actual.length} caractère(s)) n'est pas celle de secret:${secret.name} (${value.length}) (maxlength, masque de saisie ?)`
       : `la valeur effective est « ${actual} » et non « ${value} » (maxlength, masque de saisie ?)`);
     let engine: 'native' | 'playwright';
@@ -2724,6 +2726,7 @@ export class PageController {
     // L'éditeur peut retoucher le texte après coup (normalisation asynchrone) : on laisse une frame passer.
     await this.evalIsolated(FRAMES_FN, true).catch(() => undefined);
     const actual = norm(await this.callIsolated<string>(id, read));
+    if (actual !== want && secretName !== undefined) this.secretRedactor.add(secretName, actual);
     if (actual !== want) throw conflict(secretName !== undefined ? `le texte effectif de l'éditeur (${actual.length} caractère(s)) n'est pas celui de secret:${secretName} (${want.length}) (l'éditeur a-t-il refusé ou transformé la saisie ?)` : `le texte effectif de l'éditeur est « ${actual.replace(/\n/g, '⏎')} » et non « ${want.replace(/\n/g, '⏎')} » (l'éditeur a-t-il refusé ou transformé la saisie ?)`);
   }
 

@@ -794,6 +794,8 @@ export const COFFRE_PAGE = `<!doctype html>
 <label for="mdp">Mot de passe</label> <input id="mdp" name="mdp" type="password">
 <label for="court">Code court</label> <input id="court" name="court" maxlength="6">
 <label for="long">Clé longue</label> <input id="long" name="long">
+<label for="masque">Code masqué</label> <input id="masque" name="masque" oninput="this.value = this.value.slice(0, 6)">
+<label for="maj">Code reformaté</label> <input id="maj" onchange="this.value = this.value.toUpperCase()">
 <button type="submit">Envoyer</button>
 </form>
 <div id="editeur" contenteditable="true" role="textbox" aria-label="Note"></div>
