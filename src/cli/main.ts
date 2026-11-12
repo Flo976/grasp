@@ -31,7 +31,17 @@ class CliError extends Error {
 const out = (s: string) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
 const hint = (s: string) => process.stderr.write(`${s}\n`);
 
+/** GRASP_URL=http://hôte:port : serveur TCP désigné explicitement (ex. conteneur publié sur l'hôte). */
+function endpointFromUrl(raw: string): Endpoint {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new CliError(`GRASP_URL=${raw} : URL invalide (http://hôte:port attendu)`); }
+  if (u.protocol !== 'http:' || u.port === '' || (u.pathname !== '/' && u.pathname !== '')) throw new CliError(`GRASP_URL=${raw} : http://hôte:port attendu (port explicite, sans chemin)`);
+  return { transport: 'tcp', host: u.hostname.replace(/^\[|\]$/g, ''), port: Number(u.port) };
+}
+
 function endpointOf(paths: GraspPaths): Endpoint {
+  const url = process.env.GRASP_URL;
+  if (url) return endpointFromUrl(url);
   if (existsSync(paths.endpointFile)) return JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint;
   return { transport: 'unix', socketPath: paths.socketPath };
 }
@@ -336,6 +346,14 @@ function readStdin(): Promise<string> {
   });
 }
 
+function listenLine(rep: any): string {
+  const l = rep.listen;
+  if (l === undefined || 'socket' in l) return `${rep.transport}${l ? ` (${l.socket})` : ''}`;
+  return l.exposed
+    ? `tcp ${l.host}:${l.port} — EXPOSÉ hors boucle locale (--listen) : token seul, sans TLS`
+    : `tcp ${l.host}:${l.port}`;
+}
+
 function renderSecurity(rep: any): string {
   const p = rep.policy;
   const onoff = (b: boolean) => (b ? 'AUTORISÉ' : 'désactivé');
@@ -364,7 +382,7 @@ function renderSecurity(rep: any): string {
     `certificats: ${certs.length > 0 ? `NON VÉRIFIÉS pour ${certs.join(', ')} (ignoreCertErrorsFor) ; vérifiés ailleurs` : 'vérifiés'}`,
     `traqueurs  : ${p.blockTrackers === true ? 'bloqués (liste de Peter Lowe)' : p.blockTrackers === false ? 'non bloqués' : 'inconnu (serveur antérieur)'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
-    `transport  : ${rep.transport}`,
+    `transport  : ${listenLine(rep)}`,
     `sessions   : ${Object.keys(rep.bridges).length}`,
     ...sessionLines.map((l) => `  ${l}`),
   ];
@@ -388,6 +406,7 @@ async function main(argv: string[]): Promise<number> {
         paths, env, home,
         transport: a.flags.has('tcp') ? 'tcp' : undefined,
         port: typeof port === 'string' ? Number(port) : undefined,
+        listen: typeof a.flags.get('listen') === 'string' ? a.flags.get('listen') as string : undefined,
       });
       if (cp.endpoint.transport === 'tcp') hint(`TCP ${cp.endpoint.host}:${cp.endpoint.port} — token exigé (${paths.tokenFile})`);
       await new Promise<void>((resolve) => {
@@ -602,7 +621,7 @@ async function main(argv: string[]): Promise<number> {
 
 const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessibilité, CDP direct)
 
-Serveur      serve [--tcp [--port N]] | stop | status | doctor | daemon install|uninstall|status
+Serveur      serve [--tcp [--port N] [--listen IP]] | stop | status | doctor | daemon install|uninstall|status
 MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
                outils nav snap text click fill type select check press hover wait console screenshot run profile ;
                session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
@@ -710,6 +729,8 @@ Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une sess
              sessions parallèles : une session = un bridge = un Chrome ; maxSessions (défaut : pas de plafond) → 503
              recyclage : config browserMaxRssMb / browserMaxAgeMin (désactivés par défaut) ; navigateur relancé
                entre deux commandes, même session et profil, page rechargée (« note: navigateur recyclé : … »)
+Serveur TCP  --listen IP : adresse d'écoute hors 127.0.0.1 (conteneur), opt-in, token exigé, signalé par security ;
+             GRASP_URL=http://hôte:port : client vers ce serveur (au lieu de endpoint.json)
 Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
 
 const argv = process.argv.slice(2);

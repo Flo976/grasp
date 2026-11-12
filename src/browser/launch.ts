@@ -356,6 +356,22 @@ async function waitEndpoint(s: Spawned, port: number, deadline: number, label: s
   return { ok: false, reason: `pas de réponse sur 127.0.0.1:${port} (${last})` };
 }
 
+/** Sandbox indisponible (mesuré, Chromium 156 sous Docker sans capacité : « No usable sandbox! »). */
+const NO_SANDBOX_RE = /No usable sandbox|Failed to move to new namespace/;
+
+/**
+ * Message d'un navigateur arrêté au démarrage. Le sandbox indisponible est nommé (cas du conteneur sans
+ * --cap-add=SYS_ADMIN ni profil seccomp) : le confondre avec un profil verrouillé égarerait le diagnostic.
+ */
+export function earlyExitMessage(label: string, exit: string, profile: string, stderr: string): string {
+  if (NO_SANDBOX_RE.test(stderr)) {
+    return `${label} s'est arrêté au démarrage (${exit}) : sandbox indisponible (espaces de noms utilisateur refusés). `
+      + 'En conteneur : --security-opt seccomp=docker/seccomp-chrome.json ou --cap-add=SYS_ADMIN (voir README, Docker) ; '
+      + 'hors conteneur : espaces de noms utilisateur non privilégiés désactivés (sysctl, AppArmor). Grasp ne désactive pas le sandbox à votre place.';
+  }
+  return `${label} s'est arrêté au démarrage (${exit}). Le profil ${profile} est peut-être déjà utilisé par un autre Chrome. \`grasp doctor\` pour diagnostiquer.`;
+}
+
 /**
  * Lance le navigateur sur un port choisi par Grasp et le retrouve par /json/version. Port pris entre-temps,
  * plage réservée, autre navigateur sur le port, navigateur muet : nouvel essai sur un autre port, au plus
@@ -383,7 +399,7 @@ export async function startOnOwnPort(o: {
     try { r = await waitEndpoint(s, port, attemptEnd, o.label, o.unreachable); } catch (e) { await s.abort().catch(() => undefined); throw e; }
     if (r.ok) return { s, port, wsUrl: r.wsUrl };
     await s.abort().catch(() => undefined);
-    if (r.exit !== undefined) throw new Error(`${o.label} s'est arrêté au démarrage (${r.exit}). Le profil ${o.hint} est peut-être déjà utilisé par un autre Chrome. \`grasp doctor\` pour diagnostiquer.`);
+    if (r.exit !== undefined) throw new Error(earlyExitMessage(o.label, r.exit, o.hint, s.stderr()));
     if (r.fatal !== undefined) throw new Error(r.fatal);
     failures.push(`port ${port} : ${r.reason}`);
   }

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, writeSync } from 'node:fs';
-import { connect } from 'node:net';
+import { connect, isIP } from 'node:net';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
@@ -104,7 +104,25 @@ export interface ControlPlaneOptions {
   home: string;
   transport?: 'unix' | 'tcp' | undefined;
   port?: number | undefined;
+  /**
+   * Adresse d'écoute TCP (IP littérale). Défaut 127.0.0.1. Hors boucle locale (ex. 0.0.0.0 dans un conteneur,
+   * publié par `-p 127.0.0.1:…`) : opt-in explicite par `serve --tcp --listen`, jamais par la config.
+   */
+  listen?: string | undefined;
   log?: (m: string) => void;
+}
+
+/** 127.0.0.0/8, ::1 et ::ffff:127.x : boucle locale. */
+export function isLoopback(host: string): boolean {
+  return /^127\./.test(host) || host === '::1' || /^::ffff:127\./i.test(host);
+}
+
+/** Valide --listen : IP littérale, avec --tcp. Un nom d'hôte est refusé (sa résolution pourrait changer). */
+export function checkListen(listen: string | undefined, transport: 'unix' | 'tcp'): string {
+  if (listen === undefined) return '127.0.0.1';
+  if (transport !== 'tcp') throw new Error('--listen exige --tcp (le socket Unix n\'a pas d\'adresse)');
+  if (isIP(listen) === 0) throw new Error(`--listen ${listen} : adresse IP littérale attendue (ex. 0.0.0.0, 127.0.0.1, ::)`);
+  return listen;
 }
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
@@ -189,6 +207,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   const transport = o.transport ?? config.transport;
   // Sockets Unix limités à 107 octets : refus explicite ici plutôt qu'un « listen EADDRINUSE » plus tard.
   checkSocketPaths(paths, transport);
+  const listenHost = checkListen(o.listen, transport);
   const token = readOrCreateToken(paths.tokenFile);
   const tokenHash = sha(token);
 
@@ -595,6 +614,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       bridges,
       sessionOptions,
       transport: endpoint.transport,
+      // Adresse réellement liée (≠ endpoint.json, qui donne l'adresse où se connecter) ; exposed = hors boucle locale.
+      listen: listening,
       configFile: paths.configFile,
       configFileExists: existsSync(paths.configFile),
       diskDiffers: !isDeepStrictEqual(JSON.parse(JSON.stringify(disk)), JSON.parse(JSON.stringify(policy))),
@@ -757,9 +778,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     } catch (e) { sendError(res, e); }
   }
 
-  // 5. Écoute. Socket Unix 0600 par défaut ; TCP seulement sur 127.0.0.1.
+  // 5. Écoute. Socket Unix 0600 par défaut ; TCP sur 127.0.0.1, ou sur l'adresse de --listen (opt-in explicite).
   const server: Server = createServer((req, res) => { void handle(req, res); });
   let endpoint: Endpoint;
+  let listening: { socket: string } | { host: string; port: number; exposed: boolean };
   rmSync(paths.endpointFile, { force: true });
   if (transport === 'unix') {
     if (existsSync(paths.socketPath)) {
@@ -770,10 +792,16 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try { await new Promise<void>((r, j) => { server.once('error', j); server.listen(paths.socketPath, r); }); } finally { process.umask(prev); }
     chmodSync(paths.socketPath, 0o600);
     endpoint = { transport: 'unix', socketPath: paths.socketPath };
+    listening = { socket: paths.socketPath };
   } else {
     const port = o.port ?? config.port;
-    await new Promise<void>((r, j) => { server.once('error', j); server.listen(port, '127.0.0.1', r); });
-    endpoint = { transport: 'tcp', host: '127.0.0.1', port: (server.address() as AddressInfo).port };
+    await new Promise<void>((r, j) => { server.once('error', j); server.listen(port, listenHost, r); });
+    const bound = (server.address() as AddressInfo).port;
+    // Adresse joker : les clients locaux (CLI dans le conteneur) se connectent par la boucle locale.
+    const connectHost = listenHost === '0.0.0.0' || listenHost === '::' ? '127.0.0.1' : listenHost;
+    endpoint = { transport: 'tcp', host: connectHost, port: bound };
+    listening = { host: listenHost, port: bound, exposed: !isLoopback(listenHost) };
+    if (listening.exposed) log(`AVERTISSEMENT : control plane exposé hors boucle locale sur ${listenHost}:${bound} (--listen) : le token est la seule barrière, et le trafic n'est pas chiffré. Publiez le port sur 127.0.0.1 de l'hôte (docker run -p 127.0.0.1:${bound}:${bound}).`);
   }
   writePrivate(paths.pidFile, `${process.pid}\n`);
   // Navigateurs laissés par un serveur tué : retrouvés AVANT d'écraser instances.json.
@@ -785,7 +813,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   });
   persistInstances();
   writePrivate(paths.endpointFile, JSON.stringify(endpoint));
-  log(`à l'écoute sur ${endpoint.transport === 'unix' ? endpoint.socketPath : `${endpoint.host}:${endpoint.port}`} (pid ${process.pid})`);
+  log(`à l'écoute sur ${'socket' in listening ? listening.socket : `${listening.host}:${listening.port}`} (pid ${process.pid})`);
 
   const close = () => {
     closing ??= (async () => {
