@@ -768,7 +768,8 @@ FIN
   au **chemin** de l'URL (la chaîne de requête est ignorée, sauf si le motif contient `?`), une URL absolue à
   origine + chemin ; `~` : l'URL contient le motif ; `--regex` : l'URL lui correspond. `~` et `--regex` portent
   sur l'URL **masquée** (un motif ne peut pas sonder la valeur d'un `?token=`). Une requête encore en vol ne
-  compte pas : l'assertion est relue jusqu'à sa réponse, dans `--timeout`. Fenêtre : depuis le **plus ancien** de deux repères — la requête
+  compte pas : l'assertion est relue jusqu'à sa réponse, dans `--timeout` (testé : POST de 1,5 s parti
+  800 ms après le clic, tenu pendant le délai). Fenêtre : depuis le **plus ancien** de deux repères — la requête
   du document courant, et le début de la dernière action (`nav`, clic, saisie, touche, `eval`…). Un
   « Enregistrer » qui poste puis change de page reste donc vu : `fetch` POST suivi de `location.href`, et
   formulaire POST classique en PRG (POST → 302 → GET), testés tous deux. Une requête d'un document précédent

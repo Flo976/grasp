@@ -149,6 +149,16 @@ test('expect request relue jusqu\'au délai : la réponse arrive après l\'actio
   assert.match(r.stderr, /aucune terminée de statut 2xx : #\d+ GET .*\/api\/lent\?ms=10000 → en cours/);
 });
 
+test('expect request relue jusqu\'au délai : une réponse arrivée pendant --timeout fait tenir l\'assertion', async () => {
+  assert.equal((await cli(['nav', `${site.url}/enregistrer-nav`])).code, 0);
+  // POST lent (1,5 s) lancé 800 ms après le clic : l'action rend la main avant, la réponse arrive pendant le délai.
+  assert.equal((await cli(['click', '#differe'])).code, 0);
+  const now = await cli(['expect', 'request', 'POST /api/lent', '--timeout', '0']);
+  assert.equal(now.code, 1, 'pas encore de réponse à la première lecture');
+  const r = await cli(['expect', 'request', 'POST /api/lent', '--timeout', '5000']);
+  assert.equal(r.code, 0, r.stderr);
+});
+
 test('expect request : un « Enregistrer » qui change de page (fetch puis navigation, formulaire POST en PRG) reste vu', async () => {
   // fetch POST puis location.href : la requête précède le nouveau document, mais fait partie de la dernière action.
   assert.equal((await cli(['nav', `${site.url}/enregistrer-nav`])).code, 0);
