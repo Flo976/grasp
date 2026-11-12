@@ -169,3 +169,22 @@ test('CLI / run : snap --outline|--interactive et find → mêmes requêtes ; op
   assert.throws(() => buildRequest(parseArgs(['find', 'a', 'b'])), /un seul motif/);
   assert.throws(() => rq('find x --markdown'), /option --markdown inconnue pour find/);
 });
+
+test('find : la ligne « … élagué » reste (modale, iframes) — « aucune correspondance » n\'est pas « absent »', () => {
+  // Iframe non parcourue : la cible est peut-être dedans.
+  const withFrame = flatten(ax('RootWebArea', 'T', [ax('main', '', [ax('button', 'OK'), ax('Iframe', 'Paiement')])]));
+  const t1 = buildSnapshot(withFrame, { url: 'u', title: 'T', find: { pattern: compileFind('Payer') } }).text;
+  assert.match(t1, /find « Payer » : aucune correspondance/);
+  assert.match(t1.split('\n').pop()!, /^… élagué : 1 iframe non parcourue$/, t1);
+  // Fond retiré par une modale (showModal) : la cible est peut-être derrière.
+  const ignoredBg = ax('main', '', [], { ignored: true, ignoredReasons: [{ name: 'activeModalDialog' }] } as Partial<AXNode>);
+  const dlg = ax('dialog', 'Cookies', [ax('button', 'Accepter')], { properties: [{ name: 'modal', value: { value: true } }] });
+  const withModal = flatten(ax('RootWebArea', 'T', [ignoredBg, dlg]));
+  const t2 = buildSnapshot(withModal, { url: 'u', title: 'T', find: { pattern: compileFind('Valider') } }).text;
+  assert.match(t2, /aucune correspondance/);
+  assert.match(t2, /… élagué : reste de la page masqué par la fenêtre modale "Cookies"/, t2);
+  // Avec des correspondances aussi, la ligne d'élagage est gardée et le budget reste respecté.
+  const t3 = buildSnapshot(withModal, { url: 'u', title: 'T', find: { pattern: compileFind('accepter') } }).text;
+  assert.match(t3, /:button "Accepter"/);
+  assert.match(t3, /… élagué : reste de la page masqué par la fenêtre modale/);
+});

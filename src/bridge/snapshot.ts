@@ -665,7 +665,9 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   const elague = pruned.length > 0 ? `… élagué : ${pruned.join(', ')}` : undefined;
   // Lecture partielle : lignes retenues, et dernière ligne qui dit ce qui manque.
   const view = opts.find !== undefined ? findView(out, hiddenOptions, opts.find) : opts.mode !== undefined ? modeView(out, opts.mode) : { body: out, partial: undefined };
-  const finals = [opts.find === undefined ? elague : undefined, view.partial].filter((x): x is string => x !== undefined);
+  // L'élagage reste aussi pour find : « aucune correspondance » derrière une modale ou avec une iframe non parcourue
+  // ne veut pas dire « absent de la page ».
+  const finals = [elague, view.partial].filter((x): x is string => x !== undefined);
   const lines = [header];
   let bytes = Buffer.byteLength(header);
   // Place réservée aux lignes finales (élagage, lecture partielle, troncature) : le budget est respecté avec elles.
