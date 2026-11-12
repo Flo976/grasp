@@ -11,6 +11,8 @@ export class ScriptError extends Error {}
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
 export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir']);
+// back / forward / reload / scroll : --by N (px), --to top|bottom, --max-steps N.
+for (const f of ['by', 'to', 'max-steps']) VALUE_FLAGS.add(f);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -213,10 +215,11 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
+const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 export const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
@@ -228,6 +231,9 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], storage: [], profile: [],
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
+  // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
+  back: NAV_FLAGS, forward: NAV_FLAGS, reload: [...NAV_FLAGS, 'hard'],
+  scroll: [...NAV_FLAGS, 'by', 'to', 'until-stable', 'max-steps'],
 };
 /** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
 const RUN_GLOBAL: Record<string, string> = {
@@ -259,6 +265,7 @@ export function buildRequest(a: Args): StepRequest {
   const cmd = a.cmd;
   switch (cmd) {
     case 'nav': { const [url] = need(a, 1, 'nav <url>'); return { cmd, method: 'POST', path: '/navigate', body: actionBody(a, { url }) }; }
+    case 'back': case 'forward': case 'reload': case 'scroll': return historyRequest(a);
     case 'snap': return { cmd, method: 'GET', path: `/snap${readQuery(a)}` };
     case 'text': return { cmd, method: 'GET', path: `/text${readQuery(a)}` };
     case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); return { cmd, method: 'POST', path: '/click', body: actionBody(a, { target }) }; }
@@ -308,6 +315,33 @@ function storageRequest(a: Args): StepRequest {
   if (area !== 'local' && area !== 'session') throw new ScriptError(`storage : stockage inconnu « ${area} » (local ou session)`);
   if (op === 'set' ? rest.length !== 1 : rest.length !== 0) throw usage();
   return { cmd: 'storage', method: 'POST', path: '/storage', body: { op, area, key, ...(op === 'set' ? { value: rest[0] } : {}) } };
+}
+
+/**
+ * back, forward, reload [--hard], scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]].
+ * Options d'action (--snap-diff, --max, --scope, --console, --shot-on-error), sans --engine : refusé, jamais
+ * ignoré. Valeurs transmises telles quelles : le bridge valide (« --by abc » est une erreur 400).
+ */
+function historyRequest(a: Args): StepRequest {
+  const cmd = a.cmd;
+  if (a.flags.has('engine')) throw new ScriptError(`--engine ne s'applique pas à ${cmd} (aucune entrée à rejouer par Playwright)`);
+  const body = actionBody(a, {});
+  if (cmd === 'scroll') {
+    if (a.pos.length > 1) throw new ScriptError('usage : grasp scroll [<sélecteur>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]');
+    if (a.pos[0] !== undefined) body.target = a.pos[0];
+    const by = value(a, 'by');
+    const to = value(a, 'to');
+    const steps = value(a, 'max-steps');
+    if (by !== undefined) body.by = by;
+    if (to !== undefined) body.to = to;
+    if (a.flags.has('until-stable')) { if (a.flags.get('until-stable') !== true) throw new ScriptError('--until-stable ne prend pas de valeur'); body.untilStable = true; }
+    if (steps !== undefined) body.maxSteps = steps;
+    // Chaque pas peut attendre la stabilité (5 s au plus) : délai du client au-delà du budget total du bridge.
+    return { cmd, method: 'POST', path: '/scroll', body, ...(body.untilStable === true ? { timeoutMs: 120_000 } : {}) };
+  }
+  if (a.pos.length > 0) throw new ScriptError(`usage : grasp ${cmd}${cmd === 'reload' ? ' [--hard]' : ''} (aucun argument : ${a.pos[0]} en trop)`);
+  if (cmd === 'reload' && a.flags.has('hard')) { if (a.flags.get('hard') !== true) throw new ScriptError('--hard ne prend pas de valeur'); body.hard = true; }
+  return { cmd, method: 'POST', path: `/${cmd}`, body };
 }
 
 /** Options de chaque assertion (toutes acceptent --shot-on-error). */

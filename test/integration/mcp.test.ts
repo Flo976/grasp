@@ -97,7 +97,7 @@ test('mcp : protocole (initialize, ping, tools/list, erreurs JSON-RPC), serveur 
     assert.deepEqual((await mcp.request('ping')).result, {});
 
     const tools = (await mcp.request('tools/list')).result.tools as Array<{ name: string; inputSchema: any }>;
-    assert.deepEqual(tools.map((x) => x.name), ['nav', 'snap', 'text', 'click', 'fill', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'screenshot', 'run', 'profile']);
+    assert.deepEqual(tools.map((x) => x.name), ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'text', 'click', 'fill', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'screenshot', 'run', 'profile']);
     for (const x of tools) assert.equal(x.inputSchema.type, 'object');
     assert.deepEqual(tools.find((x) => x.name === 'fill')!.inputSchema.required, ['target', 'value']);
     assert.ok(tools.find((x) => x.name === 'click')!.inputSchema.properties.snapDiff);

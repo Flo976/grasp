@@ -491,6 +491,7 @@ async function main(argv: string[]): Promise<number> {
       throw new CliError(`usage : ${SESSION_CREATE_USAGE} | list | close [id]`);
     }
     case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': case 'type': await action(); return 0;
+    case 'back': case 'forward': case 'reload': case 'scroll': await action(); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
     case 'text': {
       const t = (await c.call('GET', `/text${readQuery(a)}`)).text();
@@ -664,7 +665,8 @@ const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessib
 
 Serveur      serve [--tcp [--port N] [--listen IP]] | stop | status | doctor | daemon install|uninstall|status
 MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
-               outils nav snap text click fill type select check press hover wait console screenshot run profile ;
+               outils nav back forward reload scroll snap text click fill type select check press hover wait console
+               screenshot run profile ;
                session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
 Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
                --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer
@@ -717,6 +719,12 @@ Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N 
 Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél] | hover <sél> | type <sél> <texte> [--delay ms]
                type : touche par touche, AJOUTÉ au curseur (autocomplétions) ; --delay 0 à 1000 ms entre deux touches
+             back | forward | reload [--hard]   historique de l'onglet (route pushState comprise), rechargement
+               (--hard : sans cache) ; garde appliqué (URL de l'entrée rejugée), même attente que nav ; note « retour : url »
+             scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]   défile la page, ou le
+               conteneur <sél> (élément non défilant sans option : amené dans la vue) ; défaut : un écran vers le bas ;
+               --until-stable : jusqu'en bas, pas après pas avec attente de stabilité, tant que du contenu apparaît
+               (défilement infini ; 10 pas par défaut, 50 au plus, 60 s au plus) ; note : position, nœuds apparus
              livraison vérifiée : click, check, press et fill au clavier attendent que la page reçoive l'entrée
                (événement de confiance, délai inputDeliveryMs = 300) ; sinon onglet au premier plan + focus émulé
                et 2e essai, puis repli synthétique ANNONCÉ (« note: clic synthétique : l'entrée native n'a pas
@@ -741,8 +749,9 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
              config fallbackEngine playwright : un clic natif non livré ou non actionnable (invisible, désactivé)
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
 Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
-               une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
-               hover type wait expect eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               une commande par ligne, même syntaxe que la CLI (nav back forward reload scroll snap text click fill
+               select check press hover type wait expect eval console screenshot cookies upload profile), commentaires #,
+               guillemets à la shell ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)

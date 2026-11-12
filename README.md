@@ -91,6 +91,8 @@ limite la lecture à une zone.
 - 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
+- ↩️ **Historique et défilement** : `back`, `forward`, `reload [--hard]` (routes `pushState` comprises, garde
+  appliqué) et `scroll --until-stable` pour les listes à défilement infini ([détails](#historique-et-défilement)).
 - 🤖 **Serveur MCP** : `grasp mcp` sur stdio, branchable dans Claude Code, Claude Desktop ou Cursor en une
   ligne, sans dépendance ajoutée ([détails](#serveur-mcp)).
 - 📝 **Texte en Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), même budget et
@@ -537,6 +539,8 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | Commande | Effet |
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
+| `back`, `forward`, `reload [--hard]` | Historique de l'onglet (route `pushState` comprise) et rechargement, garde appliqué, même attente que `nav`. Voir [Historique et défilement](#historique-et-défilement). |
+| `scroll [<sél>] [--by px \| --to top\|bottom] [--until-stable [--max-steps N]]` | Défile la page ou un conteneur ; `--until-stable` : jusqu'à ce que plus rien n'apparaisse (défilement infini), nœuds apparus comptés. |
 | `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
 | `text [--max N] [--scope <ref\|css\|frame=…>] [--markdown]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée) ; `--markdown` : le même contenu visible en Markdown (voir [Sortie Markdown](#sortie-markdown)). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
@@ -561,7 +565,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 `frame=<css de l'iframe> >> <css|text:…>` pour un élément **dans** une iframe, même d'une autre origine
 (imbriquable : `frame=#a >> frame=#b >> button` ; moteur Playwright, voir plus bas).
 Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
-(`nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`) accepte :
+(`nav`, `back`, `forward`, `reload`, `scroll`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`) accepte :
 
 - `--snap-diff` : diff du snapshot dans le même aller-retour, après stabilité du DOM, borné à 4000
   caractères (`--max N`), restreint à une zone avec `--scope <ref|css>` ;
@@ -585,6 +589,74 @@ grasp click '#absent' --shot-on-error
 **Sorties** : `OK` sur stdout ; conseils et notes sur stderr ; erreurs
 `ERROR: <cmd>: <raison>` sur stderr avec un code non nul ; `--json` pour la sortie structurée.
 `export S=$(grasp session create)` capture uniquement l'identifiant.
+
+### Historique et défilement
+
+```
+grasp back | forward [--snap-diff] [--console] [--shot-on-error]
+grasp reload [--hard] [--snap-diff] …
+grasp scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]] [--snap-diff] …
+```
+
+**`back` / `forward`** : entrée voisine de l'historique de l'onglet (`Page.navigateToHistoryEntry`), document
+précédent ou route `pushState` d'une application monopage. **`reload`** recharge le document courant ;
+`--hard` sans le cache HTTP (`ignoreCache` : la requête part avec `Cache-Control: no-cache`, vérifié par le site
+de test).
+
+- **Garde** : l'URL de l'entrée visée est rejugée comme celle d'un `nav` (allowlist, protection SSRF) **avant**
+  de partir ; refus → 403 `navigation bloquée : …`, page conservée, aucune requête. Ce pré-contrôle n'est pas
+  une redite du garde `Fetch` : mesuré sur Chrome headless lancé par Grasp, un `back` vers un document déjà vu
+  est servi par le cache aller-retour (bfcache) **sans aucune requête** (0 requête au site de test sur 3
+  retours), donc invisible du garde `Fetch`. Test par mutation : sans le pré-contrôle, un `back` vers une entrée
+  dont le nom résout désormais en privé passe (`test/integration/historique.test.ts`, test « garde »). Pour
+  `reload`, la requête part bel et bien : le garde `Fetch` l'arrête aussi (vérifié en retirant le pré-contrôle).
+  Seul le refus du document **principal** fait échouer la commande : une iframe hors allowlist (publicité,
+  widget) est refusée par le garde mais la page arrive quand même → `OK` et note `cadre bloqué : <raison>`
+  (testé : `back` d'une page non éligible au bfcache et `reload [--hard]` d'une page dont l'iframe vise un
+  domaine hors allowlist ; avant correction, ces commandes répondaient à tort 403).
+- **Échec réseau** : `Page.navigateToHistoryEntry` et `Page.reload` ne rendent pas d'erreur quand le serveur
+  ne répond pas ; Chrome charge alors sa page d'erreur (`chrome-error://chromewebdata/`) dans le cadre
+  principal. Grasp la repère et répond **502** `navigation échouée : net::ERR_… (<url>)`, comme `nav` (testé :
+  connexion coupée sans réponse → `net::ERR_EMPTY_RESPONSE` pour `back`, `reload` et `reload --hard` ; avant
+  correction, `OK` avec le titre de la page d'erreur). Sans domaine `Network` (`allowConsole=false`), le code
+  d'erreur n'est pas connu : `navigation échouée : page d'erreur du navigateur (<url>)`.
+- **Attente** : celle de `nav` (load, puis 400 ms de calme du DOM et du réseau, plafond `stableTimeoutMs`,
+  challenge anti-bot guetté). Une route `pushState` dont la vue arrive en `fetch` après le `popstate` est
+  attendue : la lecture qui suit voit déjà la nouvelle vue (testé avec une vue servie en 150 ms).
+- **Sortie** : `OK` ; pour `back`/`forward`, une note dit où l'on arrive, parce que l'agent ne le sait pas
+  d'avance (`note: retour : http://127.0.0.1:8080/hist-a « Page A »`, suivi de `(même document)` pour une
+  route `pushState`). `--json` : `url`, `title`. `--snap-diff` : comme `nav` (`navigation → … (nouvelle page :
+  snapshot complet)`, ou `~ url …` puis le diff pour une route du même document).
+- **Bords** : pas de page précédente ou suivante → **409** (`aucune page précédente dans l'historique de
+  l'onglet (entrée 1 sur 2)`), rien ne bouge. La première entrée d'un onglet neuf est `about:blank`.
+- Mesuré (site local, Chrome headless, 3 répétitions) : `back`/`forward` d'un document ≈ 430 ms, `reload`
+  ≈ 440 ms, `back` d'une route `pushState` dont la vue arrive en 150 ms ≈ 570 ms — l'essentiel est la fenêtre de
+  calme de 400 ms.
+
+**`scroll`** : défilement en **code fixe** du monde isolé `grasp-lecture` (autorisé avec `allowEval=false`),
+`behavior: 'instant'` ; la page reçoit ses événements `scroll` et ses `IntersectionObserver` comme pour un
+défilement de l'utilisateur.
+
+- **Quoi** : sans sélecteur, la page ; avec un sélecteur (ref, CSS, `text:`), ce conteneur s'il défile lui-même
+  (`overflow: auto|scroll` et contenu plus haut que lui), sinon son plus proche ancêtre qui défile, sinon la
+  page. Un élément qui ne défile pas, **sans** `--by`/`--to`/`--until-stable`, est seulement amené au centre de
+  la vue (`scrollIntoView`). `frame=…` : 400 (document principal seulement).
+- **Combien** : défaut un écran (90 % de la hauteur visible) vers le bas ; `--by N` (px, négatif vers le haut) ;
+  `--to top|bottom`. `--by` et `--to` s'excluent (400).
+- **`--until-stable`** : pas successifs jusqu'en bas (ou de `--by N`), chacun suivi de l'attente de stabilité
+  (requêtes parties dans la fenêtre du pas comprises, comme après une action), jusqu'à un pas qui n'ajoute
+  **rien** (ni élément, ni hauteur) **et** laisse la zone au bout. Plafonds : `--max-steps` (10 par défaut, 50 au
+  plus) et 60 s au total (sous le délai de 120 s entre control plane et bridge) ; un arrêt sur plafond est dit
+  (`plafond de 2 pas atteint : du contenu peut encore apparaître`), jamais présenté comme la fin de la liste.
+- **Compte rendu** : une note, et `scroll` dans le JSON (`how`, `from`, `to`, `max`, `height`, `added`,
+  `steps`, `settled`, `stoppedBy`) :
+  `note: défilement (page) : 0 → 3 663 px sur 3 663 (bas atteint), 5 pas, 80 nœud(s) apparu(s), plus rien
+  n'apparaît`. Les « nœuds apparus » sont des **éléments DOM** absents au départ et toujours présents à la fin,
+  dans la zone du sélecteur (sinon tout le document) : une liste virtualisée qui recycle ses lignes en compte
+  moins qu'elle n'en a montré. `--snap-diff` montre les lignes `+` des nouveaux éléments (borné à 4000
+  caractères, coupure annoncée).
+- Mesuré (site local : 20 articles par page servis en 100 ms) : 4 pages chargées en 5 pas, ≈ 2,9 s ; page
+  statique, `--until-stable` : 1 pas, ≈ 540 ms ; `scroll` simple ≈ 125 ms.
 
 ### Sortie Markdown
 
@@ -686,8 +758,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 ```
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
-  **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
-  cookies storage upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  **même syntaxe que la CLI** : `nav back forward reload scroll snap text click fill select check press wait expect
+  eval console screenshot cookies storage upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
@@ -906,6 +978,9 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | Outil | Arguments | Équivalent CLI |
 |---|---|---|
 | `nav` | `url`, options d'action | `nav` |
+| `back`, `forward` | options d'action | idem |
+| `reload` | `hard`, options d'action | `reload [--hard]` |
+| `scroll` | `target?`, `by`, `to`, `untilStable`, `maxSteps`, options d'action | `scroll [<sél>] [--by] [--to] [--until-stable [--max-steps]]` |
 | `snap` | `max`, `scope`, `nameMax` | `snap --max --scope --name-max` |
 | `text` | `max`, `scope`, `markdown` | `text [--markdown]` |
 | `click`, `hover` | `target`, options d'action | idem |
@@ -919,7 +994,8 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `run` | `script`, `continue`, `report` | `grasp run [--report\|--no-report]` ; lignes `expect` et [rapport de recette](#recette--expect-et-rapport-de-run) joint d'office |
 | `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
 
-Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright`).
+Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright` ; pas
+pour `nav`, `back`, `forward`, `reload`, `scroll`).
 `eval`, `cookies` et `upload` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
 politique (désactivés par défaut).
 
@@ -1367,6 +1443,8 @@ GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
 DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?, console?, shotOnError?}
+POST /back  POST /forward  POST /reload {hard?}   (mêmes options que /navigate) → {ok, url, title, detail?, diff?}
+POST /scroll {target?, by?, to?, untilStable?, maxSteps?, …}  → {ok, scroll: {how, from, to, max, height, added, steps, settled?, stoppedBy?}, detail}
 GET  /snap?max=&scope=   GET /text?max=&scope=&markdown=1   GET /location   GET /pdf
 POST /wait {text? | sel? | idle?, timeout?}
 GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
@@ -1751,6 +1829,14 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
+- **Historique et défilement** : `back`/`forward` ne voient que l'historique de l'onglet de la session (un popup
+  n'est pas pilotable) ; une page restaurée depuis le cache aller-retour n'est pas re-téléchargée, si bien que
+  seul le pré-contrôle du garde la juge. Un `history.back()` lancé par **la page elle-même** n'y passe pas :
+  constaté (entrée dont le nom résout désormais en privé, restaurée sans requête ni blocage) ; c'est antérieur à
+  ces commandes et vaut pour toute page, voir TODO. `scroll`
+  défile par `scrollTo`/`scrollBy`, pas par la molette : une page qui n'écoute que `wheel` ne réagit pas ; le
+  défilement horizontal n'existe pas ; un chargement qui n'arrive qu'après plus de 400 ms de calme sans requête
+  (minuterie seule) est manqué par `--until-stable`, comme par l'attente de stabilité.
 - Livraison vérifiée : l'hypothèse « écran Windows verrouillé » n'a pas été reproduite sur la machine réelle
   (Grasp ne verrouille pas la session de l'utilisateur) ; la non-livraison est simulée par
   `Input.setIgnoreInputEvents`. La sonde écoute sur `window` en capture : une page qui appelle

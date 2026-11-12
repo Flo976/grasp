@@ -102,6 +102,11 @@ Sécurité du garde
 - [ ] **Sous-ressources** (`fetch()`, images, scripts) : ni l'allowlist ni la protection SSRF ne les bloquent
       (le garde ne couvre que les documents) ; seuls les traqueurs le sont. Étendre le garde `Fetch` à tous
       les types coûterait une pause par requête : à mesurer.
+- [ ] **Cache aller-retour (bfcache)** : un `history.back()` lancé par la page restaure un document sans requête,
+      donc sans passer par le garde `Fetch` (constaté : entrée dont le nom résout désormais en privé, restaurée).
+      `grasp back`/`forward` rejugent l'URL avant de partir ; pour la page elle-même : désactiver le bfcache
+      (`--disable-features=BackForwardCache`, coût à mesurer) ou rejuger sur `Page.frameNavigated` de type
+      `BackForwardCacheRestore`.
 - [ ] **DNS rebinding** : détecté **après** la requête (lecture protégée, pas l'effet de bord), et seulement
       avec `allowConsole=true` (domaine `Network`).
 - [ ] **SSRF derrière un proxy** : ce que le proxy résout de son côté n'est pas couvert (choix assumé à la
@@ -176,3 +181,15 @@ Image Docker
       `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
       ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
       sans être décrite : rouge ; l'ancien test restait vert).
+## Navigation et défilement
+
+- [x] **`back`, `forward`, `reload [--hard]`, `scroll`** (branche `feat/navigation-historique`) : historique de
+      l'onglet (route `pushState` comprise), garde appliqué (URL de l'entrée rejugée avant de partir : nécessaire,
+      un `back` est servi par le bfcache sans requête), même attente que `nav`, `--snap-diff`, note « retour : url » ;
+      `scroll [<sél>] [--by px|--to top|bottom] [--until-stable [--max-steps N]]` en code fixe du monde isolé,
+      jusqu'à ce que plus rien n'apparaisse (défilement infini), nœuds DOM apparus comptés, plafonds annoncés.
+      CLI, API HTTP, `grasp run`, MCP. Tests : `test/integration/historique.test.ts`, `test/unit/historique.test.ts`.
+      Relecture : seul le refus du document principal fait échouer back/forward/reload (une iframe hors
+      allowlist n'est qu'une note `cadre bloqué`) ; serveur injoignable → 502 `navigation échouée`, comme nav.
+      Reste : défilement horizontal, molette réelle (`Input.dispatchMouseEvent` `mouseWheel`) pour les pages qui
+      n'écoutent que `wheel`, `scroll` dans une iframe (`frame=…`).

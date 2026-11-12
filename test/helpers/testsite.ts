@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { historiqueRoute } from './testsite-historique.js';
 
 export const FORM_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Inscription</title></head>
@@ -793,6 +794,7 @@ export async function startTestSite(): Promise<TestSite> {
     const u = new URL(req.url ?? '/', 'http://x');
     hits.push(u.pathname);
     res.setHeader('content-type', 'text/html; charset=utf-8');
+    if (historiqueRoute(u, req, res)) return;
     if (u.pathname === '/connexion') { res.end(CONNEXION_PAGE); return; }
     if (u.pathname === '/connecte') {
       const user = u.searchParams.get('user') ?? 'anonyme';
