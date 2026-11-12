@@ -1159,7 +1159,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   `ERROR: capture non écrite : …` et le run en échec, mais les étapes suivantes **ont déjà été exécutées**
   (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
 - **`state import <fichier>`** : comme `screenshot -o` en écriture, le fichier est **lu par la CLI**, jamais par
-  le serveur : chemin relatif au répertoire courant (ou absolu), comme la commande isolée ; `-` (stdin) refusé
+  le serveur : chemin relatif au répertoire courant (ou absolu), comme la commande isolée — **pas** à `--out-dir`,
+  qui ne vaut que pour ce que la CLI écrit (captures `-o` et captures d'échec) ; `-` (stdin) refusé
   dans un run. **Aucun shell ne passe sur une ligne de run** : la CLI développe elle-même `~` en tête (`~` seul ou
   `state import ~/etat.json`), mais ni `~utilisateur` ni les variables d'environnement (`$HOME/etat.json` est pris
   à la lettre, relatif au répertoire courant). Tous les fichiers sont lus et analysés **avant l'envoi** :

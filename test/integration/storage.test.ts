@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { RUN_MAX_BYTES } from '../../src/core/state.js';
@@ -181,6 +181,40 @@ test('recette : session factice posée par state import sans allowEval (exemple 
     assert.equal((await runCli(env, ['nav', `${site.url}/compte`])).code, 0);
     assert.match((await runCli(env, ['text'])).stdout, /Thème : factice[\s\S]*Brouillon : factice/);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});
+
+test('run --out-dir : state import lu relatif au répertoire courant (pas à --out-dir), capture d\'échec écrite sous --out-dir, storage --origin dans le même run', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  writeConfig(t.env, { allowCookies: true, allowedDomains: ['127.0.0.1'] });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const etat = (theme: string): string => JSON.stringify({ format: 'grasp-state', version: 1, origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: theme }] }] });
+    const file = join(t.root, 'etat-outdir.json');
+    writeFileSync(file, etat('courant'), { mode: 0o600 });
+    const outDir = join(t.root, 'sorties');
+    mkdirSync(outDir);
+    // Chemin relatif au répertoire courant de la CLI : --out-dir ne vaut que pour les écritures (captures).
+    const rel = relative(process.cwd(), file);
+    const r = await runCli(env, ['run', '--out-dir', outDir, '--continue'], `state import ${rel}
+storage set session brouillon outdir --origin ${site.url}
+nav ${site.url}/compte
+expect text "Thème : courant"
+expect text "Brouillon : outdir"
+expect text "absent-zzz" --timeout 0
+`);
+    assert.equal(r.code, 1, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /^\[1\] state import .* → OK$/m);
+    assert.match(r.stdout, /^\[4\] expect text .* → OK$/m);
+    assert.match(r.stdout, /^\[5\] expect text .* → OK$/m);
+    const shot = join(outDir, 'echec-etape-6.png');
+    assert.ok(existsSync(shot), `${r.stdout}\n${r.stderr}`);
+    assert.ok(r.stdout.includes(`capture : ${shot}`), r.stdout);
+  } finally {
+    srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup();
+  }
 });
 
 test('run : ligne state import <fichier> (lu par la CLI) — session factice posée avant navigation, history --as-run la rejoue', async () => {

@@ -968,7 +968,7 @@ Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép
                click fill select check press hover type wait expect eval console network screenshot cookies storage
                state upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
                screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
-               state import <fichier> : LU par la CLI avant l'envoi (relatif au répertoire courant, ~/ développé,
+               state import <fichier> : LU par la CLI avant l'envoi (relatif au répertoire courant, pas à --out-dir, ~/ développé,
                pas de $VAR ni de -), mêmes garde-fous qu'en commande isolée (allowCookies, allowlist) ;
                state export : commande isolée ;
                avec --out-dir, les captures d'échec (--shot-on-error, rapport) y vont aussi (echec-etape-<n>.png),
