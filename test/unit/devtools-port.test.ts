@@ -78,6 +78,19 @@ test('processus arrêté au démarrage : erreur immédiate (profil), pas de nouv
   assert.equal(picks, 1);
 });
 
+test('arrêt au démarrage faute de sandbox (conteneur) : nommé comme tel, avec les deux remèdes, pas le profil', async () => {
+  // stderr réel de Chromium 156 sous Docker, seccomp par défaut, sans capacité.
+  const stderr = '[1:1:1112/073527.095852:ERROR:content/browser/zygote_host/zygote_host_impl_linux.cc:130] No usable sandbox! If this is a Debian system, please install the chromium-sandbox package\n';
+  const f = fake(() => stderr, { exitAfterMs: 0 });
+  await assert.rejects(startOnOwnPort({ ...base, budgetMs: 5000, pickPort: async () => 1, spawnAt: f.spawnAt }), (e: Error) => {
+    assert.match(e.message, /sandbox indisponible/);
+    assert.match(e.message, /seccomp-chrome\.json/);
+    assert.match(e.message, /--cap-add=SYS_ADMIN/);
+    assert.doesNotMatch(e.message, /déjà utilisé/);
+    return true;
+  });
+});
+
 test('annoncé mais injoignable (WSL sans mirrored) : erreur explicite, sans nouvel essai', { timeout: 15_000 }, async () => {
   let picks = 0;
   const f = fake((p) => `DevTools listening on ws://127.0.0.1:${p}/devtools/browser/mien\n`);
