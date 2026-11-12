@@ -1,0 +1,16 @@
+# obscura
+- Fetch.continueRequest ok (/)
+- Fetch.failRequest ok (/aide)
+- après clic vers /aide bloqué : /aide
+- Fetch.continueRequest ok (/cadre-texte)
+- iframe : frameTree enfants = 1
+- dialogue reçu : false
+- Page.handleJavaScriptDialog : Page.handleJavaScriptDialog: No dialog is showing
+- valeur de confirm() vue par la page : true
+- Page.navigatedWithinDocument : 1
+- Page.frameRequestedNavigation : 0
+- Page.frameNavigated : 5
+- Page.frameAttached : 2
+- Page.frameDetached : 2
+- Fetch.requestPaused : 3
+- Target.attachedToTarget : 2

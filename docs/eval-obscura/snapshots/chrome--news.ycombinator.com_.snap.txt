@@ -1,0 +1,23 @@
+page "Hacker News" https://news.ycombinator.com/
+eel3n:LayoutTable
+ erozx:LayoutTableRow
+  ecrd4:LayoutTableCell "Hacker News"
+   e1jxk:LayoutTable
+    erdmq:LayoutTableRow
+     e1ff:LayoutTableCell
+     eaxbn:LayoutTableCell "Hacker News"
+      ey2w:link "Hacker News"
+ et7o7:LayoutTableRow
+ ebtho:LayoutTableRow
+  elsme:LayoutTableCell "Sorry, we're not able to serve your requests this quickly."
+ eysbl:LayoutTableRow
+ edc5y:LayoutTableRow
+  e5hma:LayoutTableCell "reload"
+   em5iq:link "reload"
+ ef67f:LayoutTableRow
+ eeuu8:LayoutTableRow
+  ein8w:LayoutTableCell
+   eu58p:LayoutTable
+    ebcxx:LayoutTableRow
+     eyir5:LayoutTableCell
+… élagué : 1 lien sans nom (refs visibles avec screenshot --refs)

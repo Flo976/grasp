@@ -1,0 +1,16 @@
+# chrome
+- Fetch.continueRequest ok (/)
+- Fetch.failRequest ok (/aide)
+- après clic vers /aide bloqué : /spa-2
+- Fetch.continueRequest ok (/cadre-texte)
+- iframe : frameTree enfants = 1
+- dialogue reçu : true
+- Page.handleJavaScriptDialog : ok
+- valeur de confirm() vue par la page : true
+- Page.navigatedWithinDocument : 2
+- Page.frameRequestedNavigation : 2
+- Page.frameNavigated : 2
+- Page.frameAttached : 1
+- Page.frameDetached : 1
+- Fetch.requestPaused : 3
+- Target.attachedToTarget : 1

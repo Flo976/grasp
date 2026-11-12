@@ -19,8 +19,15 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
 - [ ] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
       Seulement si on vise du volume.
 - [ ] **Image Docker** : Chrome + Grasp, distroless, non-root.
-- [ ] **Évaluer Obscura comme moteur léger** derrière Grasp (il parle CDP et implémente
+- [x] **Évaluer Obscura comme moteur léger** derrière Grasp (il parle CDP et implémente
       `Accessibility.getFullAXTree`) : mesurer la couverture CDP réellement utilisée par le bridge.
+      Fait (branche `eval/obscura`, `docs/eval-obscura.md`, Obscura 0.2.6) : **pas en l'état**. e2e.sh passe en
+      mode attach sans modification, démarrage ×6 et mémoire ×7 sur 10 sessions légères ; mais garde contournée
+      par une redirection 302 (saut non présenté à `Fetch`), `confirm()` accepté d'office, pas de Playwright de
+      repli, arbre AX pauvre en formulaires, Wikipédia : nav ×2,8 et snapshot ×5,7 plus lents. 78/118 tests de
+      page OK (Chrome attaché : 118). À réévaluer quand Obscura interceptera les redirections.
+- [ ] **Mode attach hors Chrome** : documenter que la garde runtime (redirections) n'est garantie qu'avec
+      Chrome ; un navigateur qui se dit `Chrome/…` dans `/json/version` peut ne pas l'être (Obscura).
 
 Non repris, volontairement : la falsification d'empreinte en JS (incohérences détectables dans un vrai
 Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).

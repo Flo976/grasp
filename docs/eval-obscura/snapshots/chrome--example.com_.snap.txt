@@ -1,0 +1,8 @@
+page "Example Domain" https://example.com/
+"This domain is for use in documentation examples without needing permission. This is not a service;…"
+"هذا النطاق مُخصص للاستخدام في أمثلة التوثيق دون الحاجة إلى إذن. هذه ليست خدمة، يُرجى تجنب الاعتماد …"
+"该域名仅用于文档示例，无需获得许可。这并非一项服务，请勿将其用于测试和监控目的。"
+"L’usage de ce domaine est réservé à des exemples de documentation, sans autorisation préalable. Il …"
+"Данный домен предназначен для использования в примерах документации без необходимости получения пре…"
+"Este dominio está destinado al uso en ejemplos de documentación sin necesidad de permiso. Esto no e…"
+ej0rk:link "Learn more"

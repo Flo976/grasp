@@ -1,0 +1,263 @@
+Hacker Newsnew | past | comments | ask | show | jobs | submit
+login
+
+
+
+
+
+1.
+93% of paint splatters are valid Perl programs (2019) (mcmillen.dev)
+
+
+379 points by zenincognito 9 hours ago | hide | 50 comments
+
+
+
+2.
+Humble Bundle just killed most of their security through vibecoding (spacebattles.com)
+
+
+22 points by rdmuser 58 minutes ago | hide | 2 comments
+
+
+
+3.
+Tim Peters has died (python.org)
+
+
+1112 points by ayhanfuat 15 hours ago | hide | 125 comments
+
+
+
+4.
+Critical RCE Vulnerability in Apache HTTP Server (wiz.io)
+
+
+146 points by soheilpro 5 hours ago | hide | 64 comments
+
+
+
+5.
+AWS emulator (github.com/aws)
+
+
+806 points by super_linear 13 hours ago | hide | 231 comments
+
+
+
+6.
+I gave an agent a lakehouse and control of my garden (jatorre.github.io)
+
+
+30 points by jatorre 2 hours ago | hide | 7 comments
+
+
+
+7.
+Jane Street: Socratic Tutor (github.com/janestreet)
+
+
+41 points by tosh 2 hours ago | hide | 11 comments
+
+
+
+8.
+Nvidia is preparing to oust Jensen Huang (wsj.com)
+
+
+914 points by jbredeche 9 hours ago | hide | 1256 comments
+
+
+
+9.
+A false smoke alarm almost drowned Jane Street's only NYC datacenter (bacarella.com)
+
+
+471 points by mbac32768 15 hours ago | hide | 236 comments
+
+
+
+10.
+Gemini Decisions API (blog.google)
+
+
+398 points by iamdelirium 13 hours ago | hide | 122 comments
+
+
+
+11.
+United Airlines bans AI agents from booking flights on behalf of travelers (cbsnews.com)
+
+
+521 points by herpderperator 10 hours ago | hide | 512 comments
+
+
+
+12.
+Lock Your GitHub Actions (hugovk.dev)
+
+
+221 points by gslin 9 hours ago | hide | 46 comments
+
+
+
+13.
+Europe has been living beyond its means. Now the bills are due (economist.com)
+
+
+6 points by andsoitis 1 hour ago | hide | discuss
+
+
+
+14.
+Darling Development Update – Q4 2026 (darlinghq.org)
+
+
+18 points by tech234a 3 hours ago | hide | 4 comments
+
+
+
+15.
+Emacs in the Age of Magic (commandlinesystems.com)
+
+
+205 points by ggcr 11 hours ago | hide | 87 comments
+
+
+
+16.
+Slavdom Unearthed: Marian Wawrzeniecki's Neopagan Paintings (1891–1923) (publicdomainreview.org)
+
+
+18 points by lermontov 3 hours ago | hide | 3 comments
+
+
+
+17.
+Bad ideas that aren't bad anymore (devonestes.com)
+
+
+27 points by sevenseacat 4 hours ago | hide | 14 comments
+
+
+
+18.
+I'm Working on a FOSS Linux Pinbal Simulation Engine (getlazarus.org)
+
+
+18 points by sysrpl 2 hours ago | hide | 3 comments
+
+
+
+19.
+The Utah Teapot (utah.edu)
+
+
+124 points by cobbal 11 hours ago | hide | 30 comments
+
+
+
+20.
+A general purpose Apple Silicon layer for x86-64 PCs (github.com/tylertms)
+
+
+96 points by iceboundrock 8 hours ago | hide | 39 comments
+
+
+
+21.
+Did Life Begin in an RNA World? (quantamagazine.org)
+
+
+54 points by acossta 6 hours ago | hide | 19 comments
+
+
+
+22.
+The Lost World of Aquaterra (theatlantic.com)
+
+
+4 points by ag8 1 hour ago | hide | discuss
+
+
+
+23.
+My AI agents found an unmapped Maya site? (pietromiotti.com)
+
+
+974 points by eyvindn 19 hours ago | hide | 354 comments
+
+
+
+24.
+Lean Grimoire (terrytao.wordpress.com)
+
+
+30 points by smilelamp 5 hours ago | hide | 5 comments
+
+
+
+25.
+Stingray Fish Laser (stingray.no)
+
+
+26 points by tptacek 5 hours ago | hide | 24 comments
+
+
+
+26.
+Hyper-Realistic Sand with WebGL2 (av.github.io)
+
+
+358 points by everlier 18 hours ago | hide | 67 comments
+
+
+
+27.
+Faster Retrieval for Better, More Efficient RAG (machinelearning.apple.com)
+
+
+196 points by zerop 14 hours ago | hide | 36 comments
+
+
+
+28.
+Show HN: Yogurt – Free, private, open-source alternative to Granola (github.com/frigadehq)
+
+
+227 points by brownrout 15 hours ago | hide | 93 comments
+
+
+
+29.
+Huawei releases MACaQ, its internal quantizer for local inference (github.com/huawei-csl)
+
+
+93 points by thefox96 11 hours ago | hide | 23 comments
+
+
+
+30.
+Show HN: I recreated Papers Please but you're deciding which YC startups to fund (termsheetplease.com)
+
+
+213 points by bolau 12 hours ago | hide | 85 comments
+
+
+
+
+More
+
+
+
+
+
+
+
+
+
+Guidelines | FAQ | Lists | API | Security | Legal | Apply to YC | Contact
+
+
+
+Search:

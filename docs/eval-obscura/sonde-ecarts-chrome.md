@@ -1,0 +1,31 @@
+# chrome
+- garde, clic vers /aide refusé (failRequest) : location=/ titre="127.0.0.1" h1="\n            127.0.0.1 is blocked\n          "
+- garde, redirection 302 vers example.com refusée : Page.navigate={"frameId":"392E5DF89E127EFBE5E27CA21552E794","loaderId":"1832FC172D81936FEBD593C3982DF961","errorText":"net::ERR_BLOCKED_BY_CLIENT","isDownload":false} → location=chrome-error://chromewebdata/
+- garde, window.open(_self) vers example.com refusé : location=chrome-error://chromewebdata/
+- requêtes refusées par la sonde : ["/aide","https://example.com/","https://example.com/"]
+- Fetch.enable { patterns: [] } puis navigation : load=true, requestPaused en plus=0
+- Fetch.disable : ok
+- après Fetch.disable, navigation : load=true
+- alert("a") : événement=alert, valeur="undefined" en 8 ms
+- confirm("c") : événement=confirm, valeur="true" en 3 ms
+- prompt("p", "x") : événement=prompt, valeur="rép" en 2 ms
+- consoleAPICalled args[1] : {"type":"object","className":"Object","description":"Object","objectId":"-3826654458445787414.2.1","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"code","type":"number","value":"
+- exceptionThrown : ["Error: boum","Error: rejet"]
+- Log.entryAdded : ["error:Failed to load resource: the server responded with a status of 404 (Not Found)"]
+- Network.loadingFailed / responseReceived 404 : 0 / 1
+- document.title="Inscription" ; getTargetInfo.title="Inscription"
+- body.innerText (120 premiers car.) : "Accueil Aide\nInscription\nNom \nEmail \nVille \nPays \n--\nFrance\nMadagascar\n J'accepte les conditions\nValider\n\nEn attente\n\nAj"
+- AX combobox : name="Pays" value={"type":"string","value":"--"} props=["invalid","focusable","hasPopup","expanded","labelledby"] enfants=1
+- AX textbox Email (focalisé) : props=["invalid=\"false\"","focusable=true","focused=true","editable=\"plaintext\"","settable=true","multiline=false","readonly=false","required=false","labelledby=undefined"]
+- AX options : ["option:--","option:France","option:Madagascar"]
+- AX nœuds : 58, ignorés : 4, sans backendDOMNodeId : 11
+- AX textbox Nom après saisie : value={"type":"string","value":"Ada"}
+- Runtime.evaluate 1+1 description : "2"
+- navigation par clic de lien : location=/aide ; événements : frameScheduledNavigation, frameRequestedNavigation, frameClearedScheduledNavigation, frameStartedNavigating, frameStartedLoading, Runtime.executionContextsCleared, frameNavigated(parentId=-), domContentEventFired, loadEventFired, frameStoppedLoading
+- navigation par soumission de formulaire : location=/ ; événements : aucun
+- navigation par location.href : location=/aide ; événements : frameScheduledNavigation, frameRequestedNavigation, frameClearedScheduledNavigation, frameStartedNavigating, frameStartedLoading, Runtime.executionContextsCleared, frameNavigated(parentId=-), domContentEventFired, loadEventFired, frameStoppedLoading
+- navigation par pushState : location=/spa-x ; événements : frameStartedLoading, navigatedWithinDocument, frameStoppedLoading
+- Page.frameStartedLoading (cumul) : 16
+- Page.frameRequestedNavigation (cumul) : 4
+- Page.navigatedWithinDocument (cumul) : 1
+- Runtime.executionContextDestroyed (cumul) : 0
