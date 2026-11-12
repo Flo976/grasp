@@ -693,7 +693,7 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
              --dialog accept|dismiss|"texte"  réponse aux dialogues JS (confirm, prompt, beforeunload) ouverts
                           pendant CETTE action ; "texte" : prompt accepté avec ce texte (text:accept pour le mot
-                          « accept ») ; sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS ; tout
+                          « accept »), sans effet sur confirm (seul accept le confirme) ; sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS ; tout
                           dialogue vu est rapporté (note, et « ! dialogue … » en tête du --snap-diff)
              --engine playwright  (click fill select check press hover type upload) action par Playwright branché sur
                           le Chrome de Grasp : attente d'actionnabilité (visible, stable, activé), widgets riches ;

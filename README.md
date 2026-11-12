@@ -637,9 +637,9 @@ Un dialogue (`alert`, `confirm`, `prompt`, `beforeunload`) bloque tout l'onglet 
 | Dialogue | sans option (défaut sûr) | `--dialog accept` | `--dialog dismiss` | `--dialog "texte"` |
 |---|---|---|---|---|
 | `alert` | fermé | fermé | fermé | fermé |
-| `confirm` | **refusé** | accepté | refusé | accepté |
+| `confirm` | **refusé** | accepté | refusé | **refusé** (texte ignoré, dit dans la note) |
 | `prompt` | **refusé** (`null`) | accepté, valeur proposée par la page | refusé | accepté avec « texte » |
-| `beforeunload` | accepté (la page est quittée) | accepté | refusé : la page reste, navigation annulée | accepté |
+| `beforeunload` | accepté (la page est quittée) | accepté | refusé : la page reste, navigation annulée | défaut : accepté (texte ignoré, dit) |
 
 - L'option vaut pour **cette action seulement**, attente de stabilité comprise ; l'action suivante sans option
   retrouve le défaut. Elle existe sur `nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`, en
@@ -647,9 +647,15 @@ Un dialogue (`alert`, `confirm`, `prompt`, `beforeunload`) bloque tout l'onglet 
 - `"texte"` : tout autre valeur que `accept`/`dismiss` est la réponse d'un `prompt` ; `text:accept` pour
   répondre littéralement « accept ». 4096 caractères au plus, caractères de contrôle refusés (400 : l'action
   n'a pas lieu). `--dialog ""` accepte un `prompt` vide.
+- Seul `accept` accepte un `confirm` : un texte n'y répond pas, le défaut sûr s'applique (`confirm` refusé,
+  `beforeunload` au défaut) et la note le dit (`→ refusé (--dialog "texte" ne vaut que pour un prompt — --dialog
+  accept pour accepter)`, champ `textIgnored`). Une faute de frappe ou un refus mal formulé (`cancel`, `no`,
+  `Dismiss`, `dismiss ` avec une espace) ne confirme donc jamais une suppression.
+- Une valeur nue commençant par `--` est refusée (400, l'action n'a pas lieu) : c'est une option avalée par une
+  valeur oubliée (`--dialog --snap-diff`) ; `text:--x` pour répondre ce texte à un prompt.
 - **Rapport** : chaque dialogue vu est rapporté — note sur stderr (`note: dialogue confirm « Supprimer
   « Article A » ? » → refusé (défaut sûr — --dialog accept pour répondre)`), champ JSON `dialogs`
-  (`type`, `message`, `accepted`, `promptText`, `byDefault`, `outside`), et en tête du `--snap-diff` :
+  (`type`, `message`, `accepted`, `promptText`, `byDefault`, `textIgnored`, `outside`), et en tête du `--snap-diff` :
 
 ```
 grasp click '#sup-a' --dialog accept --snap-diff
@@ -672,7 +678,8 @@ grasp click '#sup-a' --dialog accept --snap-diff
 
 Testé contre le site local (`test/integration/dialogues.test.ts`, `dialogues-cli.test.ts`, `test/unit/dialog.test.ts`) :
 `confirm` accepté → article supprimé (vérifié par `text`), défaut → refus et article conservé, `prompt` avec
-texte, valeur proposée, `text:accept` et vide, `alert`, `beforeunload` accepté par `nav` et refusé par `click`
+texte, valeur proposée, `text:accept` et vide, `confirm` avec `cancel`/`Dismiss`/`no` → refusé et article
+conservé, `--dialog --snap-diff` → 400 (API et CLI), `alert`, `beforeunload` accepté par `nav` et refusé par `click`
 et par `nav`, dialogue de minuterie hors action ; CLI, `run` et MCP de bout en bout. Le défaut sûr a été
 vérifié par mutation (défaut « tout accepter » réinjecté → tests unitaires et d'intégration au rouge).
 

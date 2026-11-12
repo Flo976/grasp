@@ -37,6 +37,12 @@ test('CLI : défaut refusé (note sur stderr), --dialog accept --snap-diff suppr
   const j = await runCli(env, ['click', '#renommer', '--dialog', 'Ada', '--json']);
   assert.deepEqual(JSON.parse(j.stdout).dialogs, [{ type: 'prompt', message: 'Nouveau nom ?', accepted: true, promptText: 'Ada' }]);
   assert.equal((await runCli(env, ['text', '--scope', '#nom'])).stdout.trim(), 'Nom : Ada');
+  // Valeur oubliée : `--dialog --snap-diff` avale l'option suivante ; refusé (400), aucun clic, rien supprimé.
+  assert.equal((await runCli(env, ['nav', `${site.url}/dialogues`])).code, 0);
+  const o = await runCli(env, ['click', '#sup-a', '--dialog', '--snap-diff']);
+  assert.notEqual(o.code, 0, o.stdout);
+  assert.match(o.stderr, /ressemble à une option/, o.stderr);
+  assert.match((await runCli(env, ['text', '--scope', '#liste'])).stdout, /Article A/);
 });
 
 test('grasp run : --dialog sur une ligne, rapporté dans la sortie du pas', async () => {

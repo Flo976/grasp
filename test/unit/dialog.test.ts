@@ -26,8 +26,26 @@ test('--dialog accept|dismiss|texte → réponse par type', () => {
   assert.deepEqual(answer('prompt', 'text:accept'), { accept: true, promptText: 'accept' });
   assert.deepEqual(answer('prompt', 'text:dismiss'), { accept: true, promptText: 'dismiss' });
   assert.deepEqual(answer('prompt', ''), { accept: true, promptText: '' });
-  assert.deepEqual(answer('confirm', 'Alice'), { accept: true }, 'texte : confirm accepté, sans texte');
-  assert.equal(decideDialog('confirm', 'm', '', parseDialogOption('accept')).seen.byDefault, undefined);
+    assert.equal(decideDialog('confirm', 'm', '', parseDialogOption('accept')).seen.byDefault, undefined);
+});
+
+test('--dialog "texte" ne vaut que pour un prompt : confirm REFUSÉ, beforeunload au défaut (faute de frappe ≠ accord)', () => {
+  // Test par mutation : une valeur nue autre que accept/dismiss qui accepterait un confirm ferait échouer ceci.
+  for (const v of ['cancel', 'no', 'false', 'refuse', 'reject', 'Dismiss', 'dismiss ', 'Accept', 'Alice', '', 'text:accept']) {
+    assert.deepEqual(answer('confirm', v), { accept: false }, `confirm avec --dialog ${JSON.stringify(v)}`);
+    assert.deepEqual(answer('beforeunload', v), { accept: true }, `beforeunload au défaut avec --dialog ${JSON.stringify(v)}`);
+  }
+  const seen = decideDialog('confirm', 'Supprimer ?', '', parseDialogOption('cancel')).seen;
+  assert.equal(seen.textIgnored, true);
+  assert.equal(seen.byDefault, undefined);
+  assert.equal(dialogLine(seen), 'dialogue confirm « Supprimer ? » → refusé (--dialog "texte" ne vaut que pour un prompt — --dialog accept pour accepter)');
+  assert.equal(dialogLine(decideDialog('confirm', 'Supprimer ?', '', parseDialogOption('dismiss')).seen), 'dialogue confirm « Supprimer ? » → refusé', 'dismiss : sans conseil');
+});
+
+test('--dialog : une valeur qui ressemble à une option (--snap-diff avalé) est refusée (400) ; text:--x reste possible', () => {
+  assert.throws(() => parseDialogOption('--snap-diff'), (e: { status: number; message: string }) => e.status === 400 && /ressemble à une option/.test(e.message));
+  assert.deepEqual(parseDialogOption('text:--snap-diff'), { kind: 'text', text: '--snap-diff' });
+  assert.deepEqual(parseDialogOption('-5'), { kind: 'text', text: '-5' }, 'un tiret seul : texte ordinaire');
 });
 
 test('--dialog : texte borné, caractères de contrôle refusés (400)', () => {

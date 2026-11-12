@@ -111,6 +111,20 @@ test('dialogue ouvert hors action (minuterie) : défaut sûr, rapporté à l\'ac
   assert.equal(n.dialogs?.[0]?.outside, true);
 });
 
+test('--dialog "texte" sur un confirm (faute de frappe, intention de refus mal dite) : REFUSÉ, l\'article reste, la note dit pourquoi', async () => {
+  for (const v of ['cancel', 'Dismiss', 'no']) {
+    await fx.page.navigate(`${site.url}/dialogues`);
+    const r = await fx.page.click('#sup-a', { dialog: v, snapDiff: true });
+    assert.match(await liste(), /Article A/, `--dialog ${v} : article conservé`);
+    assert.match(r.detail ?? '', /dialogue confirm « Supprimer « Article A » \? » → refusé \(--dialog "texte" ne vaut que pour un prompt — --dialog accept pour accepter\)/, r.detail);
+    assert.match(r.diff ?? '', /^! dialogue confirm .* → refusé \(--dialog "texte"/, r.diff);
+    assert.deepEqual(r.dialogs, [{ type: 'confirm', message: 'Supprimer « Article A » ?', accepted: false, textIgnored: true }]);
+  }
+  // Une option avalée comme valeur (--dialog --snap-diff) : 400, rien n'est fait.
+  await assert.rejects(fx.page.click('#sup-a', { dialog: '--snap-diff' }), (e: GraspError) => e.status === 400 && /ressemble à une option/.test(e.message));
+  assert.match(await liste(), /Article A/);
+});
+
 test('--dialog invalide : 400, l\'action n\'a pas lieu', async () => {
   await fx.page.navigate(`${site.url}/dialogues`);
   await assert.rejects(fx.page.click('#sup-a', { dialog: 'x'.repeat(5000) }), (e: GraspError) => e.status === 400 && /4096 au plus/.test(e.message));
