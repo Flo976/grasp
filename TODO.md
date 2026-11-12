@@ -138,3 +138,20 @@ Image Docker
 - [ ] Réévaluer quand Obscura interceptera les redirections (garde contournée par un 302 aujourd'hui).
 - [ ] Licence des instantanés Wikipédia (CC BY-SA) versionnés sous `docs/eval-obscura/snapshots/` : à
       confirmer ou à retirer.
+
+## Retours du premier essai réel (recette Dexyu en local, 12/11/2026)
+
+29 étapes, 27 OK, 2 KO (vrais défauts de l'app). Manques constatés côté Grasp :
+
+- [ ] **Viewport** : `grasp viewport 360x800 [--mobile] [--dpr N]` ou option de session
+      (`Emulation.setDeviceMetricsOverride`) ; la fenêtre est fixée à 780 px, impossible de tester un défaut mobile.
+- [ ] **Socket trop long** : repli automatique (`/run/user/$UID` ou nom court haché) quand le chemin du socket
+      Unix dépasse la limite (GRASP_HOME dans un tmp profond), au lieu d'échouer.
+- [ ] **`screenshot -o <fichier>` dans `grasp run`** : aujourd'hui refusé ; utile pour des captures nommées
+      dans un rapport de recette.
+- [ ] **`console --level error`** remonte aussi les événements de navigation : ne garder que les erreurs.
+- [ ] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé).
+- [ ] **Poser une session factice sans `allowEval`** : `grasp state import` le permet déjà (documenter ce cas
+      d'usage dans la section Recette) ; envisager `grasp storage set local <clé> <valeur>`.
+- [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
+      (`aria-describedby` absent), etc. Utile en recette.
