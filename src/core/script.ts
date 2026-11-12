@@ -10,7 +10,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -92,7 +92,27 @@ export function parseScript(src: string): ScriptLine[] {
 }
 
 /** Requête d'une commande : route du bridge (ou `profile`, traitée par le control plane). */
-export interface StepRequest { cmd: string; method: 'GET' | 'POST'; path: string; body?: Record<string, unknown>; timeoutMs?: number }
+export interface StepRequest {
+  cmd: string; method: 'GET' | 'POST'; path: string; body?: Record<string, unknown>; timeoutMs?: number;
+  /** `screenshot -o <fichier>` dans run : chemin RELATIF, écrit par la CLI sous le répertoire de sortie du run. */
+  saveAs?: string;
+}
+
+/** Captures nommées (`screenshot -o`) par run : chaque image transite en base64 dans la réponse du run. */
+export const MAX_RUN_SHOT_FILES = 20;
+
+/**
+ * Fichier de `screenshot -o` dans un run : relatif, sans « .. », sans NUL — il est écrit par la CLI SOUS le
+ * répertoire de sortie du run (--out-dir, défaut : répertoire courant), jamais ailleurs.
+ */
+export function checkRunFile(file: string): string {
+  if (file === '' || file === '-') throw new ScriptError('screenshot -o dans run attend un fichier relatif (ex. -o captures/etape1.png) ; stdout (-) n\'a pas de sens dans un run');
+  if (file.includes('\0')) throw new ScriptError('screenshot -o : nom de fichier invalide');
+  if (file.startsWith('/') || file.startsWith('~') || /^[A-Za-z]:[\\/]/.test(file)) throw new ScriptError(`screenshot -o ${file} : chemin relatif attendu dans run (écrit sous le répertoire de sortie du run, --out-dir)`);
+  if (file.split(/[\\/]/).some((seg) => seg === '..')) throw new ScriptError(`screenshot -o ${file} : « .. » interdit (le fichier reste sous le répertoire de sortie du run)`);
+  if (file.endsWith('/')) throw new ScriptError(`screenshot -o ${file} : nom de fichier attendu, pas un répertoire`);
+  return file;
+}
 
 function need(a: Args, n: number, usage: string): string[] {
   if (a.pos.length < n) throw new ScriptError(`usage : grasp ${usage}`);
@@ -204,7 +224,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
   snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
-  // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
+  // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], profile: [],
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
@@ -213,6 +233,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
 const RUN_GLOBAL: Record<string, string> = {
   session: "une ligne ne change pas de session : grasp run --session <id> (un run par session)",
   json: 'la sortie est celle du run : grasp run --json',
+  'out-dir': 'option du run : grasp run --out-dir <répertoire>',
   continue: 'option du run : grasp run --continue',
   port: 'option de grasp serve', tcp: 'option de grasp serve', listen: 'option de grasp serve',
   profile: 'pour basculer de profil au milieu du script : une ligne « profile <nom> »',
@@ -229,7 +250,7 @@ export function checkRunFlags(a: Args): void {
     if (allowed.includes(k)) continue;
     const g = RUN_GLOBAL[k];
     if (g !== undefined) throw new ScriptError(`--${k} n'a pas de sens sur une ligne de run : ${g}`);
-    throw new ScriptError(`option --${k} inconnue pour ${a.cmd} dans run${allowed.length > 0 ? ` (options : ${allowed.filter((x) => x !== 'output').map((x) => `--${x}`).join(' ')})` : ' (aucune option)'}`);
+    throw new ScriptError(`option --${k} inconnue pour ${a.cmd} dans run${allowed.length > 0 ? ` (options : ${allowed.map((x) => (x === 'output' ? '-o <fichier>' : `--${x}`)).join(' ')})` : ' (aucune option)'}`);
   }
 }
 
@@ -258,7 +279,9 @@ export function buildRequest(a: Args): StepRequest {
     case 'eval': { const [expression] = need(a, 1, 'eval <expression>'); return { cmd, method: 'POST', path: '/eval', body: { expression } }; }
     case 'console': return { cmd, method: 'POST', path: '/console', body: consoleBody(a) };
     case 'screenshot': {
-      if (a.flags.has('output')) throw new ScriptError("screenshot -o n'est pas disponible dans run (le fichier serait écrit par le serveur) : sans -o, le chemin de la capture (0600) est renvoyé");
+      const o = a.flags.get('output');
+      if (o === true) throw new ScriptError('-o attend un fichier relatif (ex. -o captures/etape1.png)');
+      if (o !== undefined) return { cmd, method: 'GET', path: `/screenshot?${shotQuery(a, checkRunFile(o))}`, saveAs: o };
       const q = shotQuery(a, undefined);
       q.set('save', '1');
       return { cmd, method: 'GET', path: `/screenshot?${q}` };

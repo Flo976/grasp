@@ -657,6 +657,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       } catch { /* texte brut */ }
       throw new GraspError(r.status, msg, extra);
     }
+    // screenshot -o dans run : l'image revient au client (base64), qui l'écrit lui-même sous --out-dir.
+    if (rq.saveAs !== undefined && !isJson) {
+      const h = (k: string) => String(r.headers[k] ?? '');
+      return { saveAs: rq.saveAs, format: h('x-grasp-format'), width: Number(h('x-grasp-width')), height: Number(h('x-grasp-height')), bytes: r.body.length, ...(h('x-grasp-truncated') === '1' ? { truncated: true } : {}), data: r.body.toString('base64') };
+    }
     return isJson ? r.json() : r.text();
   }
 
@@ -747,7 +752,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
         const body = await readJson(req);
-        const steps = compileScript(str(body, 'script'));
+        const steps = compileScript(str(body, 'script'), { files: optBool(body, 'files') === true });
         const s = pickSession(req, url);
         // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
         // lesquelles ont été exécutées — l'appelant, lui, ne verra jamais la réponse.

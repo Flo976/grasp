@@ -1,6 +1,6 @@
 import { GraspError } from '../core/errors.js';
 import { formatEntry, type ConsoleEntry } from '../core/console.js';
-import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
+import { buildRequest, checkRunFlags, MAX_RUN_SHOT_FILES, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
 export const MAX_RUN_STEPS = 500;
@@ -51,8 +51,27 @@ const MAX_REPORT_SHOTS = 5;
 /** Exécute une étape : réponse du bridge (JSON ou texte), ou erreur GraspError avec le statut HTTP. */
 export type StepExecutor = (rq: StepRequest) => Promise<unknown>;
 
-/** Analyse complète AVANT toute exécution : une faute de frappe en ligne 12 n'exécute pas les 11 premières. */
-export function compileScript(script: string): Array<{ src: ScriptLine; rq: StepRequest }> {
+/**
+ * Analyse complète AVANT toute exécution : une faute de frappe en ligne 12 n'exécute pas les 11 premières.
+ * `opts.files` : l'appelant (la CLI `grasp run`) écrit lui-même les fichiers de `screenshot -o` ; sans lui
+ * (API HTTP, MCP), une ligne `screenshot -o` est refusée — le serveur n'écrit jamais où un script le demande.
+ */
+export function compileScript(script: string, opts: { files?: boolean } = {}): Array<{ src: ScriptLine; rq: StepRequest }> {
+  const steps = compileLines(script);
+  const shots = steps.filter((s) => s.rq.saveAs !== undefined);
+  if (shots.length > 0 && opts.files !== true) throw new GraspError(400, `ligne ${shots[0]!.src.line} : screenshot -o n'est disponible que depuis la CLI \`grasp run\` (le fichier est écrit par le client, sous --out-dir) ; sans -o, le chemin de la capture (0600) est renvoyé`);
+  if (shots.length > MAX_RUN_SHOT_FILES) throw new GraspError(400, `${shots.length} captures nommées (screenshot -o) dans le script : ${MAX_RUN_SHOT_FILES} au plus par run (chaque image transite dans la réponse) — sans -o, seul le chemin est renvoyé`);
+  const seen = new Map<string, number>();
+  for (const s of shots) {
+    const k = s.rq.saveAs!.replace(/\/+/g, '/').replace(/^(\.\/)+/, '');
+    const prev = seen.get(k);
+    if (prev !== undefined) throw new GraspError(400, `ligne ${s.src.line} : screenshot -o ${s.rq.saveAs} écraserait la capture de la ligne ${prev}`);
+    seen.set(k, s.src.line);
+  }
+  return steps;
+}
+
+function compileLines(script: string): Array<{ src: ScriptLine; rq: StepRequest }> {
   let lines: ScriptLine[];
   try { lines = parseScript(script); } catch (e) { throw new GraspError(400, (e as Error).message); }
   if (lines.length === 0) throw new GraspError(400, 'aucune commande dans le script (lignes vides et commentaires # seulement)');
@@ -229,7 +248,8 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
     }
     case 'eval': return { output: renderEval(j) };
     case 'cookies': return { output: JSON.stringify(result) };
-    case 'screenshot': return { output: String(j.path ?? ''), ...(j.truncated === true ? { detail: 'AVERTISSEMENT : capture tronquée (limite de 16384 px de Chrome)' } : {}) };
+    // -o : le chemin définitif est posé par la CLI, qui écrit le fichier ; ici, le nom demandé.
+    case 'screenshot': return { output: String(j.path ?? j.saveAs ?? ''), ...(j.truncated === true ? { detail: 'AVERTISSEMENT : capture tronquée (limite de 16384 px de Chrome)' } : {}) };
     case 'console': {
       const c = j as { entries?: ConsoleEntry[]; seq?: number; omitted?: number; dropped?: number };
       const w = losses({ omitted: c.omitted, dropped: c.dropped });

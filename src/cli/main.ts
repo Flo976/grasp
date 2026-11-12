@@ -16,6 +16,7 @@ import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { formatReport, type RunResult } from '../control/run.js';
+import { writeRunShots } from './runfiles.js';
 import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
 
 /**
@@ -191,7 +192,9 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  * stdout : « [n] commande → OK|ERROR: raison » puis la sortie utile ; stderr : notes numérotées et bilan.
  */
 async function runCmd(c: Client, a: Args): Promise<number> {
-  if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--report|--no-report] [--json]');
+  if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--report|--no-report] [--out-dir <répertoire>] [--json]');
+  const outDir = a.flags.get('out-dir');
+  if (outDir === true || outDir === '') throw new CliError('--out-dir attend un répertoire (captures de screenshot -o)');
   if (a.flags.has('report') && a.flags.has('no-report')) throw new CliError('--report et --no-report s\'excluent');
   const file = a.pos[0];
   let script: string;
@@ -204,7 +207,9 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   const t0 = Date.now();
   // Rapport : --report, --no-report, sinon décidé par le serveur (oui dès qu'une ligne est un expect).
   const report = a.flags.has('report') ? { report: true } : a.flags.has('no-report') ? { report: false } : {};
-  const r = (await c.call('POST', '/run', { script, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
+  // files : la CLI écrit elle-même les captures de `screenshot -o` (chemins relatifs, sous --out-dir ou le répertoire courant).
+  const r = (await c.call('POST', '/run', { script, files: true, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
+  try { writeRunShots(r, resolvePath(outDir ?? '.')); } catch (e) { throw new CliError(`--out-dir ${outDir ?? '.'} : ${(e as Error).message}`); }
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
     out(`[${st.n}] ${st.text} → ${st.ok ? 'OK' : `ERROR: ${st.error ?? 'échec'}`}`);

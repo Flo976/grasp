@@ -147,8 +147,8 @@ Image Docker
       (`Emulation.setDeviceMetricsOverride`) ; la fenêtre est fixée à 780 px, impossible de tester un défaut mobile.
 - [x] **Socket trop long** : repli automatique sur `/tmp/grasp-<uid>/<hash>/` (0700, propriétaire et absence de lien
       vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
-- [ ] **`screenshot -o <fichier>` dans `grasp run`** : aujourd'hui refusé ; utile pour des captures nommées
-      dans un rapport de recette.
+- [x] **`screenshot -o <fichier>` dans `grasp run`** : chemin relatif sans `..`, image renvoyée au client et
+      écrite par la CLI sous `--out-dir` (0600, liens qui sortent refusés) ; 20 par run ; refusé via HTTP/MCP.
 - [x] **`console --level error`** remonte aussi les événements de navigation : les repères (niveau info) suivent
       désormais le filtre ; `--level error|warn` ne les rend plus.
 - [x] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé) : `urlBase` (schéma,

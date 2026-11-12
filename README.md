@@ -548,7 +548,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |
 | `hover <sél>` | Survol (pointeur déplacé au centre de l'élément) : menus au survol, infobulles. Livraison vérifiée. |
 | `type <sél> <texte> [--delay ms]` | Frappe touche par touche, **ajoutée** à la position du curseur (autocomplétions qui réagissent à chaque touche) ; `--delay` de 0 à 1000 ms entre deux touches. `fill` reste le bon choix pour remplacer une valeur. |
-| `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
+| `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). Dans `grasp run`, `-o <relatif>` est écrit par la CLI sous `--out-dir`. |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
@@ -690,7 +690,7 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
 - Le script est **analysé en entier avant d'exécuter** : guillemet non fermé, commande inconnue ou hors run
-  (`serve`, `pdf`, `screenshot -o` : le fichier serait écrit par le serveur…), option inconnue de la commande
+  (`serve`, `pdf`…), option inconnue de la commande
   (`click e3 --snapdiff`) ou option **globale** sur une ligne (`--session`, `--json`, `--profile`, `--continue`,
   `--port` : elles changeraient le sens de la ligne sans effet réel — `click e3 --session autre` agirait sur la
   session du run) → `ERROR: run: ligne N : …`, rien n'est exécuté : une option n'est jamais ignorée en silence.
@@ -705,6 +705,15 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   diff, console, chemin d'une capture, valeur d'eval), avec les mêmes limites de taille qu'en commande isolée ;
   notes numérotées (`[6] note: sélectionné : Madagascar`) et bilan (`7 commandes, 7 OK (…)`) sur stderr.
   `--json` : `{ok, total, executed, steps: [{n, line, text, cmd, ok, output?, detail?, status?, error?, result, screenshot?, ms}], report?}`.
+- **Captures nommées** : `screenshot -o captures/etape1.png` (format déduit de l'extension, comme en commande
+  isolée). Le chemin doit être **relatif**, sans `..` (vérifié à l'analyse du script) ; l'image revient au client
+  dans la réponse du run et c'est **la CLI** qui l'écrit, sous `--out-dir <répertoire>` (défaut : répertoire
+  courant), en 0600 et atomiquement. Un sous-répertoire en lien symbolique qui sortirait du répertoire de sortie
+  est refusé (rien n'est créé dehors) ; un lien à la place du fichier est remplacé, sa cible jamais écrite ;
+  réécrire un fichier du répertoire est permis (relancer une recette), deux lignes vers le même fichier sont
+  refusées. 20 captures nommées au plus par run (chaque image transite en base64 dans la réponse) ; la sortie,
+  `--json` comprise, ne contient que le chemin écrit. Via l'API HTTP ou MCP (qui n'écrivent pas de fichier côté
+  client), une ligne `screenshot -o` est refusée : le serveur n'écrit jamais là où un script le demande.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
