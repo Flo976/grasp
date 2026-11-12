@@ -109,6 +109,8 @@ export interface LaunchOptions {
   startTimeoutMs?: number;
   /** Choix du port DevTools (défaut : freeLocalPort). Injectable pour les tests de course. */
   pickPort?: () => Promise<number>;
+  /** Arguments ajoutés avant l'URL de départ (tests : --host-resolver-rules). Chrome Linux seulement. */
+  extraArgs?: readonly string[];
 }
 
 export interface ChromeProcess {
@@ -403,6 +405,7 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
     pickPort: opts.pickPort ?? (() => freeLocalPort()),
     spawnAt: (p) => {
       const { args } = buildChromeArgs({ ...common, port: p });
+      if (opts.extraArgs !== undefined) args.splice(args.length - 1, 0, ...opts.extraArgs);
       const [cmd, argv] = sp !== null ? [sp, ['--pdeathsig', 'KILL', '--', path, ...args]] : [path, args];
       return spawnBrowser(cmd, argv, env, opts.stderrLog, async (pid) => { await killGroup(pid); });
     },

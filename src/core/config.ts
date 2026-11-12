@@ -23,6 +23,12 @@ export interface ResolvedConfig {
    * elle n'exécute rien. false : rien n'est capturé et Runtime.enable n'est jamais appelé (non détectable par la page).
    */
   allowConsole: boolean;
+  /**
+   * Protection SSRF levée : un nom de l'allowlist qui résout vers une adresse privée ou réservée (RFC 1918,
+   * boucle locale, 169.254 et métadonnées cloud, CGNAT, ULA…) est admis. Défaut false : seuls les hôtes
+   * littéraux inscrits tels quels (127.0.0.1, localhost, [::1]) peuvent viser le réseau local.
+   */
+  allowPrivateNetwork: boolean;
   transport: 'unix' | 'tcp';
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
@@ -58,6 +64,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowUpload: false,
   allowCookies: false,
   allowConsole: true,
+  allowPrivateNetwork: false,
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
@@ -130,6 +137,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   allowUpload: bool,
   allowCookies: bool,
   allowConsole: bool,
+  allowPrivateNetwork: { ...bool, help: 'true|false : un nom de l\'allowlist peut résoudre vers une IP privée/réservée (défaut false : protection SSRF ; les hôtes littéraux inscrits restent permis)' },
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',
     parse(raw) { if (raw !== 'unix' && raw !== 'tcp') throw new Error('unix|tcp attendu'); return raw; },
@@ -184,6 +192,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowUpload: pick('allowUpload'),
     allowCookies: pick('allowCookies'),
     allowConsole: pick('allowConsole'),
+    allowPrivateNetwork: pick('allowPrivateNetwork'),
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),

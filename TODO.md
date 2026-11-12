@@ -13,9 +13,12 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       dans le monde isolé `grasp-lecture`.
 - [ ] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
       transférer une session connectée vers une autre machine ou un conteneur.
-- [ ] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de
+- [x] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de
       l'allowlist (utile quand l'agent reçoit des URL de l'extérieur). Attention à ne pas casser le
       défaut actuel `127.0.0.1` / `localhost` (tests locaux, tunnels).
+      → fait (`src/core/ssrf.ts`, clé `allowPrivateNetwork`, README « Protection SSRF ») : littéraux inscrits
+      permis, noms résolus en privé refusés (pré-contrôle + garde `Fetch`), rebinding rattrapé après coup par
+      `remoteIPAddress`. Reste : sous-ressources (`fetch()`, images) non couvertes, comme pour l'allowlist.
 - [ ] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
       Seulement si on vise du volume.
 - [ ] **Image Docker** : Chrome + Grasp, distroless, non-root.
@@ -29,8 +32,12 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 
 - [ ] **Résolution d'hôte** : clé `hostResolverRules` → `--host-resolver-rules="MAP site.exemple.com
       127.0.0.1:8443"`. Avec un `ssh -L`, le vhost Apache attend son vrai nom (`Host:`), pas `localhost`.
+      ⚠ Protection SSRF : le garde résout avec le DNS du système, pas avec ces règles ; il faudra les lui
+      transmettre et traiter un nom ainsi mappé sur 127.0.0.1 comme un littéral inscrit.
 - [ ] **Proxy** : clé `proxyServer` → `--proxy-server=socks5://127.0.0.1:1080` (tunnel `ssh -D`), pour
       voir le site exactement comme depuis le serveur de rebond.
+      ⚠ Protection SSRF : derrière un proxy, `remoteIPAddress` est celle du proxy (local) : le contrôle
+      anti-rebinding doit alors être sauté, et la résolution faite côté rebond n'est pas visible de Grasp.
 - [ ] **Certificats** : option explicite (jamais par défaut) pour accepter un certificat qui ne correspond
       pas au nom via tunnel, signalée par `grasp security`.
 - [ ] **Authentification HTTP basic** (préprod protégée) : identifiants fournis à la session, jamais

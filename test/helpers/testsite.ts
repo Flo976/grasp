@@ -655,6 +655,9 @@ export async function startTestSite(): Promise<TestSite> {
     res.setHeader('content-type', 'text/html; charset=utf-8');
     if (u.pathname === '/submit') { res.end(resultPage(u.searchParams)); return; }
     if (u.pathname === '/redirect-out') { res.statusCode = 302; res.setHeader('location', 'http://example.com/'); res.end(); return; }
+    // Protection SSRF : redirection vers une cible arbitraire, et page cible repérable dans `hits`.
+    if (u.pathname === '/redirect-to') { res.statusCode = 302; res.setHeader('location', u.searchParams.get('u') ?? '/'); res.end(); return; }
+    if (u.pathname === '/cible-ssrf') { res.end('<!doctype html><title>Cible SSRF</title><p>service interne</p>'); return; }
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
     if (u.pathname === '/console') { res.end(CONSOLE_PAGE); return; }

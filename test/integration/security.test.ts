@@ -104,6 +104,40 @@ test('régression #3 — sans serveur, `security` échoue au lieu d\'afficher le
   } finally { t.cleanup(); }
 });
 
+test('protection SSRF (bout en bout) — un nom admis par joker qui mène à la boucle locale → 403 ; littéral inscrit et opt-out explicite permis', async () => {
+  const t = makeTestEnv();
+  writeConfig(t.env, { allowedDomains: ['127.0.0.1', '*.localhost'] });
+  const site = await startTestSite();
+  const port = new URL(site.url).port;
+  const cible = () => site.hits.filter((h) => h === '/cible-ssrf').length;
+  try {
+    let srv = await startServer(t.env);
+    try {
+      const rep = (await srv.api('GET', '/security/effective')).json();
+      assert.equal(rep.policy.allowPrivateNetwork, false, 'protection active par défaut');
+      assert.match((await runCli(t.env, ['security'])).stdout, /ssrf\s*: bloqué/);
+      await srv.api('POST', '/sessions', {});
+      assert.equal((await srv.api('POST', '/navigate', { url: `${site.url}/` })).status, 200, 'le littéral inscrit reste permis');
+      // app.localhost : Chrome le résout lui-même en 127.0.0.1 (le même service), mais il n'est admis que par un joker.
+      const r = await srv.api('POST', '/navigate', { url: `http://app.localhost:${port}/cible-ssrf` });
+      assert.equal(r.status, 403, r.text());
+      assert.match(r.text(), /boucle locale/);
+      assert.equal(cible(), 0, 'le service local ne doit pas avoir été contacté');
+      assert.equal((await srv.api('GET', '/location')).json().url, `${site.url}/`);
+    } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); }
+    try {
+      const set = await runCli(t.env, ['config', 'set', 'allowPrivateNetwork', 'true']);
+      assert.equal(set.code, 0, set.stderr);
+      srv = await startServer(t.env);
+      assert.match((await runCli(t.env, ['security'])).stdout, /ssrf\s*: AUTORISÉ/);
+      await srv.api('POST', '/sessions', {});
+      const r = await srv.api('POST', '/navigate', { url: `http://app.localhost:${port}/cible-ssrf` });
+      assert.equal(r.status, 200, r.text());
+      assert.equal(r.json().title, 'Cible SSRF', 'le nom menait bien au service local : le 403 précédent était un vrai blocage');
+    } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); }
+  } finally { await site.close(); t.cleanup(); }
+});
+
 const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   chromePath: { raw: '/usr/bin/true', value: '/usr/bin/true' },
   headless: { raw: 'false', value: false },
@@ -113,6 +147,7 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   allowUpload: { raw: 'true', value: true },
   allowCookies: { raw: 'true', value: true },
   allowConsole: { raw: 'false', value: false },
+  allowPrivateNetwork: { raw: 'true', value: true },
   transport: { raw: 'tcp', value: 'tcp' },
   port: { raw: '7444', value: 7444 },
   cdpUrl: { raw: 'http://127.0.0.1:9222', value: 'http://127.0.0.1:9222' },
