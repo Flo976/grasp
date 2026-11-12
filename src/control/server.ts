@@ -149,6 +149,7 @@ const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill'
 // Historique de l'onglet et défilement (back, forward, reload, scroll).
 for (const r of ['/back', '/forward', '/reload', '/scroll']) SESSION_ROUTES.add(r);
 SESSION_ROUTES.add('/viewport');
+SESSION_ROUTES.add('/network');
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */

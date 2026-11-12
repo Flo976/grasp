@@ -104,6 +104,7 @@ const EXPECT_SUMMARY: Record<ExpectKind, string> = {
   'value': 'valeur du champ égale (~ : contient)',
   'no-console-errors': 'aucune erreur console depuis le début du document',
   'no-form-errors': 'aucun champ invalide ni alerte',
+  'request': 'requête réseau vue (« MÉTHODE chemin|url » [statut], 2xx par défaut ; exige allowConsole)',
 };
 
 export const COMMANDS: readonly CommandSpec[] = [

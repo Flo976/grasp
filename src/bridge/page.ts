@@ -7,6 +7,7 @@ import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/e
 import { DIALOGS_REPORTED_MAX, decideDialog, dialogLines, parseDialogOption, type DialogPolicy, type DialogSeen } from '../core/dialog.js';
 import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, urlBase, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
+import { DEFAULT_REQUEST_STATUS, NetworkLog, formatNet, parseRequestTarget, parseStatus, requestMatches, type NetEntry, type NetQuery, type NetResult } from '../core/network.js';
 import { saveCapture } from '../core/captures.js';
 import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot, type SnapMode, type FindSpec } from './snapshot.js';
@@ -35,6 +36,8 @@ export interface ActionOptions {
   engine?: string | undefined;
   /** Réponse aux dialogues ouverts pendant l'action : accept, dismiss, ou texte d'un prompt (défaut : sûr, voir dialog.ts). */
   dialog?: string | undefined;
+  /** Renvoie les requêtes réseau parties pendant l'action (journal réseau, exige allowConsole). */
+  network?: boolean | undefined;
 }
 
 /** Moteur Playwright du bridge (voir playwright.ts). */
@@ -54,8 +57,13 @@ export interface EngineConfig {
  * (200 au plus sont jointes), `dropped` = entrées tombées du tampon circulaire. Jamais de perte silencieuse.
  */
 export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number; since: number; omitted: number; dropped: number }
+/**
+ * Journal réseau d'une action (--network) : requêtes parties depuis `since` (celles encore en vol : « en cours »),
+ * 100 au plus (les plus récentes) ; `omitted` et `dropped` comme pour la console.
+ */
+export interface NetworkSlice { entries: NetEntry[]; seq: number; since: number; omitted: number; dropped: number }
 /** `trackersBlocked` : requêtes vers des traqueurs annulées pendant l'action (absent si aucune). */
-export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number; dialogs?: DialogSeen[]; dialogsOmitted?: number }
+export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; network?: NetworkSlice; trackersBlocked?: number; dialogs?: DialogSeen[]; dialogsOmitted?: number }
 export interface Blocked { url: string; reason: string; at: number }
 
 export interface ShotOptions {
@@ -157,6 +165,8 @@ const FORMATS = new Set(['png', 'jpeg', 'webp']);
 const MAX_CAPTURE_PX = 16_384;
 /** Entrées console renvoyées au plus avec une action (--console). */
 const ACTION_CONSOLE_LIMIT = 200;
+/** Requêtes renvoyées au plus avec une action (--network) : une page qui se charge en lance des centaines. */
+const ACTION_NETWORK_LIMIT = 100;
 const OVERLAY_COLOR = 'rgb(255, 0, 170)';
 /** wait --text / --sel : délai par défaut et maximum (le client HTTP abandonne à 120 s). */
 const WAIT_DEFAULT_MS = 10_000;
@@ -679,8 +689,18 @@ export class PageController {
   private capturesDir: string | undefined;
   /** Console de l'onglet : survit aux navigations (repère « navigation → url »). */
   private readonly consoleBuf = new ConsoleBuffer();
-  /** requestId → méthode et URL, le temps de la requête (jamais d'en-têtes ni de corps). */
-  private readonly requests = new Map<string, { method: string; url: string }>();
+  /**
+   * Journal réseau de l'onglet, nourri par les événements Network que la console écoute déjà (allowConsole) ; il
+   * garde aussi méthode et URL brutes des requêtes en vol pour les messages de la console. Jamais d'en-têtes ni de corps.
+   */
+  private readonly netLog = new NetworkLog();
+  /** seq réseau juste avant la requête du document courant du cadre principal (expect request). */
+  private docNetSeq = 0;
+  /**
+   * seq réseau au début de la dernière action (nav, clic, saisie, eval…) : un « Enregistrer » qui poste puis change
+   * de page (fetch puis location, formulaire POST en PRG) a sa requête AVANT le document courant (expect request).
+   */
+  private actNetSeq: number | undefined;
   /** Requêtes réseau annulées par le garde : déjà signalées comme « bloqué par Grasp ». */
   private readonly blockedNet = new Set<string>();
   /** Liste de traqueurs (blockTrackers=true), sinon undefined : aucun motif Fetch au-delà des documents. */
@@ -1114,23 +1134,30 @@ export class PageController {
       case 'Network.requestWillBeSent': {
         // Début d'un document du cadre principal : point de départ de `expect no-console-errors` (sa propre
         // réponse 4xx/5xx arrive avant le repère de navigation).
-        if (e.sessionId === this.sessionId && p.type === 'Document' && p.frameId === this.mainFrameId) this.docSeq = this.consoleBuf.seq;
-        if (this.requests.size > 2000) this.requests.delete(this.requests.keys().next().value as string);
-        this.requests.set(p.requestId, { method: String(p.request?.method ?? 'GET'), url: String(p.request?.url ?? '') });
+        const mainDoc = e.sessionId === this.sessionId && p.type === 'Document' && p.frameId === this.mainFrameId;
+        if (mainDoc) { this.docSeq = this.consoleBuf.seq; this.docNetSeq = this.netLog.seq; }
+        const rr = p.redirectResponse;
+        this.netLog.start(String(p.requestId), {
+          method: String(p.request?.method ?? 'GET'), url: String(p.request?.url ?? ''), type: String(p.type ?? 'Other'), ts: p.timestamp, wallTime: p.wallTime,
+          frame: !(e.sessionId === this.sessionId && (p.frameId === undefined || p.frameId === this.mainFrameId)),
+          redirect: rr !== undefined && rr !== null ? { status: Number(rr.status), statusText: typeof rr.statusText === 'string' ? rr.statusText : undefined } : undefined,
+        });
         return;
       }
       case 'Network.responseReceived': {
         const st = Number(p.response?.status);
+        this.netLog.response(String(p.requestId), st, typeof p.response?.statusText === 'string' ? p.response.statusText : undefined, p.response?.fromDiskCache === true || p.response?.fromPrefetchCache === true);
         if (!(st >= 400)) return;
-        const req = this.requests.get(p.requestId);
+        const req = this.netLog.request(p.requestId);
         const url = String(p.response?.url ?? req?.url ?? '');
         this.log({ level: 'error', source: 'network', text: `${req?.method ?? 'GET'} ${redactUrl(url)} → ${st}${p.response?.statusText ? ` ${p.response.statusText}` : ''}${this.offList(url)}` });
         return;
       }
-      case 'Network.loadingFinished': this.requests.delete(p.requestId); return;
+      case 'Network.requestServedFromCache': this.netLog.cached(String(p.requestId)); return;
+      case 'Network.loadingFinished': this.netLog.finish(String(p.requestId), p.timestamp); return;
       case 'Network.loadingFailed': {
-        const req = this.requests.get(p.requestId);
-        this.requests.delete(p.requestId);
+        const req = this.netLog.request(p.requestId);
+        this.netLog.fail(String(p.requestId), p.timestamp, typeof p.errorText === 'string' ? p.errorText : undefined, { canceled: p.canceled === true && p.blockedReason === undefined, blocked: this.blockedNet.has(p.requestId) });
         if (this.blockedNet.delete(p.requestId)) return;
         // Annulations (navigation qui part, AbortController) : du bruit, pas une erreur.
         if (p.canceled === true && p.blockedReason === undefined) return;
@@ -1143,7 +1170,10 @@ export class PageController {
         const f = p.frame ?? {};
         // URL de cadre masquée dès le stockage : elle sort telle quelle dans le champ `frame` des entrées.
         if (typeof f.id === 'string') this.frames.set(f.id, redactUrl(String(f.url ?? ''), 300));
-        if (e.sessionId === this.sessionId && f.parentId === undefined) this.log({ level: 'info', source: 'navigation', text: redactUrl(String(f.url ?? ''), 300) });
+        if (e.sessionId === this.sessionId && f.parentId === undefined) {
+          this.log({ level: 'info', source: 'navigation', text: redactUrl(String(f.url ?? ''), 300) });
+          this.netLog.abandonPending(this.docNetSeq);
+        }
         return;
       }
       case 'Page.navigatedWithinDocument':
@@ -1164,14 +1194,33 @@ export class PageController {
     if (!this.policy.allowConsole) throw forbidden('la console est désactivée (grasp config set allowConsole true pour l\'autoriser)');
   }
 
+  /** Lecture du journal réseau (403 si la politique l'interdit : sans console, aucun domaine Network). */
+  networkQuery(q: NetQuery): NetResult {
+    this.assertNetwork();
+    return this.netLog.query(q);
+  }
+
+  /**
+   * Le journal réseau repose sur le domaine CDP Network, activé avec la console seulement : allowConsole=false →
+   * 403 explicite, jamais un journal vide qui ferait croire qu'aucune requête n'est partie.
+   */
+  private assertNetwork(): void {
+    if (!this.policy.allowConsole) throw forbidden('journal réseau indisponible : allowConsole=false, le domaine CDP Network n\'est pas activé (grasp config set allowConsole true pour l\'autoriser)');
+  }
+
+  private networkSince(seq: number): NetworkSlice {
+    const r = this.netLog.query({ since: seq, limit: ACTION_NETWORK_LIMIT });
+    return { entries: r.entries, seq: r.seq, since: seq, omitted: r.omitted, dropped: r.dropped };
+  }
+
   private consoleSince(seq: number): ConsoleSlice {
     const r = this.consoleBuf.query({ since: seq, limit: ACTION_CONSOLE_LIMIT });
     return { entries: r.entries, seq: r.seq, since: seq, omitted: r.omitted, dropped: r.dropped };
   }
 
   /** Enrichit l'erreur d'une action : chemin d'une capture (--shot-on-error), entrées console (--console). */
-  private async decorate(e: unknown, opts: ActionOptions, seq: number): Promise<unknown> {
-    if (opts.shotOnError !== true && opts.console !== true) return e;
+  private async decorate(e: unknown, opts: ActionOptions, seq: number, netSeq = 0): Promise<unknown> {
+    if (opts.shotOnError !== true && opts.console !== true && opts.network !== true) return e;
     const base = e instanceof GraspError ? e : new GraspError(500, e instanceof Error ? e.message : String(e));
     let msg = base.message;
     const extra: Record<string, unknown> = { ...(base.extra !== undefined ? base.extra : {}) };
@@ -1190,6 +1239,7 @@ export class PageController {
       extra.consoleOmitted = c.omitted;
       extra.consoleDropped = c.dropped;
     }
+    if (opts.network === true && this.policy.allowConsole) extra.network = this.networkSince(netSeq);
     return new GraspError(base.status, msg, extra);
   }
 
@@ -1487,7 +1537,10 @@ export class PageController {
   async nav(url: string, opts: ActionOptions = {}): Promise<ActionResult & { url: string; title: string }> {
     if (opts.console === true) this.assertConsole();
     const policy = parseDialogOption(opts.dialog);
+    if (opts.network === true) this.assertNetwork();
     const seq = this.consoleBuf.seq;
+    const netSeq = this.netLog.seq;
+    this.actNetSeq = netSeq;
     const trk0 = this.trackersBlocked;
     this.beginDialogs(policy);
     try {
@@ -1509,8 +1562,9 @@ export class PageController {
         if (out.diff !== undefined) out.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${out.diff}`;
       }
       if (opts.console === true) out.console = this.consoleSince(seq);
+      if (opts.network === true) out.network = this.networkSince(netSeq);
       return out;
-    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq)); } finally { this.endDialogs(); }
+    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq, netSeq)); } finally { this.endDialogs(); }
   }
 
   /** Navigue, attend le load PUIS la stabilité du DOM (rendu côté client), et lit titre et URL après. */
@@ -2319,8 +2373,38 @@ export class PageController {
         const v = own !== undefined && raw !== '' ? `secret:${own}` : this.secretRedactor.redact(raw);
         return { ok: matchValue(v, spec), observed: short(v) };
       }
+      case 'request': return this.observeRequest(spec);
       default: throw badRequest(`assertion ${spec.kind} non relue`);
     }
+  }
+
+  /**
+   * expect request : une requête terminée du journal, depuis `since` (défaut : le plus ancien du début du document
+   * courant, sa propre requête comprise, et du début de la dernière action — un « Enregistrer » qui poste puis
+   * change de page reste vu), de méthode et d'URL correspondantes, avec un statut attendu (2xx par défaut).
+   * Constaté borné : les 5 dernières requêtes correspondantes (statut, en cours), sinon les 5 dernières xhr/fetch,
+   * et la dernière correspondante d'avant la fenêtre s'il y en a une (avec le --since qui la reprend).
+   */
+  private observeRequest(spec: ExpectSpec): { ok: boolean; observed: string } {
+    this.assertNetwork();
+    const pat = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
+    const want = spec.status ?? DEFAULT_REQUEST_STATUS;
+    const okStatus = parseStatus(want);
+    let since = spec.since ?? Math.min(this.docNetSeq, this.actNetSeq ?? this.docNetSeq);
+    let note = '';
+    if (since > this.netLog.seq) { note = ` (journal recréé : seq ${since} > seq courant ${this.netLog.seq}, relu depuis le début)`; since = 0; }
+    const r = this.netLog.query({ since });
+    const same = r.entries.filter((e) => requestMatches(e, pat, spec.match ?? 'exact'));
+    if (same.some((e) => e.pending !== true && e.status !== undefined && e.error === undefined && okStatus(e.status))) return { ok: true, observed: '' };
+    const lost = r.dropped > 0 ? ` ; ${r.dropped} requête(s) perdue(s) par le journal (1000 au plus)` : '';
+    const show = (es: NetEntry[]) => `${es.slice(-5).map(formatNet).join(' | ')}${es.length > 5 ? ` | … et ${es.length - 5} autre(s) plus ancienne(s)` : ''}`;
+    if (same.length > 0) return { ok: false, observed: `${same.length} requête(s) correspondante(s) depuis #${since}, aucune terminée de statut ${want} : ${show(same)}${lost}${note}` };
+    const api = r.entries.filter((e) => e.type === 'xhr' || e.type === 'fetch');
+    const others = api.length > 0 ? `dernières xhr/fetch : ${show(api)}` : `aucune requête xhr/fetch (${r.entries.length} requête(s) d'autres types)`;
+    // Requête correspondante juste avant la fenêtre (action antérieure, --since trop récent) : dite, avec la reprise.
+    const prev = since > 0 ? this.netLog.query({}).entries.filter((e) => e.seq <= since && requestMatches(e, pat, spec.match ?? 'exact')).at(-1) : undefined;
+    const hint = prev !== undefined ? ` ; requête correspondante plus ancienne, hors de la fenêtre : ${formatNet(prev)} — relancez avec --since ${prev.seq - 1}` : '';
+    return { ok: false, observed: `aucune requête correspondante depuis #${since} ; ${others}${hint}${lost}${note}` };
   }
 
   /** Erreurs de formulaire de la page : lignes des champs invalides du snapshot, puis alertes hors arbre. */
@@ -2520,7 +2604,10 @@ export class PageController {
   private async act(opts: ActionOptions, fn: (snap: Snapshot | undefined) => Promise<string | void>, post?: (res: ActionResult) => Promise<string | undefined>): Promise<ActionResult> {
     if (opts.console === true) this.assertConsole();
     const policy = parseDialogOption(opts.dialog);
+    if (opts.network === true) this.assertNetwork();
     const seq = this.consoleBuf.seq;
+    const netSeq = this.netLog.seq;
+    this.actNetSeq = netSeq;
     const t0 = Date.now();
     const nav0 = this.navCount;
     const loads0 = this.loadStarts;
@@ -2571,8 +2658,9 @@ export class PageController {
         if (res.diff !== undefined) res.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${res.diff}`;
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
+      if (opts.network === true) res.network = this.networkSince(netSeq);
       return res;
-    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq)); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; this.endDialogs(); }
+    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq, netSeq)); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; this.endDialogs(); }
   }
 
   /** Début d'action : la politique --dialog s'applique jusqu'à endDialogs (fin de l'action, stabilité comprise). */
@@ -3363,6 +3451,7 @@ export class PageController {
   /** eval avec le type du résultat : `undefined` (el.click(), form.submit()) n'a pas de valeur JSON. */
   async evaluateTyped(expression: string): Promise<{ value?: unknown; type: string }> {
     if (!this.policy.allowEval) throw forbidden('eval est désactivé (grasp config set allowEval true pour l\'autoriser)');
+    this.actNetSeq = this.netLog.seq;
     const r = await this.s<{ result: { value?: unknown; type: string; subtype?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
     if (r.exceptionDetails) throw badRequest(`exception : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     const type = r.result.subtype === 'null' ? 'null' : r.result.type;

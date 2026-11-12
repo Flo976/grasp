@@ -6,6 +6,7 @@ import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
 import { scrollSpecOf } from './scroll.js';
 import { viewportSpecOf } from '../core/viewport.js';
+import { parseTypes } from '../core/network.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 import { compileFind, FIND_LIMIT_MAX, SNAP_MODES, type FindPattern, type FindSpec, type SnapMode } from './snapshot.js';
 import type { SecretUse } from '../core/secrets.js';
@@ -74,7 +75,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog'), network: optBool(body, 'network') };
       const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
@@ -122,6 +123,11 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           return sendJson(res, 200, await page.consoleQuery({ level: level(q.get('level')), since: optCount(q.get('since'), 'since'), limit: optInt(q.get('limit'), 'limit'), clear: optFlag(q.get('clear'), 'clear') }));
         case 'POST /console':
           return sendJson(res, 200, await page.consoleQuery({ level: level(body.level), since: optCount(body.since, 'since'), limit: optInt(body.limit, 'limit'), clear: optBool(body, 'clear') }));
+        // Journal réseau : méthode, URL masquée, statut, durée, type — jamais d'en-têtes ni de corps.
+        case 'GET /network':
+          return sendJson(res, 200, page.networkQuery({ since: optCount(q.get('since'), 'since'), limit: optCount(q.get('limit'), 'limit'), failed: optFlag(q.get('failed'), 'failed'), types: parseTypes(q.get('type') ?? undefined) }));
+        case 'POST /network':
+          return sendJson(res, 200, page.networkQuery({ since: optCount(body.since, 'since'), limit: optCount(body.limit, 'limit'), failed: optBool(body, 'failed'), types: parseTypes(optStr(body, 'type')) }));
         // Recyclage : routes internes du control plane (absentes de SESSION_ROUTES, jamais atteignables par l'agent).
         case 'GET /internal/session-cookies': return sendJson(res, 200, { cookies: await page.sessionCookies() });
         case 'POST /internal/session-cookies': {

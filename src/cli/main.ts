@@ -17,10 +17,11 @@ import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { BOUNDARY_RULE, type BoundaryTag } from '../core/boundaries.js';
+import { formatNet, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
 import { formatReport, type RunResult } from '../control/run.js';
 import { checkRunOut, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
-import { parseArgs, buildRequest, consoleBody, findQuery, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
+import { parseArgs, buildRequest, consoleBody, findQuery, networkBody, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
 import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
 
 /**
@@ -87,7 +88,7 @@ class Client {
 
 /** Rend le résultat d'une action mutante : OK (ou le diff si --snap-diff), puis la console si --console. */
 function renderAction(r: HttpResult, a: Args): void {
-  const j = r.json() as { diff?: string; detail?: string; console?: ActionConsole; trackersBlocked?: number };
+  const j = r.json() as { diff?: string; detail?: string; console?: ActionConsole; network?: ActionNetwork; trackersBlocked?: number };
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   if (j.detail) hint(`note: ${j.detail}`);
   if (typeof j.trackersBlocked === 'number' && j.trackersBlocked > 0) hint(`traqueurs bloqués : ${j.trackersBlocked} requête(s) (grasp console pour le détail)`);
@@ -97,6 +98,22 @@ function renderAction(r: HttpResult, a: Args): void {
     consoleLosses(j.console);
     hint(`console : ${j.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${j.console.seq}`);
   }
+  if (j.network !== undefined) {
+    if (j.network.entries.length > 0) out(j.network.entries.map(formatNet).join('\n'));
+    for (const w of networkLosses(j.network, true)) hint(w);
+    hint(`réseau : ${j.network.entries.length === 0 ? 'aucune requête, ' : ''}seq réseau courant ${j.network.seq}`);
+  }
+}
+
+interface ActionNetwork { entries: NetEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+
+/** grasp network : requêtes de l'onglet (méthode, URL masquée, statut, durée, type), 50 dernières par défaut. */
+async function networkCmd(c: Client, a: Args): Promise<void> {
+  const r = (await c.call('POST', '/network', networkBody(a))).json() as NetResult;
+  if (a.flags.has('json')) { out(JSON.stringify(r)); return; }
+  for (const w of networkLosses({ omitted: r.omitted, dropped: r.dropped }, false)) hint(w);
+  if (r.entries.length > 0) out(r.entries.map(formatNet).join('\n'));
+  hint(`seq réseau courant : ${r.seq} — suite : grasp network --since ${r.seq}`);
 }
 
 interface ActionConsole { entries: ConsoleEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number }
@@ -432,6 +449,7 @@ function renderSecurity(rep: any): string {
     `upload     : ${onoff(p.allowUpload)}`,
     `cookies    : ${onoff(p.allowCookies)}`,
     `console    : ${p.allowConsole ? 'AUTORISÉ (lecture seule ; Runtime.enable actif)' : 'désactivé'}`,
+    `réseau     : ${p.allowConsole ? 'journal lisible (méthode, URL masquée, statut, durée ; jamais d\'en-têtes ni de corps)' : 'désactivé (domaine Network inactif, suit allowConsole)'}`,
     `proxy      : ${p.proxyServer ? `${p.proxyServer}${bypass.length > 0 ? ` (contournement : ${bypass.join(', ')})` : ''}` : 'aucun (connexion directe)'}`,
     `résolution : ${rules.length > 0 ? `${rules.join(' ; ')} (allowlist appliquée au nom demandé)` : 'système'}`,
     `certificats: ${certs.length > 0 ? `NON VÉRIFIÉS pour ${certs.join(', ')} (ignoreCertErrorsFor) ; vérifiés ailleurs` : 'vérifiés'}`,
@@ -612,6 +630,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'console': await consoleCmd(c, a); return 0;
+    case 'network': await networkCmd(c, a); return 0;
     case 'pdf': await binary(c, a, '/pdf', 'pdf'); return 0;
     case 'eval': {
       const [expression] = need(a, 1, 'eval <expression>');
@@ -773,6 +792,8 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
              expect value <sél> [~] <valeur> [--regex]                valeur du champ
              expect no-console-errors [--ignore <regex>] [--since <seq>]   depuis le début du document courant
              expect no-form-errors                                    champs invalides, alertes
+             expect request [~] "POST /api/commande" [2xx|201|4xx,5xx] [--regex] [--since <seq>]
+               requête terminée avec ce statut (2xx par défaut) depuis le début du document courant
                relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console et formulaire : immédiat) ;
                échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
@@ -785,6 +806,9 @@ Viewport     ${VIEWPORT_USAGE}
                --touch : écran tactile (maxTouchPoints, pointer: coarse) ; --mobile-ua : user agent Android (opt-in) ;
                sans argument : réglage et mesures lues dans la page ; reset : retour au viewport du navigateur ;
                conservé à la bascule de profil et au recyclage ; aussi sur une ligne de run
+Réseau       network [--since <seq>] [--failed] [--max N (50)] [--type xhr,fetch,…] [--json]
+               « #seq MÉTHODE url → statut · durée · type » (URL masquée, 150 car.) ; en vol : « → en cours » ;
+               --failed : ≥ 400, net::ERR, bloquées ; jamais d'en-têtes ni de corps ; exige allowConsole (sinon 403)
 Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
@@ -811,6 +835,7 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                           le formulaire a des champs invalides : « formulaire invalide : … »
              --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
                           lignes écartées signalées sur stderr avec la commande pour les relire
+             --network    requêtes parties pendant l'action (méthode, URL, statut, durée, type) ; 100 au plus
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
              --dialog accept|dismiss|"texte"  réponse aux dialogues JS (confirm, prompt, beforeunload) ouverts
                           pendant CETTE action ; "texte" : prompt accepté avec ce texte (text:accept pour le mot
@@ -826,8 +851,8 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
 Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
                une commande par ligne, même syntaxe que la CLI (nav back forward reload scroll snap text click fill
-               select check press hover type wait expect eval console screenshot cookies storage upload profile
-               viewport), commentaires #,
+               select check press hover type wait expect eval console network screenshot cookies storage upload
+               profile                viewport), commentaires #,
                guillemets à la shell ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
@@ -881,5 +906,11 @@ main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve' && 
   const entries = e instanceof CliError ? e.extra?.console : undefined;
   if (Array.isArray(entries) && entries.length > 0) process.stderr.write(`${formatEntries(entries as ConsoleEntry[], e instanceof CliError ? e.extra?.boundary as BoundaryTag | undefined : undefined)}\n`);
   if (e instanceof CliError && e.extra !== undefined) consoleLosses({ since: e.extra.consoleSince, omitted: e.extra.consoleOmitted, dropped: e.extra.consoleDropped });
+  // --network sur une action en échec : les requêtes parties pendant l'action suivent l'erreur.
+  const net = e instanceof CliError ? e.extra?.network as ActionNetwork | undefined : undefined;
+  if (net !== undefined && Array.isArray(net.entries)) {
+    if (net.entries.length > 0) process.stderr.write(`${net.entries.map(formatNet).join('\n')}\n`);
+    for (const w of networkLosses(net, true)) process.stderr.write(`${w}\n`);
+  }
   process.exit(1);
 });

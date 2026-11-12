@@ -1,18 +1,19 @@
 import { badRequest } from './errors.js';
+import { DEFAULT_REQUEST_STATUS, parseRequestTarget, parseStatus } from './network.js';
 
 /**
  * Assertions de recette (`expect`) : forme d'une assertion, comparaison et messages. Partagé par la syntaxe
  * des scripts (core/script.ts), le bridge qui observe la page, et le rapport de `grasp run`.
  */
 
-export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors'] as const;
+export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'request'] as const;
 export type ExpectKind = typeof EXPECT_KINDS[number];
 /** exact : égalité ; contains : contient (`~`) ; regex : expression régulière JavaScript (`--regex`). */
 export type ExpectMatch = 'exact' | 'contains' | 'regex';
 
 export interface ExpectSpec {
   kind: ExpectKind;
-  /** Sélecteur (sel, no-sel, value). */
+  /** Sélecteur (sel, no-sel, value) ; request : « [MÉTHODE ]chemin|url ». */
   target?: string;
   /** Valeur attendue (text, no-text, url, title, value) ou motif (--regex). */
   expected?: string;
@@ -25,14 +26,16 @@ export interface ExpectSpec {
   since?: number;
   /** no-console-errors : expression régulière des entrées à ignorer (texte ou URL). */
   ignore?: string;
+  /** request : statut attendu (« 2xx » par défaut, « 201 », « 2xx,304 »). */
+  status?: string;
 }
 
 /** Réessai par défaut : la page vient souvent de réagir à l'action précédente (XHR, route, rendu). */
 export const EXPECT_DEFAULT_MS = 5000;
 export const EXPECT_MAX_MS = 60_000;
 
-/** Assertions relues jusqu'au délai ; console et formulaire : constat immédiat. */
-export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value']);
+/** Assertions relues jusqu'au délai ; console et formulaire : constat immédiat. request : la réponse peut être en route. */
+export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'request']);
 
 export function isExpectKind(k: string): k is ExpectKind { return (EXPECT_KINDS as readonly string[]).includes(k); }
 
@@ -98,6 +101,11 @@ export function describeExpected(spec: ExpectSpec): string {
     case 'value': return `valeur de ${spec.target ?? ''} ${wanted(spec)}`;
     case 'no-console-errors': return `aucune erreur console${spec.ignore !== undefined ? ` (hors /${spec.ignore}/)` : ''}`;
     case 'no-form-errors': return 'aucune erreur de formulaire';
+    case 'request': {
+      const p = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
+      const how = spec.match === 'regex' ? `d'URL correspondant à /${p.url}/` : spec.match === 'contains' ? `d'URL contenant ${q(p.url)}` : q(p.url);
+      return `requête ${p.method !== undefined ? `${p.method} ` : ''}${how} de statut ${spec.status ?? DEFAULT_REQUEST_STATUS}`;
+    }
   }
 }
 
@@ -117,6 +125,7 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
   const match = s('match');
   const scope = s('scope');
   const ignore = s('ignore');
+  const status = s('status');
   if (target !== undefined) { if (target.trim() === '') throw badRequest('expect : sélecteur vide'); spec.target = target.trim(); }
   if (expected !== undefined) spec.expected = expected;
   if (match !== undefined) {
@@ -125,6 +134,11 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
   }
   if (scope !== undefined && scope.trim() !== '') spec.scope = scope.trim();
   if (ignore !== undefined) { compileRegex(ignore); spec.ignore = ignore; }
+  if (status !== undefined) {
+    if (kind !== 'request') throw badRequest(`« status » ne s'applique qu'à expect request`);
+    parseStatus(status);
+    spec.status = status.trim();
+  }
   for (const k of ['timeout', 'since'] as const) {
     const v = body[k];
     if (v === undefined || v === null || v === '') continue;
@@ -133,10 +147,15 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
     if (k === 'timeout' && n > EXPECT_MAX_MS) throw badRequest(`timeout : ${EXPECT_MAX_MS} ms au plus`);
     spec[k] = n;
   }
-  const needs = { target: ['sel', 'no-sel', 'value'], expected: ['text', 'no-text', 'url', 'title', 'value'] } as const;
-  if ((needs.target as readonly string[]).includes(kind) && spec.target === undefined) throw badRequest(`expect ${kind} : sélecteur requis`);
+  const needs = { target: ['sel', 'no-sel', 'value', 'request'], expected: ['text', 'no-text', 'url', 'title', 'value'] } as const;
+  if ((needs.target as readonly string[]).includes(kind) && spec.target === undefined) throw badRequest(kind === 'request' ? 'expect request : requête attendue (ex. "POST /api/commande")' : `expect ${kind} : sélecteur requis`);
   if ((needs.expected as readonly string[]).includes(kind) && spec.expected === undefined) throw badRequest(`expect ${kind} : valeur attendue requise`);
   if ((kind === 'text' || kind === 'no-text') && spec.match !== 'regex' && normSpace(spec.expected ?? '') === '') throw badRequest(`expect ${kind} : texte non vide attendu`);
+  if (kind === 'request') {
+    const p = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
+    if (spec.match === 'regex') compileRegex(p.url);
+    return spec;
+  }
   if (spec.match === 'regex') compileRegex(spec.expected ?? '');
   return spec;
 }

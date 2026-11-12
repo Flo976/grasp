@@ -768,6 +768,15 @@ $('f').addEventListener('submit', async (ev) => {
 });
 </script></body></html>`;
 
+/** expect request : « Enregistrer » qui change de page — fetch POST puis navigation, formulaire POST en PRG (302 → GET) ;
+ * requête lente partie après la fin de l'action (réponse attendue pendant le --timeout). */
+export const ENREGISTRER_NAV_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Enregistrer puis lister</title></head><body>
+<button id="fetch-nav" onclick="fetch('/api/commande?qte=2', { method: 'POST' }).then(() => { location.href = '/boutique'; })">Enregistrer et lister</button>
+<button id="differe" onclick="setTimeout(() => fetch('/api/lent?ms=1500', { method: 'POST' }), 800)">Enregistrer plus tard</button>
+<form method="post" action="/redirect-to?u=/boutique"><input name="nom" value="Jean"><button id="prg">Envoyer</button></form>
+</body></html>`;
+
 /** text --markdown : page riche (titres, emphase, code, liens, images, listes imbriquées, citation, tableau) et contenus cachés. */
 export const MARKDOWN_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Markdown</title>
@@ -948,6 +957,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/challenge-ok') { res.end(CHALLENGE_OK_PAGE); return; }
     if (u.pathname.startsWith('/spa-recherche')) { res.end(SPA_RECHERCHE_PAGE); return; }
     if (u.pathname === '/enregistrer') { res.end(ENREGISTRER_PAGE); return; }
+    if (u.pathname === '/enregistrer-nav') { res.end(ENREGISTRER_NAV_PAGE); return; }
     if (u.pathname === '/editeur-riche') { res.end(EDITEUR_RICHE_PAGE); return; }
     if (u.pathname === '/arriere-plan') { res.end(ARRIERE_PLAN_PAGE); return; }
     if (u.pathname === '/long') { res.end(LONG_PAGE); return; }
