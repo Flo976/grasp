@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
-import { resolve as resolvePath } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePaths, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
@@ -12,7 +12,7 @@ import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
 import { killWindowsChrome } from '../browser/windows.js';
-import { writePrivateFile } from '../core/perms.js';
+import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import type { RunResult } from '../control/run.js';
 import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
@@ -202,6 +202,56 @@ async function runCmd(c: Client, a: Args): Promise<number> {
     if (notRun > 0) hint(`${plural(notRun, 'commande non exécutée', 'commandes non exécutées')} — --continue pour poursuivre`);
   } else hint(`ERROR: run: ${plural(failed.length, 'étape', 'étapes')} en échec : ${failed.map((f) => f.n).join(', ')}`);
   return 1;
+}
+
+/**
+ * grasp state export [fichier|-] [--origin a,b] / import <fichier|->. Le fichier contient des secrets (cookies de
+ * connexion) : écrit en 0600, atomiquement ; sans fichier, dans l'état de Grasp et seulement son CHEMIN sur stdout.
+ */
+async function stateCmd(c: Client, a: Args, paths: GraspPaths): Promise<void> {
+  const sub = a.pos[0];
+  const json = a.flags.has('json');
+  if (sub === 'export') {
+    const origin = a.flags.get('origin');
+    if (origin === true) throw new CliError('--origin attend une ou plusieurs origines (http://hôte:port, séparées par des virgules)');
+    const r = await c.call('GET', `/state/export${origin !== undefined ? `?${new URLSearchParams({ origin })}` : ''}`);
+    const { state, report } = r.json() as { state: unknown; report: { cookies: number; cookiesExcluded: number; origins: string[]; originsExcluded: string[]; localStorageKeys: number; sessionStorage: string | null; errors: string[] } };
+    const data = Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
+    let file = a.pos[1];
+    if (file === '-') {
+      process.stdout.write(data);
+    } else {
+      if (file === undefined) {
+        const dir = join(paths.stateDir, 'etats');
+        ensurePrivateDir(dir);
+        file = join(dir, `etat-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      }
+      writeOutput(file, data);
+      out(json ? JSON.stringify({ path: resolvePath(file), ...report }) : resolvePath(file));
+    }
+    hint(`état exporté : ${report.cookies} cookie(s), localStorage de ${report.origins.length} origine(s) (${report.localStorageKeys} clé(s))${report.origins.length ? ` : ${report.origins.join(', ')}` : ''}, sessionStorage : ${report.sessionStorage ?? 'aucun'} — fichier sensible (sessions de connexion), 0600`);
+    if (report.cookiesExcluded > 0) hint(`note: ${report.cookiesExcluded} cookie(s) hors allowlist non exporté(s)`);
+    if (report.originsExcluded.length > 0) hint(`note: origine(s) hors allowlist non lue(s) : ${report.originsExcluded.join(', ')}`);
+    for (const e of report.errors) hint(`AVERTISSEMENT : ${e}`);
+    return;
+  }
+  if (sub === 'import') {
+    const file = a.pos[1];
+    if (file === undefined) throw new CliError('usage : grasp state import <fichier|->');
+    let state: unknown;
+    try { state = JSON.parse(file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8')); } catch (e) {
+      throw new CliError(`lecture de ${file === '-' ? 'stdin' : file} : ${(e as Error).message}`);
+    }
+    const r = await c.call('POST', '/state/import', { state });
+    const j = r.json() as { cookies: number; origins: number; localStorageKeys: number; sessionStorage: 'applied' | 'pending' | null; skipped: string[] };
+    out(json ? r.text() : 'OK');
+    if (json) return;
+    const ss = j.sessionStorage === 'applied' ? 'appliqué à l\'onglet' : j.sessionStorage === 'pending' ? 'appliqué au premier document de son origine' : 'aucun';
+    hint(`état importé : ${j.cookies} cookie(s), localStorage de ${j.origins} origine(s) (${j.localStorageKeys} clé(s)), sessionStorage : ${ss}`);
+    for (const s of j.skipped) hint(`AVERTISSEMENT : non importé : ${s}`);
+    return;
+  }
+  throw new CliError('usage : grasp state export [fichier|-] [--origin http://hôte:port,…] | import <fichier|->');
 }
 
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
@@ -457,6 +507,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'cookies': out((await c.call('GET', '/cookies')).text()); return 0;
+    case 'state': await stateCmd(c, a, paths); return 0;
     case 'upload': await action(); return 0;
     case 'security': {
       // Lit la politique telle que le garde la voit (/security/effective), jamais le fichier.
@@ -604,6 +655,11 @@ Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN a
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
                eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
+             state export [fichier|-] [--origin http://hôte:port,…]   cookies + localStorage par origine + sessionStorage
+               de l'onglet, JSON versionné (grasp-state v1, lu aussi : storageState Playwright) ; fichier 0600 écrit
+               atomiquement ; sans fichier : dans l'état de Grasp, CHEMIN sur stdout ; exige allowCookies ;
+               rien hors allowlist
+             state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine
 Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 

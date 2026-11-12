@@ -665,15 +665,50 @@ fetch('/api/data').then(() => { document.getElementById('etat').textContent = 'C
 </script>
 </body></html>`;
 
+/** Connexion : formulaire GET vers /connecte (cookie de session HttpOnly côté serveur). */
+export const CONNEXION_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Connexion</title></head><body>
+<h1>Connexion</h1>
+<form action="/connecte" method="get"><label for="user">Identifiant</label> <input id="user" name="user"> <button type="submit">Se connecter</button></form>
+</body></html>`;
+
+/** Compte : l'état de connexion vient du SERVEUR (cookie sid connu), les préférences du stockage Web. */
+const comptePage = (user: string | undefined) => `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Compte</title></head><body>
+<h1>${user !== undefined ? `Connecté : ${user}` : 'Non connecté'}</h1>
+<p id="theme"></p><p id="brouillon"></p>
+<script>
+document.getElementById('theme').textContent = 'Thème : ' + (localStorage.getItem('theme') ?? 'aucun');
+document.getElementById('brouillon').textContent = 'Brouillon : ' + (sessionStorage.getItem('brouillon') ?? 'aucun');
+</script></body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
 export async function startTestSite(): Promise<TestSite> {
   const hits: string[] = [];
+  /** Sessions de connexion du site : sid → utilisateur. */
+  const logins = new Map<string, string>();
   const server = createServer((req, res) => {
     const u = new URL(req.url ?? '/', 'http://x');
     hits.push(u.pathname);
     res.setHeader('content-type', 'text/html; charset=utf-8');
+    if (u.pathname === '/connexion') { res.end(CONNEXION_PAGE); return; }
+    if (u.pathname === '/connecte') {
+      const user = u.searchParams.get('user') ?? 'anonyme';
+      const sid = `sid-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+      logins.set(sid, user);
+      // sid : HttpOnly, persistant ; pref : cookie de session (sans Max-Age).
+      res.setHeader('set-cookie', [`sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600`, 'pref=fr; Path=/']);
+      res.end(`<!doctype html><title>Connecté</title><h1>Bienvenue ${user}</h1><a href="/compte">Mon compte</a>
+<script>localStorage.setItem('theme', 'sombre'); sessionStorage.setItem('brouillon', 'bonjour');</script>`);
+      return;
+    }
+    if (u.pathname === '/compte') {
+      const sid = /(?:^|;\s*)sid=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
+      res.end(comptePage(sid !== undefined ? logins.get(sid) : undefined));
+      return;
+    }
     if (u.pathname === '/submit') { res.end(resultPage(u.searchParams)); return; }
     if (u.pathname === '/redirect-out') { res.statusCode = 302; res.setHeader('location', 'http://example.com/'); res.end(); return; }
     // Protection SSRF : redirection vers une cible arbitraire, et page cible repérable dans `hits`.

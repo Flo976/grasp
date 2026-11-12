@@ -12,6 +12,7 @@ import { parseKey } from './keys.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { TrackerList } from './trackers.js';
+import { STATE_FORMAT, STATE_VERSION, cookieAllowed, cookieOrigin, fromCdpCookie, normalizeOrigin, parseState, toCdpCookieParam, type CdpCookie, type GraspState, type StateItem } from '../core/state.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -62,6 +63,17 @@ export interface ShotOptions {
 }
 export interface Shot { data: Buffer; width: number; height: number; format: ImageFormat; truncated?: boolean }
 export interface SavedShot { path: string; width: number; height: number; bytes: number; format: ImageFormat; truncated?: boolean }
+
+/** Bilan d'un export d'état (sur stderr côté CLI) : rien d'écarté en silence. */
+export interface StateExportReport {
+  cookies: number; cookiesExcluded: number; origins: string[]; originsExcluded: string[];
+  localStorageKeys: number; sessionStorage: string | null; errors: string[];
+}
+/** `sessionStorage` : applied = onglet déjà sur l'origine ; pending = appliqué au premier document de l'origine. */
+export interface StateImportResult {
+  ok: true; cookies: number; origins: number; localStorageKeys: number;
+  sessionStorage: 'applied' | 'pending' | null; skipped: string[];
+}
 
 export interface WaitOptions { text?: string | undefined; sel?: string | undefined; idle?: boolean | undefined; timeout?: number | undefined }
 export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel' | 'idle' }
@@ -588,6 +600,13 @@ const REF_RE = /^e[0-9a-z]{1,4}$/;
 const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'submit', 'button', 'file', 'image', 'reset', 'hidden', 'range', 'color']);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Code FIXE de lecture d'un stockage Web : JSON de [{name, value}] dans l'ordre des clés. */
+const READ_STORAGE_FN = (area: 'localStorage' | 'sessionStorage') =>
+  `(() => { const s = ${area}, out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push({ name: k, value: s.getItem(k) }); } return JSON.stringify(out); })()`;
+/** Code FIXE d'écriture ; les données n'y entrent que sérialisées en JSON. */
+const WRITE_STORAGE_FN = (area: 'localStorage' | 'sessionStorage', items: StateItem[]) =>
+  `((items) => { for (const it of items) ${area}.setItem(it.name, it.value); return ${area}.length; })(${JSON.stringify(items)})`;
+
 /**
  * Contrôle d'un onglet via CDP. Détient le garde de navigation : la même `policy` (gelée) sert
  * au pré-contrôle de /navigate, à l'interception Fetch dans le navigateur, et au rapport.
@@ -676,6 +695,15 @@ export class PageController {
   private readonly certNoted = new Set<string>();
   /** Crochets de test (jamais utilisés en production). */
   testHooks: TestHooks | undefined;
+  /** Origines des documents chargés par cette session : candidates à l'export du localStorage. */
+  private readonly seenOrigins = new Set<string>();
+  /** Onglets d'état (export/import) : session CDP → origine attendue ; leurs documents sont servis vides par Fetch. */
+  private readonly scratch = new Map<string, string>();
+  /** Cibles auto-attachées pendant la création d'un onglet d'état : targetId → session prête (gardée, relancée). */
+  private readonly attaching = new Map<string, Promise<string>>();
+  private scratchWanted = 0;
+  /** sessionStorage importé, en attente du premier document de son origine dans l'onglet. */
+  private pendingSession: { origin: string; identifier: string } | undefined;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -1209,6 +1237,7 @@ export class PageController {
 
   private async onEvent(e: CdpEvent): Promise<void> {
     try {
+      if (e.method === 'Fetch.requestPaused' && e.sessionId !== undefined && this.scratch.has(e.sessionId)) { await this.onScratchPaused(e); return; }
       if (e.method === 'Fetch.authRequired') { await this.onAuthRequired(e); return; }
       if (e.method === 'Security.certificateError') { await this.onCertificateError(e); return; }
       if (e.method === 'Fetch.requestPaused') {
@@ -1267,8 +1296,14 @@ export class PageController {
           await this.cdp.send('Target.detachFromTarget', { sessionId: sid });
           return;
         }
-        if (info.type === 'page' || info.type === 'iframe') await this.guard(sid);
-        if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
+        const ready = (async () => {
+          if (info.type === 'page' || info.type === 'iframe') await this.guard(sid);
+          if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
+          return sid;
+        })();
+        // Onglet d'état en cours de création : il reprend cette session (un seul client Fetch par onglet).
+        if (this.scratchWanted > 0 && info.type === 'page') this.attaching.set(info.targetId, ready);
+        await ready;
         return;
       }
       if (e.sessionId !== this.sessionId) return;
@@ -1294,6 +1329,7 @@ export class PageController {
         // Route d'une application monopage (pushState) : même document, mais le rendu suit, on l'attendra.
         case 'Page.navigatedWithinDocument': if (main) { this.pendingNavAt = 0; this.navCount++; } break;
         case 'Page.frameNavigated':
+          this.noteOrigin(String(e.params.frame?.url ?? ''), e.params.frame?.parentId === undefined);
           if (e.params.frame?.parentId === undefined) {
             this.navCount++; this.docGen++; this.isoCtx = undefined;
             this.topTracker = this.trackers?.matchUrl(String(e.params.frame?.url ?? ''));
@@ -2777,6 +2813,191 @@ export class PageController {
     if (r.exceptionDetails) throw badRequest(`exception : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     const type = r.result.subtype === 'null' ? 'null' : r.result.type;
     return 'value' in r.result ? { value: r.result.value, type } : { type };
+  }
+
+  // ---------- État exportable : cookies + stockage Web (soumis à allowCookies et à l'allowlist) ----------
+
+  private noteOrigin(url: string, main: boolean): void {
+    const o = normalizeOrigin(url);
+    if (o === null) return;
+    this.seenOrigins.add(o);
+    // sessionStorage importé : appliqué par le script au premier document de son origine, puis retiré.
+    const p = this.pendingSession;
+    if (main && p !== undefined && p.origin === o) {
+      this.pendingSession = undefined;
+      void this.s('Page.removeScriptToEvaluateOnNewDocument', { identifier: p.identifier }).catch(() => undefined);
+    }
+  }
+
+  private stateAllowed(): void {
+    if (!this.policy.allowCookies) throw forbidden('l\'export et l\'import de l\'état (cookies, stockage local) sont désactivés : activez la clé allowCookies (grasp config set allowCookies true, puis redémarrez le serveur)');
+  }
+
+  /** Document d'un onglet d'état : servi VIDE par Grasp (aucune requête ne part), seulement pour l'origine visée. */
+  private async onScratchPaused(e: CdpEvent): Promise<void> {
+    const sid = e.sessionId!;
+    const url = String(e.params.request.url);
+    const expected = this.scratch.get(sid);
+    if (e.params.resourceType === 'Document' && expected !== undefined && normalizeOrigin(url) === expected && checkUrl(this.policy.allowedDomains, url).allowed) {
+      const body = Buffer.from('<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><title>grasp-etat</title>').toString('base64');
+      await this.cdp.send('Fetch.fulfillRequest', { requestId: e.params.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }, { name: 'Cache-Control', value: 'no-store' }], body }, sid);
+    } else {
+      await this.cdp.send('Fetch.failRequest', { requestId: e.params.requestId, errorReason: 'BlockedByClient' }, sid);
+    }
+  }
+
+  /**
+   * Onglet d'état, en arrière-plan : chaque origine y est ouverte par une navigation CONTRÔLÉE — Fetch intercepte
+   * toutes les requêtes de l'onglet et sert un document vide pour l'origine visée (hors allowlist : refusé), donc
+   * aucune requête n'atteint le site et aucun script du site ne s'exécute pendant la lecture ou l'écriture.
+   */
+  private async withScratch<T>(fn: (sid: string) => Promise<T>): Promise<T> {
+    this.scratchWanted++;
+    let targetId: string | undefined;
+    let sid: string | undefined;
+    try {
+      ({ targetId } = await this.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true }));
+      if (!this.foreign) {
+        // Auto-attach du navigateur : la session existe déjà (l'événement précède la réponse) ; on l'attend.
+        const end = Date.now() + 2000;
+        while (!this.attaching.has(targetId) && Date.now() < end) await sleep(10);
+        const ready = this.attaching.get(targetId);
+        if (ready !== undefined) sid = await ready;
+      }
+      if (sid === undefined) sid = (await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      this.scratch.set(sid, '');
+      await this.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sid);
+      // Un service worker du site ne doit pas répondre à la place du document vide.
+      await this.cdp.send('Network.enable', {}, sid).then(() => this.cdp.send('Network.setBypassServiceWorker', { bypass: true }, sid)).catch(() => undefined);
+      return await fn(sid);
+    } finally {
+      this.scratchWanted--;
+      if (targetId !== undefined) this.attaching.delete(targetId);
+      if (sid !== undefined) this.scratch.delete(sid);
+      if (targetId !== undefined) await this.cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
+    }
+  }
+
+  /** Ouvre `origin` dans l'onglet d'état (document vide servi par Grasp) et y évalue du code FIXE. */
+  private async inOrigin<T>(sid: string, origin: string, expression: string): Promise<T> {
+    this.scratch.set(sid, origin);
+    const nav = await this.cdp.send<{ errorText?: string }>('Page.navigate', { url: `${origin}/.grasp-etat` }, sid);
+    if (nav.errorText) throw new Error(`ouverture de ${origin} impossible : ${nav.errorText}`);
+    const end = Date.now() + 5000;
+    for (;;) {
+      const r = await this.cdp.send<{ result: { value?: unknown } }>('Runtime.evaluate', { expression: 'location.origin', returnByValue: true }, sid).catch(() => undefined);
+      if (r?.result.value === origin) break;
+      if (Date.now() > end) throw new Error(`ouverture de ${origin} : délai dépassé`);
+      await sleep(20);
+    }
+    const r = await this.cdp.send<{ result: { value?: unknown }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true }, sid);
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+    return r.result.value as T;
+  }
+
+  /**
+   * Exporte les cookies (allowlist) + le localStorage des origines connues (documents vus par la session,
+   * origines des cookies, onglet courant, `extraOrigins`) + le sessionStorage de l'onglet. Rien hors allowlist.
+   */
+  async exportState(extraOrigins: string[] = []): Promise<{ state: GraspState; report: StateExportReport }> {
+    this.stateAllowed();
+    const allowed = this.policy.allowedDomains;
+    const extra: string[] = [];
+    for (const raw of extraOrigins) {
+      const o = normalizeOrigin(raw);
+      if (o === null) throw badRequest(`origine http(s) attendue : ${raw}`);
+      if (!checkUrl(allowed, o).allowed) throw forbidden(`origine hors allowlist : ${o} (allowedDomains)`);
+      extra.push(o);
+    }
+    const { cookies: all } = await this.cdp.send<{ cookies: CdpCookie[] }>('Storage.getCookies', {});
+    const cookies = all.filter((c) => cookieAllowed(allowed, c.domain)).map(fromCdpCookie)
+      .sort((a, b) => a.domain.localeCompare(b.domain) || a.path.localeCompare(b.path) || a.name.localeCompare(b.name));
+    const here = normalizeOrigin((await this.location()).url);
+    const candidates = new Set<string>([...this.seenOrigins, ...(here !== null ? [here] : []), ...extra]);
+    for (const c of cookies) { const o = cookieOrigin(c); if (o !== null) candidates.add(o); }
+    const origins: string[] = [];
+    const originsExcluded: string[] = [];
+    for (const o of [...candidates].sort()) (checkUrl(allowed, o).allowed ? origins : originsExcluded).push(o);
+    const errors: string[] = [];
+    const stored: GraspState['origins'] = [];
+    if (origins.length > 0) {
+      await this.withScratch(async (sid) => {
+        for (const o of origins) {
+          try {
+            const items = JSON.parse(await this.inOrigin<string>(sid, o, READ_STORAGE_FN('localStorage'))) as StateItem[];
+            if (items.length > 0) stored.push({ origin: o, localStorage: items });
+          } catch (e) { errors.push(`localStorage de ${o} : ${(e as Error).message}`); }
+        }
+      });
+    }
+    const state: GraspState = { format: STATE_FORMAT, version: STATE_VERSION, exportedAt: new Date().toISOString(), cookies, origins: stored };
+    if (here !== null && checkUrl(allowed, here).allowed) {
+      try {
+        const items = JSON.parse(await this.evalIsolated<string>(READ_STORAGE_FN('sessionStorage'))) as StateItem[];
+        if (items.length > 0) state.sessionStorage = { origin: here, items };
+      } catch (e) { errors.push(`sessionStorage de ${here} : ${(e as Error).message}`); }
+    }
+    return {
+      state,
+      report: {
+        cookies: cookies.length, cookiesExcluded: all.length - cookies.length, origins: stored.map((o) => o.origin), originsExcluded,
+        localStorageKeys: stored.reduce((n, o) => n + o.localStorage.length, 0), sessionStorage: state.sessionStorage?.origin ?? null, errors,
+      },
+    };
+  }
+
+  /**
+   * Importe un état (format Grasp ou storageState de Playwright) : cookies posés dans le navigateur, localStorage
+   * fusionné origine par origine (clés écrasées, autres clés gardées), sessionStorage appliqué à l'onglet (tout de
+   * suite si son origine est affichée, sinon au premier document de cette origine). Hors allowlist : écarté, signalé.
+   */
+  async importState(raw: unknown): Promise<StateImportResult> {
+    this.stateAllowed();
+    const st = parseState(raw);
+    const allowed = this.policy.allowedDomains;
+    const skipped: string[] = [];
+    const now = Date.now() / 1000;
+    let cookies = 0;
+    for (const c of st.cookies) {
+      const what = `cookie ${c.name} (${c.domain}${c.path})`;
+      if (!cookieAllowed(allowed, c.domain)) { skipped.push(`${what} : domaine hors allowlist`); continue; }
+      if (c.expires > 0 && c.expires < now) { skipped.push(`${what} : expiré`); continue; }
+      try { await this.cdp.send('Storage.setCookies', { cookies: [toCdpCookieParam(c)] }); cookies++; } catch (e) { skipped.push(`${what} : refusé par le navigateur (${(e as Error).message})`); }
+    }
+    const targets = st.origins.filter((o) => {
+      if (checkUrl(allowed, o.origin).allowed) return o.localStorage.length > 0;
+      skipped.push(`localStorage de ${o.origin} : origine hors allowlist`);
+      return false;
+    });
+    let origins = 0;
+    let keys = 0;
+    if (targets.length > 0) {
+      await this.withScratch(async (sid) => {
+        for (const o of targets) {
+          try {
+            await this.inOrigin<number>(sid, o.origin, WRITE_STORAGE_FN('localStorage', o.localStorage));
+            origins++; keys += o.localStorage.length;
+          } catch (e) { skipped.push(`localStorage de ${o.origin} : ${(e as Error).message}`); }
+        }
+      });
+    }
+    let session: StateImportResult['sessionStorage'] = null;
+    const ss = st.sessionStorage;
+    if (ss !== undefined && ss.items.length > 0) {
+      if (!checkUrl(allowed, ss.origin).allowed) skipped.push(`sessionStorage de ${ss.origin} : origine hors allowlist`);
+      else if (normalizeOrigin((await this.location()).url) === ss.origin) {
+        await this.evalIsolated(WRITE_STORAGE_FN('sessionStorage', ss.items));
+        session = 'applied';
+      } else {
+        // Script du monde isolé (même stockage que la page, invisible pour ses scripts), retiré après usage.
+        if (this.pendingSession !== undefined) await this.s('Page.removeScriptToEvaluateOnNewDocument', { identifier: this.pendingSession.identifier }).catch(() => undefined);
+        const source = `if (location.origin === ${JSON.stringify(ss.origin)}) ${WRITE_STORAGE_FN('sessionStorage', ss.items)};`;
+        const { identifier } = await this.s<{ identifier: string }>('Page.addScriptToEvaluateOnNewDocument', { source, worldName: 'grasp-etat' });
+        this.pendingSession = { origin: ss.origin, identifier };
+        session = 'pending';
+      }
+    }
+    return { ok: true, cookies, origins, localStorageKeys: keys, sessionStorage: session, skipped };
   }
 
   async cookies(): Promise<unknown[]> {

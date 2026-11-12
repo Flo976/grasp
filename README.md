@@ -79,7 +79,8 @@ limite la lecture à une zone.
 - 🎯 **Livraison vérifiée des entrées** : un clic ou une saisie qui n'arrive pas est détecté et
   repris ([détails](#livraison-vérifiée-des-entrées)).
 - 👤 **Profils persistants** : cookies et connexions gardés d'une session à l'autre, import d'un
-  profil Chrome existant ([détails](#profils)).
+  profil Chrome existant ([détails](#profils)), export/import d'une session connectée en JSON
+  ([détails](#état--export-et-import)).
 - 🪟 **Chrome Windows depuis WSL2**, pour les sites qui bloquent Chrome headless
   ([détails](#mode-windows-chromeexe-depuis-wsl2)).
 - 🛰️ **Recette sur un serveur distant** à travers un tunnel SSH : vhost joint par son vrai nom, proxy
@@ -228,6 +229,59 @@ grasp profiles import sooatek "/mnt/c/Users/<vous>/AppData/Local/Google/Chrome/U
   mode Linux — cookies et identifiants illisibles, le profil s'ouvrira déconnecté même si le compte
   est affiché ; `--profile-directory` sans `Local State` en mode Windows — clé `os_crypt` absente.
 - Un profil importé n'emporte pas forcément ses connexions : voir les limites ci-dessous.
+
+### État : export et import
+
+Pour transférer une session **connectée** vers un autre profil, une autre machine ou un conteneur, sans
+copier tout un `--user-data-dir` (ni dépendre de son chiffrement DPAPI/os_crypt) :
+
+```bash
+grasp config set allowCookies true          # désactivé par défaut ; puis grasp stop && grasp serve
+grasp state export ~/etat.json              # fichier 0600, chemin sur stdout, bilan sur stderr
+grasp state export                          # sans fichier : ~/.local/state/grasp/etats/etat-<date>.json
+grasp state export - | ssh conteneur 'grasp state import -'
+grasp session create --profile cible && grasp state import ~/etat.json   # avant toute navigation
+```
+
+**Format** (`format: "grasp-state"`, `version: 1`), sur-ensemble du `storageState` de Playwright — un fichier
+Playwright (sans `format`) s'importe tel quel :
+
+```json
+{
+  "format": "grasp-state", "version": 1, "exportedAt": "2026-11-12T09:30:00.000Z",
+  "cookies": [{ "name": "sid", "value": "…", "domain": "127.0.0.1", "path": "/", "expires": 1794480000,
+                "httpOnly": true, "secure": false, "sameSite": "Lax", "priority": "Medium",
+                "sourceScheme": "NonSecure", "sourcePort": 8080 }],
+  "origins": [{ "origin": "http://127.0.0.1:8080", "localStorage": [{ "name": "theme", "value": "sombre" }] }],
+  "sessionStorage": { "origin": "http://127.0.0.1:8080", "items": [{ "name": "brouillon", "value": "bonjour" }] }
+}
+```
+
+`expires` en secondes depuis l'epoch, `-1` = cookie de session ; `partitionKey` (`{topLevelSite,
+hasCrossSiteAncestor}`) présent pour un cookie partitionné (CHIPS). Une `version` inconnue est refusée (400),
+jamais devinée ; un fichier invalide est refusé en entier, avant d'appliquer quoi que ce soit.
+
+- **Politique** : `allowCookies=false` (défaut) → 403 `… activez la clé allowCookies …`, aucun fichier écrit.
+  **Allowlist** : seuls les cookies et origines qu'elle couvre sont exportés ou importés ; le reste est écarté
+  et **listé** sur stderr (`note: N cookie(s) hors allowlist non exporté(s)`, `AVERTISSEMENT : non importé : …`).
+  Un cookie de domaine `.exemple.com` relève de `*.exemple.com`. Cookies déjà expirés : non importés, signalés.
+- **Fichier** : écrit par la CLI en 0600 **atomiquement** (temporaire exclusif, fsync, renommage ; fichier
+  existant remplacé, lien symbolique jamais suivi). Il contient des sessions de connexion : à traiter comme
+  un mot de passe. `-` = stdout (export) ou stdin (import).
+- **Cookies** : tous ceux du navigateur de la session (`Storage.getCookies`), HttpOnly compris, reposés par
+  `Storage.setCookies` un par un (un refus du navigateur est signalé sans bloquer les autres).
+- **localStorage, par origine** — choix : **navigation contrôlée** dans un onglet d'arrière-plan éphémère, plutôt
+  que `DOMStorage` (qui exige un document de l'origine déjà ouvert : impossible avant navigation, et l'onglet de
+  l'agent ne doit pas bouger). Fetch intercepte **toutes** les requêtes de cet onglet et sert lui-même un document
+  vide pour l'origine visée (`/.grasp-etat`), seulement si elle est dans l'allowlist ; le reste est refusé.
+  Aucune requête n'atteint le site, aucun script du site ne s'exécute, les service workers sont contournés ;
+  lecture et écriture par du code fixe de Grasp (les valeurs n'y entrent que sérialisées en JSON). À l'import,
+  les clés sont **fusionnées** (écrasées si présentes, les autres gardées). Origines lues à l'export : documents
+  chargés par la session, onglet courant, origines des cookies exportés (schéma et port d'origine), et
+  `--origin http://hôte:port,…` (hors allowlist : 403) ; les origines sans clé sont omises.
+- **sessionStorage** : celui de l'onglet courant (une origine). À l'import, appliqué tout de suite si l'onglet
+  affiche déjà cette origine, sinon par un script du monde isolé au **premier** document de l'origine, puis retiré.
+- Ni IndexedDB, ni Cache Storage, ni cookies d'autres contextes de navigation : voir les limites.
 
 ## Mode Windows (chrome.exe depuis WSL2)
 
@@ -484,6 +538,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue]` | Plusieurs commandes en **un** aller-retour. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
+| `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -997,6 +1052,7 @@ POST /select {target, value, …}               POST /check  {target, checked?, 
 POST /press  {key, target?, …}               POST /hover  {target, …}
 POST /type   {target, text, delay?, …}        (toute action : engine? = native | playwright)
 POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
+GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /run {script, continue?}   → {ok, total, executed, steps[]} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
@@ -1026,7 +1082,7 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 ### Défauts sûrs
 
 - Token API exigé (32 octets aléatoires, `0600`, comparaison à temps constant).
-- `eval`, téléchargements, upload, cookies : **désactivés**. Console : lecture **autorisée** (voir
+- `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Console : lecture **autorisée** (voir
   [Console](#console-du-navigateur) pour la décision et ses garanties).
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**
   (fail-closed). `*.exemple.com` = sous-domaines seulement ; `*` = tout, en opt-in explicite.
@@ -1179,6 +1235,7 @@ session sur une page simple, beaucoup plus sur une application lourde. Le test d
 | Config, token | `${XDG_CONFIG_HOME:-~/.config}/grasp/{config.json,token}` |
 | État, logs, PID, endpoint | `${XDG_STATE_HOME:-~/.local/state}/grasp/` |
 | Captures (sans `-o`) | `${XDG_STATE_HOME:-~/.local/state}/grasp/captures/` (0700, fichiers 0600, 50 gardées) |
+| États exportés (sans fichier) | `${XDG_STATE_HOME:-~/.local/state}/grasp/etats/` (0700, fichiers 0600, jamais purgés : à supprimer après usage) |
 | Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/<id>/` ; snap : `~/snap/chromium/common/grasp-profiles/` ; chrome.exe : `%LOCALAPPDATA%\grasp\profiles\` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
 | Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` |
 
@@ -1282,6 +1339,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `grasp run` exécute ses étapes en séquence sur la session : une autre commande lancée en parallèle sur la
   même session s'intercale entre deux étapes.
 - Une session = un onglet. Les popups sont gardés par l'allowlist mais ne sont pas pilotables.
+- `state export|import` : cookies et stockage Web seulement — ni IndexedDB, ni Cache Storage, ni service
+  workers, ni identifiants enregistrés ; une connexion liée à l'appareil (empreinte, jeton lié au TLS, Google)
+  peut ne pas survivre au transfert. Le localStorage n'est lu que pour les origines **connues** de la session
+  (documents vus, cookies, `--origin`) : une origine visitée dans une session précédente du profil, sans cookie,
+  n'est exportée qu'avec `--origin`. Seul le contexte de navigation par défaut est couvert. Le sessionStorage
+  « en attente » ne vaut que pour l'onglet de la session ; un second import en attente remplace le premier. Pas disponible dans `grasp run` (fichiers côté client).
 - **Profil importé ≠ session Google importée** : validé sous Windows, l'import de « Profile 9 »
   s'est fait sans fichier verrouillé et l'identité (`accountEmail`) est lue, mais
   `myaccount.google.com` ouvert sur la copie a montré une page **non connectée**. Les connexions

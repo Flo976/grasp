@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { GraspError } from '../core/errors.js';
 import { readJson, sendBuffer, sendError, sendJson, str, optStr, optBool, optInt, optCount, optFlag } from '../core/http.js';
 import { isLevel, type ConsoleLevel } from '../core/console.js';
+import { STATE_MAX_BYTES } from '../core/state.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
@@ -32,7 +33,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const url = new URL(req.url ?? '/', 'http://bridge');
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
-      const body = req.method === 'POST' ? await readJson(req) : {};
+      const body = req.method === 'POST' ? await readJson(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : {};
       const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine') };
       const scope = q.get('scope') ?? undefined;
       switch (route) {
@@ -75,6 +76,12 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());
+        // État exportable (allowCookies) : ?origin=a,b ajoute des origines dont lire le localStorage.
+        case 'GET /state/export': return sendJson(res, 200, await page.exportState(q.getAll('origin').flatMap((o) => o.split(',')).map((o) => o.trim()).filter((o) => o !== '')));
+        case 'POST /state/import': {
+          if (body.state === undefined) throw new GraspError(400, 'champ « state » (objet d\'état exporté) requis');
+          return sendJson(res, 200, await page.importState(body.state));
+        }
         case 'POST /upload': {
           const files = body.files;
           if (!Array.isArray(files) || !files.every((f) => typeof f === 'string')) throw new GraspError(400, 'champ « files » (tableau de chemins) requis');
