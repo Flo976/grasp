@@ -165,7 +165,7 @@ test('grasp skill : mode d\'emploi complet, borné, identique à skills/grasp/SK
   }
   for (const c of COMMANDS) if (c.name !== 'expect') assert.ok(r.stdout.includes(`\`grasp ${c.name}`), `commande ${c.name} absente du mode d'emploi`);
   for (const k of EXPECT_KINDS) assert.ok(r.stdout.includes(`\`expect ${k}`), `assertion ${k} absente`);
-  // 12 000 octets pour 33 commandes à l'origine ; 14 000 depuis la vague 2 (47 commandes, secrets, frontières).
+  // 12 000 octets pour 33 commandes à l'origine ; 14 000 depuis la vague 2 (48 commandes, secrets, frontières).
   assert.ok(Buffer.byteLength(r.stdout) < 14_000, `mode d'emploi trop long (${Buffer.byteLength(r.stdout)} octets) : il est chargé dans le contexte de l'agent`);
   let file: string;
   try { file = readFileSync(SKILL_MD, 'utf8'); } catch { file = ''; }

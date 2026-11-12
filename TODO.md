@@ -299,7 +299,7 @@ Image Docker
       `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
       ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
       sans être décrite : rouge ; l'ancien test restait vert).
-- [x] **Catalogue à jour de la vague 2** (intégration) : 47 commandes, outils MCP, options de diff/audit ;
+- [x] **Catalogue à jour de la vague 2** (intégration) : 48 commandes, outils MCP, options de diff/audit ;
       `skills/grasp/SKILL.md` régénéré (12 962 octets, borne du test portée à 14 000).
 
 ## Navigation et défilement

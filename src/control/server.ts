@@ -231,7 +231,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   // 0. Chemin de socket trop long : repli sous /tmp/grasp-<uid>/<hash>, vérifié (propriétaire, 0700, pas de lien).
   if (paths.socketFallback !== undefined) {
     checkSocketFallbackDir(paths.socketFallback.dir, fallbackSocketBase(), true);
-    log(`chemin de socket trop long (${Buffer.byteLength(paths.socketFallback.original)} octets > 107) : sockets dans ${paths.socketFallback.dir} (0700)`);
+    log(`chemin de socket trop long (${Buffer.byteLength(paths.socketFallback.tooLong)} octets > 107, ${paths.socketFallback.tooLong === paths.socketFallback.original ? 'socket principal' : 'sockets des bridges'}) : sockets dans ${paths.socketFallback.dir} (0700)`);
   }
   // 1. Permissions AVANT toute création : on refuse, on ne corrige pas en silence.
   checkPermissions(permissionTargets(paths));

@@ -816,7 +816,7 @@ const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessib
 Serveur      serve [--tcp [--port N] [--listen IP]] | stop | status | doctor | daemon install|uninstall|status
 MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
                outils nav back forward reload scroll snap find text click fill type select check press hover wait console
-               screenshot run profile ;
+               network a11y tabs tab viewport history secrets screenshot run profile ;
                session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
 Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
                --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer

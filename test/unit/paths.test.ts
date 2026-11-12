@@ -35,6 +35,7 @@ test('socket Unix : chemin > 107 octets → repli court et haché sous /tmp/gras
   assert.ok(p.socketFallback !== undefined, 'repli attendu');
   assert.match(p.socketPath, new RegExp(`^/tmp/grasp-${uid}/[0-9a-f]{12}/grasp\\.sock$`));
   assert.equal(p.socketFallback.original, `${long}/grasp.sock`);
+  assert.equal(p.socketFallback.tooLong, `${long}/grasp.sock`, 'le message cite le socket principal, qui dépasse');
   assert.equal(p.bridgesDir, `${p.socketFallback.dir}/bridges`);
   assert.doesNotThrow(() => checkSocketPaths(p, 'unix'));
   // Déterministe (le client retrouve le serveur) et propre au chemin d'origine (deux installations, deux sockets).
@@ -45,6 +46,9 @@ test('socket Unix : chemin > 107 octets → repli court et haché sous /tmp/gras
   assert.doesNotThrow(() => checkSocketPath(`${mid}/grasp.sock`, 'control plane'));
   const pm = resolvePaths({ XDG_RUNTIME_DIR: mid }, '/home/u');
   assert.ok(pm.socketFallback !== undefined);
+  // Le message doit citer le chemin qui dépasse (celui d'un bridge), pas le socket principal (< 107 octets).
+  assert.equal(pm.socketFallback.tooLong, `${mid}/grasp/bridges/s000000000000.sock`);
+  assert.ok(Buffer.byteLength(pm.socketFallback.tooLong) > 107);
   assert.doesNotThrow(() => checkSocketPaths(pm, 'tcp'));
   // Sans XDG_RUNTIME_DIR, un XDG_STATE_HOME profond déclenche aussi le repli.
   assert.ok(resolvePaths({ XDG_STATE_HOME: `/tmp/${'s'.repeat(100)}` }, '/home/u').socketFallback !== undefined);

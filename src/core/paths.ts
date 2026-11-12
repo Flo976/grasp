@@ -25,7 +25,7 @@ export interface GraspPaths {
    * Répertoire de repli des sockets (`/tmp/grasp-<uid>/<hash>`) quand le chemin normal dépasse la limite des
    * sockets Unix ; absent sinon. Vérifié (propriétaire, 0700, pas de lien) par le serveur ET par le client.
    */
-  socketFallback?: { dir: string; original: string };
+  socketFallback?: { dir: string; original: string; tooLong: string };
   bridgesDir: string;
   systemdUserDir: string;
 }
@@ -50,9 +50,12 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env, home: string 
   let socketFallback: GraspPaths['socketFallback'];
   // Chemin trop long pour un socket Unix (GRASP dans un tmp profond) : repli sur un nom court et haché, propre à
   // ce chemin (deux installations distinctes ne partagent pas de socket). Client et serveur font le même calcul.
-  if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH || Buffer.byteLength(join(runDir, 'bridges', BRIDGE_PROBE)) > MAX_SOCKET_PATH) {
+  const bridgeProbe = join(runDir, 'bridges', BRIDGE_PROBE);
+  if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH || Buffer.byteLength(bridgeProbe) > MAX_SOCKET_PATH) {
     const dir = join(fallbackSocketBase(), createHash('sha256').update(socketPath).digest('hex').slice(0, 12));
-    socketFallback = { dir, original: socketPath };
+    // tooLong : le chemin qui dépasse vraiment (socket principal, sinon socket d'un bridge), pour le message.
+    const tooLong = Buffer.byteLength(socketPath) > MAX_SOCKET_PATH ? socketPath : bridgeProbe;
+    socketFallback = { dir, original: socketPath, tooLong };
     runDir = dir;
     socketPath = join(dir, 'grasp.sock');
   }
