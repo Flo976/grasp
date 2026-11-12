@@ -1350,7 +1350,12 @@ grasp fill '#password' secret:MDP_PREPROD --snap-diff
     réponse du bridge. Un champ rempli avec un secret est **marqué** : sa valeur est rendue `secret:NOM` même si
     la page la reformate ensuite. Si la valeur effective diffère (maxlength, masque de saisie : souvent un
     préfixe), l'erreur 409 ne recopie ni l'une ni l'autre (`la valeur effective (6 caractère(s)) n'est pas celle
-    de secret:COURT (9)`) et cette valeur effective est masquée elle aussi ;
+    de secret:COURT (9)`) et cette valeur effective est masquée elle aussi. Les **comparaisons** se font sur
+    la forme masquée, pour qu'un code de sortie ne serve pas d'oracle (sinon `expect value #mdp --regex
+    '^<préfixe><c>'`, relancé caractère par caractère, reconstitue la valeur sans eval — le test
+    `pas d'oracle` le vérifie) : `expect value` sur un champ marqué compare `secret:NOM`
+    (seul `expect value <sél> secret:NOM` réussit), `expect text|no-text|url|title` et `wait --text`
+    comparent le texte, l'URL et le titre masqués, `text:` les noms masqués de l'arbre ;
   - **control plane**, filet sur **toute** réponse JSON ou texte (actions, `run` et rapport de recette, erreurs,
     note `X-Grasp-Notice`) et sur son journal, avec **toutes** les valeurs du magasin, même jamais saisies (une
     page de réglages qui affiche une clé d'API). Une valeur retirée du magasin reste masquée jusqu'à l'arrêt.
@@ -1366,7 +1371,8 @@ grasp fill '#password' secret:MDP_PREPROD --snap-diff
   et sur disque. Validés par **mutation** (le test passe au rouge) : contrôle de domaine désactivé, filet du
   control plane retiré, filet du bridge retiré, marquage du champ désactivé, valeur effective non masquée,
   bridge jamais informé du secret, `secretUse` accepté d'un client, masquage des débuts coupés retiré
-  (unitaire). Le masquage du **journal** du serveur n'est pas couvert par une mutation (aucune valeur n'y
+  (unitaire), et, pour l'oracle, comparaison sur la valeur brute dans `expect value`, `expect text`,
+  `wait --text`, `expect url|title` (4 mutations). Le masquage du **journal** du serveur n'est pas couvert par une mutation (aucune valeur n'y
   arrive dans le scénario testé).
 - **Inspiration** : le serveur MCP de Playwright (microsoft/playwright, Apache-2.0, v1.56.0) —
   `Context.lookupSecret()` (`packages/playwright/src/mcp/browser/context.ts`) et `Response._redactSecrets()`
@@ -1794,7 +1800,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   (0600 protège des autres utilisateurs, pas de lui) : pour l'en empêcher, faites tourner le serveur sous un
   autre utilisateur ou dans un [conteneur](#docker). Pas de `frame=…`, pas de `type secret:NOM`. La valeur
   `secret:NOM` ne peut pas être saisie littéralement par `fill`. Masquer révèle qu'un texte de la page est
-  la valeur d'un secret (ou son début, à une coupure).
+  la valeur d'un secret (ou son début, à une coupure). **Oracles restants** : les comparaisons du bridge
+  (`expect`, `wait --text`) ne masquent que les secrets saisis dans **sa** session ; un secret jamais saisi
+  mais affiché par la page (clé d'API) n'est masqué que dans la réponse, par le control plane, et `expect
+  text --regex` peut encore le tester. Un sélecteur CSS d'attribut (`wait --sel 'input[value^="Zq"]'`)
+  teste une page qui recopie la saisie dans un attribut (`value` synchronisé, `data-*`) ; une valeur
+  recopiée par morceaux ou transformée reste testable comme elle reste lisible.
 
 ---
 

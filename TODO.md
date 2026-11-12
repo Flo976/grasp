@@ -149,6 +149,10 @@ Image Docker
       `grasp secrets list|set|rm`, outil MCP `secrets`. Inspiré de Playwright MCP (`lookupSecret`,
       `_redactSecrets`, Apache-2.0), sans code repris. Tests : `test/unit/secrets.test.ts`,
       `test/integration/secrets.test.ts`, 8 mutations détectées (README « Secrets »).
+- [x] **Pas d'oracle** : `expect value|text|url|title` et `wait --text` comparent la forme masquée (un champ
+      marqué vaut `secret:NOM`) ; sinon `expect value --regex '^préfixe'` reconstituait la valeur sans eval.
+      4 mutations détectées. Restent : secret affiché mais jamais saisi dans la session, sélecteur CSS
+      d'attribut sur une page qui recopie la saisie (README, Limites connues).
 - [ ] Captures et PDF non masqués (un champ texte rempli s'y voit) : flouter les champs marqués avant capture ?
 - [ ] Profil Chrome : cache HTTP, `Web Data` (saisie semi-automatique), `Sessions/` gardent une valeur envoyée
       par formulaire ; persistant pour un profil nommé. Désactiver la saisie semi-automatique pour les sessions
