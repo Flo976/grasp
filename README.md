@@ -85,6 +85,8 @@ limite la lecture à une zone.
 - 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
+- ✅ **Recette scriptée** : `expect text|url|title|sel|value|no-console-errors|no-form-errors…`, code non nul et
+  rapport (console, requêtes 4xx/5xx, formulaire, capture à l'échec) ([détails](#recette--expect-et-rapport-de-run)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
 - 🔒 **Sécurité par défaut** : allowlist de navigation, token, socket Unix ([détails](#sécurité)).
 
@@ -463,6 +465,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
 | `text [--max N] [--scope <ref\|css\|frame=…>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
+| `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
 | `select <sél> <valeur\|libellé>` | `<select>` natif ; liste les options si absente. |
@@ -473,7 +476,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
-| `run [fichier\|-] [--continue]` | Plusieurs commandes en **un** aller-retour. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
+| `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -563,7 +566,7 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 ```
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
-  **même syntaxe que la CLI** : `nav snap text click fill select check press wait eval console screenshot
+  **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
   cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
@@ -583,10 +586,102 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 - Sortie compacte : `[n] commande → OK` ou `→ ERROR: raison`, puis **seulement** la sortie utile (snap, text,
   diff, console, chemin d'une capture, valeur d'eval), avec les mêmes limites de taille qu'en commande isolée ;
   notes numérotées (`[6] note: sélectionné : Madagascar`) et bilan (`7 commandes, 7 OK (…)`) sur stderr.
-  `--json` : `{ok, total, executed, steps: [{n, line, text, cmd, ok, output?, detail?, status?, error?, result, ms}]}`.
+  `--json` : `{ok, total, executed, steps: [{n, line, text, cmd, ok, output?, detail?, status?, error?, result, screenshot?, ms}], report?}`.
+- **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
+  pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
   (`eval` interdit reste interdit, allowlist, console…) et mêmes refs — celles d'un `snap` du script servent aux
   étapes suivantes. `profile <nom>` bascule la session au milieu du script (le bridge est relu à chaque étape).
+
+### Recette : expect et rapport de run
+
+Pour enchaîner « déployer → vérifier » sans interprétation : des assertions qui échouent avec un code non nul
+et un message qui dit **l'attendu et le constaté**, et un rapport de fin de run.
+
+```bash
+grasp run <<'FIN'
+nav https://preprod.exemple.com/boutique
+fill '#qte' 2
+click text:Commander
+expect text "Commande enregistrée"      # relu jusqu'à 5 s : la réponse arrive en XHR
+expect no-text "Erreur"
+expect url ~ /merci
+expect title Merci
+expect sel '#recu'
+expect value '#qte' 2
+expect no-console-errors --ignore 'favicon|analytics'
+expect no-form-errors
+FIN
+```
+
+| Assertion | Tenue quand |
+|---|---|
+| `expect text <texte> [--regex] [--scope <sél>]` | le texte visible (`innerText`, espaces normalisés) le **contient** |
+| `expect no-text <texte> [--regex] [--scope <sél>]` | il ne le contient pas |
+| `expect url [~] <url> [--regex]` | l'URL courante est **égale** (`~` : la contient ; `--regex` : correspond) |
+| `expect title [~] <titre> [--regex]` | idem pour `document.title` |
+| `expect sel <sél>` / `expect no-sel <sél>` | un élément CSS **visible** correspond (ref, `text:` : présent dans le snapshot), comme `wait --sel` / aucun |
+| `expect value <sél> [~] <valeur> [--regex]` | la valeur du champ (`value` ; `<select>` : valeur de l'option choisie ; éditeur riche : son texte) est égale, etc. |
+| `expect no-console-errors [--ignore <regex>] [--since <seq>]` | aucune entrée de niveau `error` (console, exception, requête 4xx/5xx ou `net::ERR`, CSP…) depuis le début du **document courant** (sa propre réponse comprise) ; `--ignore` écarte les entrées dont le texte ou l'URL correspond |
+| `expect no-form-errors` | aucun champ `[invalide…]` ni ligne `alerte` (voir [Erreurs de formulaire](#erreurs-de-formulaire)) |
+
+- **Syntaxe, et pourquoi** : une commande `expect` suivie du **type d'assertion** (comme `session create`,
+  `profiles import`), puis ses arguments positionnels dans l'ordre naturel (`value <sél> <valeur>`, comme
+  `fill`). Une seule commande de plus dans la liste de `run`, et une même ligne marche en commande directe
+  (`grasp expect title Merci`) et dans un script. Le `no-` des négations reste dans le nom (pas d'option
+  `--not` facile à oublier en fin de ligne). La comparaison par défaut est l'**égalité** pour url, titre et
+  valeur — une recette doit être stricte — et l'**inclusion** pour le texte d'une page (l'égalité n'y aurait
+  pas de sens) ; `~` (« contient ») est un mot à part, lisible, et `--regex` reste explicite. Dans un
+  terminal, citez le `~` (`'~'`) : la shell le remplace sinon par votre dossier personnel — l'argument de
+  trop est refusé avec cette explication, jamais pris pour l'URL attendue.
+- **Réessai** : text, no-text, url, title, sel, no-sel et value sont relues toutes les 100 ms jusqu'à
+  `--timeout` (5000 ms par défaut, 60 000 au plus ; `0` = une seule lecture) — la page réagit souvent après
+  l'action précédente (XHR, route). no-console-errors et no-form-errors sont un **constat immédiat**.
+- **Échec** : erreur 417 ; dans run, `[n] expect … → ERROR: attendu … ; constaté : …`, arrêt (sauf
+  `--continue`) et code 1 ; en commande directe, `ERROR: expect: …` sur stderr et code 1. Le constaté est
+  **borné** : 300 premiers caractères du texte de la page ou de la zone, 60 caractères de part et d'autre
+  d'une occurrence interdite, 5 premières entrées console ou erreurs de formulaire (`items` complet, 50 au plus,
+  dans le JSON de l'étape, champ `expect`). Exemple :
+  `attendu texte « Commande enregistrée » dans la page ; constaté : absent ; texte de la page : « Boutique
+  Quantité Courriel Commander Erreur serveur, réessayez » (après 5000 ms)`.
+- Une assertion mal écrite (type inconnu, argument manquant ou de trop, option d'un autre type, expression
+  régulière invalide, `--timeout` hors bornes) refuse **tout le script** avant exécution, ligne citée.
+- `--shot-on-error` : capture jointe au message, comme pour une action. `allowConsole=false` :
+  `no-console-errors` → 403, jamais un faux OK. Un sélecteur `frame=…` n'est pas pris en charge par `expect`
+  (400 : `wait --sel` le sait).
+
+**Rapport** (stdout, après les étapes ; `--json` : champ `report`) :
+
+```
+== recette : ÉCHEC — 11 étapes : 4 OK, 1 KO, 6 non exécutées (6334 ms)
+OK  [1] nav http://127.0.0.1:45955/boutique (485 ms)
+OK  [2] fill '#qte' 13 (132 ms)
+OK  [3] fill text:Courriel ada@example.org (135 ms)
+OK  [4] click text:Commander (511 ms)
+KO  [5] expect text "Commande enregistrée" (5056 ms)
+      attendu texte « Commande enregistrée » dans la page ; constaté : absent ; texte de la page : « Boutique Quantité Courriel Commander Erreur serveur, réessayez » (après 5000 ms)
+      capture : ~/.local/state/grasp/captures/grasp-20261112T074251092000Z-aeb97d.png
+--  [6] expect no-text "Erreur" (non exécutée)
+…
+console : 1 erreur pendant le run
+  #5 error console échec de la commande 500 (boutique:26)
+requêtes en échec : 1
+  #4 error network POST http://127.0.0.1:45955/api/commande?qte=13 → 500 Internal Server Error
+formulaire : aucune erreur
+page finale : http://127.0.0.1:45955/boutique « Boutique »
+```
+
+- **Étapes** : OK / KO / non exécutée, durée de chacune ; pour un échec, le message et le **chemin** d'une
+  capture du viewport prise **juste après l'échec** (fichier 0600, comme `screenshot` ; 5 par run au plus avec
+  `--continue`).
+- **Console et requêtes** : entrées de niveau `error` survenues **pendant le run** (seq relevé au départ), même
+  sans assertion qui les vise — l'agent voit une 500 que le texte de la page aurait masquée. Les requêtes en
+  échec (réponses 4xx/5xx, `net::ERR_…`, blocages de Grasp) sont séparées du reste ; 200 entrées au plus, la
+  perte est annoncée. Console désactivée : `console : non lue (…)`, jamais « aucune erreur ».
+- **Formulaire** : erreurs de la page finale (mêmes lignes que le snapshot). **Page finale** : URL et titre.
+- Le verdict ne dépend que des étapes : une erreur console rapportée ne fait pas échouer le run ; pour qu'elle
+  le fasse, `expect no-console-errors`. Exemple complet : `examples/recette.sh` (une recette qui passe, puis la
+  même qui échoue sur une 500).
 
 ## Moteur Playwright de repli
 

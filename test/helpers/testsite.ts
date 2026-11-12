@@ -644,6 +644,46 @@ if (location.search.includes('rendu=1')) {
 }
 </script></body></html>`;
 
+/**
+ * Recette (expect, rapport de run) : commande validée côté page (quantité entière ≥ 1, sinon champ invalide
+ * avec message relié), envoyée en XHR ; quantité 13 → 500 et console.error. Succès : route /boutique/merci
+ * (pushState), titre « Merci », « Commande enregistrée n°42 » et un reçu.
+ */
+export const BOUTIQUE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Boutique</title></head><body>
+<h1>Boutique</h1>
+<form id="f" novalidate>
+  <div><label for="qte">Quantité</label> <input id="qte" name="qte" inputmode="numeric" aria-describedby="qte-err"><div id="qte-err" class="erreur" hidden></div></div>
+  <div><label for="courriel">Courriel</label> <input id="courriel" name="courriel"></div>
+  <button type="submit">Commander</button>
+</form>
+<p id="etat">Panier en attente</p>
+<div id="recu" hidden></div>
+<div id="cache" style="display:none">Contenu caché</div>
+<script>
+const $ = (id) => document.getElementById(id);
+$('f').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const q = Number($('qte').value);
+  if (!Number.isInteger(q) || q < 1) {
+    $('qte').setAttribute('aria-invalid', 'true');
+    $('qte-err').textContent = 'La quantité doit être un entier positif';
+    $('qte-err').hidden = false;
+    return;
+  }
+  $('qte').removeAttribute('aria-invalid');
+  $('qte-err').hidden = true;
+  const r = await fetch('/api/commande?qte=' + q, { method: 'POST' });
+  if (!r.ok) { console.error('échec de la commande', r.status); $('etat').textContent = 'Erreur serveur, réessayez'; return; }
+  const j = await r.json();
+  history.pushState({}, '', '/boutique/merci');
+  document.title = 'Merci';
+  $('etat').textContent = 'Commande enregistrée n°' + j.numero;
+  $('recu').textContent = 'Reçu : ' + q + ' article(s)';
+  $('recu').hidden = false;
+});
+</script></body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -661,6 +701,12 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/console-frame') { res.end('<!doctype html><title>Cadre</title><p>cadre</p><script>console.log("depuis le cadre")</script>'); return; }
     // Cadre qui navigue lui-même vers [::1] (hors allowlist) : la garde doit s'appliquer DANS l'iframe.
     if (u.pathname === '/frame-nav') { res.end('<!doctype html><title>Navigant</title><script>setTimeout(() => { location.href = "http://[::1]:" + location.port + "/"; }, 50)</script>'); return; }
+    if (u.pathname === '/boutique' || u.pathname === '/boutique/merci') { res.end(BOUTIQUE_PAGE); return; }
+    if (u.pathname === '/api/commande') {
+      res.setHeader('content-type', 'application/json');
+      if (u.searchParams.get('qte') === '13') { res.statusCode = 500; res.end('{"error":"stock"}'); return; }
+      res.end('{"numero":42}'); return;
+    }
     if (u.pathname === '/absent.png') { res.statusCode = 404; res.end('introuvable'); return; }
     if (u.pathname === '/api/data') { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); return; }
     if (u.pathname === '/api/secret') { res.statusCode = 401; res.setHeader('content-type', 'application/json'); res.end('{"error":"corps-réponse-secret"}'); return; }

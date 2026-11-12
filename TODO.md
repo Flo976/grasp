@@ -35,9 +35,13 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       pas au nom via tunnel, signalée par `grasp security`.
 - [ ] **Authentification HTTP basic** (préprod protégée) : identifiants fournis à la session, jamais
       écrits dans les journaux.
-- [ ] **Recette scriptée** : `grasp run --assert` (ou `expect`) qui échoue avec un code ≠ 0 et un
+- [x] **Recette scriptée** : `grasp run --assert` (ou `expect`) qui échoue avec un code ≠ 0 et un
       rapport lisible quand un texte attendu manque, pour enchaîner « déployer → vérifier » sans
-      interprétation.
-- [ ] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
-      fin de `run`, avec capture en cas d'échec.
+      interprétation. — Fait : commande `expect` (run et commande directe) : `text`, `no-text`, `url`,
+      `title`, `sel`, `no-sel`, `value` (égalité, `~` contient, `--regex`), `no-console-errors`,
+      `no-form-errors` ; relue jusqu'à `--timeout` (5 s) ; échec = code 1, « attendu … ; constaté : … »
+      avec extrait borné (`test/integration/recette.test.ts`, `examples/recette.sh`).
+- [x] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
+      fin de `run`, avec capture en cas d'échec. — Fait : `run --report` (d'office avec `expect`), texte
+      compact et `--json` (`report`) ; capture prise juste après chaque échec (chemin seulement).
 - [ ] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples).
