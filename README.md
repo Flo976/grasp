@@ -630,6 +630,11 @@ grasp click '#dehors'               # window.open vers un hôte hors allowlist
   l'ouvreur (sa page reçoit le `postMessage`) et le dit. Hors action (popup qui se ferme seul) : la réponse
   **suivante**, quelle qu'elle soit, porte la note (en-tête `X-Grasp-Notice`, `note:` sur stderr, `[n] note:` dans
   `run`). Commandes en vol sur une cible fermée : rejetées aussitôt (mesuré : Chrome n'y répond jamais).
+- **Notes bornées** : l'URL citée par une note d'onglet (ouverture, retour, onglet actif) passe par le même masquage
+  que la console (identifiants retirés ; valeurs des paramètres dont le nom évoque un secret — `code`, `token`,
+  `auth`, `session`… — remplacées par `***`) et est coupée à 300 caractères ; le titre à 80. Test : popup dont
+  l'URL fait 8 000 caractères avec `code=…` et le titre 800 → note de moins de 600 caractères, secret absent.
+  Le paramètre `state` n'est pas masqué (le motif est celui de la console).
 - **Refs par onglet** : chaque onglet garde la mémoire des refs de ses snapshots. Une ref remise par un autre
   onglet est refusée (404 `ref e1x2 vient de l'onglet t1, pas de l'onglet actif t2 : … grasp tab t1 pour y agir,
   ou snap ici`), même si le même hash existe dans la page active (même rôle, même nom, même rang).

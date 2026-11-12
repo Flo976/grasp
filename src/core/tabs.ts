@@ -16,7 +16,11 @@ export interface TabInfo {
 export const TAB_TITLE_MAX = 80;
 export const TAB_URL_MAX = 200;
 
-const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+export const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** Note d'onglet (« nouvel onglet t2 ouvert : … », « onglet actif : … ») : URL masquée (paramètres sensibles d'un
+ * retour OAuth : code, state, access_token…) et bornée, titre borné. */
+export const TAB_NOTE_URL_MAX = 300;
 
 /** Une ligne : `* t1 "Titre" http://…` (`*` = actif), suivie de `(ouvert par t1)` pour un popup. */
 export function formatTab(t: TabInfo): string {

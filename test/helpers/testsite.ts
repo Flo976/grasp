@@ -793,6 +793,7 @@ const ONGLETS_PAGE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"
 <button id="oauth" onclick="window.open('/onglets/autoriser', 'oauth', 'width=480,height=600')">Se connecter avec Fournisseur</button>
 <button id="ephemere" onclick="window.open('/onglets/autoriser?seul=1', 'ephemere', 'width=480,height=600')">Popup éphémère</button>
 <button id="dehors" onclick="window.open('http://[::1]:' + location.port + '/', '_blank')">Hors allowlist</button>
+<button id="long" onclick="window.open('/onglets/long?code=SECRET123&q=' + 'z'.repeat(8000), '_blank')">Popup long</button>
 <p id="etat">Déconnecté</p>
 <script>addEventListener('message', (e) => { if (e.origin === location.origin && e.data && e.data.user) { document.getElementById('etat').textContent = 'Connecté : ' + e.data.user; console.log('connecté', e.data.user); } });</script>
 </body></html>`;
@@ -801,6 +802,8 @@ const ONGLETS_AUTORISER_PAGE = `<!doctype html><html lang="fr"><head><meta chars
 <button id="autoriser" onclick="window.opener.postMessage({ user: 'Ada' }, location.origin); window.close()">Autoriser</button>
 <script>console.log('fournisseur prêt'); if (new URLSearchParams(location.search).get('seul') === '1') setTimeout(() => window.close(), 1500);</script>
 </body></html>`;
+/** Retour de popup à URL (8 000 caractères, paramètre « code ») et titre (800 caractères) démesurés. */
+const ONGLETS_LONG_PAGE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${'Titre '.repeat(160)}</title></head><body><h1>Long</h1></body></html>`;
 const ONGLETS_AIDE_PAGE = '<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Aide</title></head><body><h1>Aide en ligne</h1><p>Questions fréquentes</p></body></html>';
 
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
@@ -889,6 +892,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/onglets') { res.end(ONGLETS_PAGE); return; }
     if (u.pathname === '/onglets/autoriser') { res.end(ONGLETS_AUTORISER_PAGE); return; }
     if (u.pathname === '/onglets/aide') { res.end(ONGLETS_AIDE_PAGE); return; }
+    if (u.pathname === '/onglets/long') { res.end(ONGLETS_LONG_PAGE); return; }
     if (u.pathname === '/cases') { res.end(CASES_PAGE); return; }
     if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }
     if (u.pathname === '/carrousel') { res.end(CARROUSEL_PAGE); return; }

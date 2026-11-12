@@ -164,6 +164,25 @@ test('popup refermé par la page hors de toute action : annoncé par la réponse
   } finally { await o.close(); }
 });
 
+test('notes d\'onglet bornées et masquées : URL de 8 000 caractères avec « code », titre de 800 caractères', async () => {
+  const o = await open();
+  try {
+    // Ouvreur à URL démesurée elle aussi : la note de retour (« onglet actif : t1 … ») la reprend.
+    await o.page.nav(`${site.url}/onglets?code=SECRET123&q=${'y'.repeat(8000)}`);
+    const r = await o.page.click('#long');
+    const d = r.detail ?? '';
+    assert.match(d, /nouvel onglet t2 ouvert : http:\/\/127\.0\.0\.1:\d+\/onglets\/long\?code=\*\*\*&q=z+… « (Titre )+/);
+    assert.ok(!d.includes('SECRET123'), d.slice(0, 400));
+    assert.ok(d.length < 600, `note de ${d.length} caractères`);
+    const a = await o.page.click('#oauth', { follow: true });
+    assert.ok((a.detail ?? '').length < 600);
+    const b = await o.page.click('text:Autoriser');
+    const back = b.detail ?? '';
+    assert.match(back, /onglet actif : t1 « Application » http:\/\/127\.0\.0\.1:\d+\/onglets\?code=\*\*\*&q=y+…$/);
+    assert.ok(!back.includes('SECRET123') && back.length < 600, back.slice(0, 400));
+  } finally { await o.close(); }
+});
+
 test('mode attach (cdpUrl) : tab new ouvre un onglet pilotable, l\'onglet d\'état fonctionne, les onglets de l\'utilisateur restent ouverts', async () => {
   // Navigateur « de l'utilisateur » lancé à part, Grasp s'y branche comme en mode attach (GRASP_TEST_CDP_URL).
   const dir = mkdtempSync(join(tmpdir(), 'gr-tabs-att-'));

@@ -1,7 +1,7 @@
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
 import { GraspError, conflict, notFound, badRequest } from '../core/errors.js';
 import { redactUrl } from '../core/console.js';
-import { TAB_ID_RE, type TabInfo } from '../core/tabs.js';
+import { TAB_ID_RE, TAB_NOTE_URL_MAX, TAB_TITLE_MAX, cut, type TabInfo } from '../core/tabs.js';
 import { PageController, type TargetInfo } from './page.js';
 
 /**
@@ -36,6 +36,8 @@ const NEW_TAB_WAIT_MS = 5000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const blank = (url: string) => url === '' || url === 'about:blank';
+/** `http://… « Titre »` d'une note : URL masquée et bornée, titre borné (sorties annoncées bornées). */
+const shown = (url: string, title: string) => `${redactUrl(url, TAB_NOTE_URL_MAX)}${title !== '' ? ` « ${cut(title, TAB_TITLE_MAX)} »` : ''}`;
 
 export class Tabs {
   private readonly tabs = new Map<string, Tab>();
@@ -213,7 +215,7 @@ export class Tabs {
   private async describe(tab: Tab | undefined): Promise<string> {
     if (tab === undefined || tab.closed) return '';
     const i = await this.info(tab);
-    return `${i.id}${i.title !== '' ? ` « ${i.title} »` : ''} ${i.url}`;
+    return `${i.id}${i.title !== '' ? ` « ${cut(i.title, TAB_TITLE_MAX)} »` : ''} ${redactUrl(i.url, TAB_NOTE_URL_MAX)}`;
   }
 
   private find(id: string): Tab {
@@ -352,7 +354,7 @@ export class Tabs {
         notes.push(`popup bloqué par Grasp : ${st.blocked.reason} — ${redactUrl(st.blocked.url)} ; onglet ${t.id} fermé`);
         continue;
       }
-      notes.push(`nouvel onglet ${t.id} ouvert : ${st.url}${st.title !== '' ? ` « ${st.title} »` : ''}${st.blocked !== null ? ` (navigation bloquée : ${st.blocked.reason})` : ''}${follow ? '' : ` — grasp tab ${t.id} pour y basculer`}`);
+      notes.push(`nouvel onglet ${t.id} ouvert : ${shown(st.url, st.title)}${st.blocked !== null ? ` (navigation bloquée : ${st.blocked.reason})` : ''}${follow ? '' : ` — grasp tab ${t.id} pour y basculer`}`);
       followTo = t;
     }
     const missing = wanted - mine();

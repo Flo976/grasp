@@ -124,6 +124,8 @@ Onglets et popups
 - [x] Mode attach : `tab new` et l'onglet d'état (`state export|import`) étaient détachés aussitôt attachés (le
       meneur prenait leur `Target.attachedToTarget` pour un onglet de l'utilisateur) ; cibles réclamées
       (`hub.claimed`), test en mode attach dans `tabs.test.ts`.
+- [x] Notes d'onglet bornées et masquées (URL par `redactUrl` à 300, titre à 80) : un popup OAuth ne recopie plus
+      `code=…` en clair ni 20 000 caractères d'URL dans la note.
 - [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
       l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
       pause : le premier document échapperait au garde.
