@@ -45,8 +45,7 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       (opt-in, `GRASP_URL` côté client). `doctor` et `examples/e2e.sh` validés dans le conteneur.
       Pas distroless : Chromium tire ses dépendances par `apt`, `examples/e2e.sh` veut bash, et `setpriv`
       vient d'util-linux. Image : 1,32 Go (dont 719 Mo pour Chromium et ses dépendances).
-  - [ ] Réduire l'image (distroless ou `chrome-headless-shell`) : gain à mesurer, et `headless=false` y renoncerait.
-  - [ ] Recette de l'image en CI (build + `doctor` + `e2e.sh`), aujourd'hui faite à la main.
+      Suites : voir « Suites », Image Docker.
 - [x] **Évaluer Obscura comme moteur léger** derrière Grasp (il parle CDP et implémente
       `Accessibility.getFullAXTree`) : mesurer la couverture CDP réellement utilisée par le bridge.
       Fait (branche `eval/obscura`, `docs/eval-obscura.md`, Obscura 0.2.6) : **pas en l'état**. e2e.sh passe en
@@ -54,8 +53,9 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       par une redirection 302 (saut non présenté à `Fetch`), `confirm()` accepté d'office, pas de Playwright de
       repli, arbre AX pauvre en formulaires, Wikipédia : nav ×2,8 et snapshot ×5,7 plus lents. 78/118 tests de
       page OK (Chrome attaché : 118). À réévaluer quand Obscura interceptera les redirections.
-- [ ] **Mode attach hors Chrome** : documenter que la garde runtime (redirections) n'est garantie qu'avec
+- [x] **Mode attach hors Chrome** : documenter que la garde runtime (redirections) n'est garantie qu'avec
       Chrome ; un navigateur qui se dit `Chrome/…` dans `/json/version` peut ne pas l'être (Obscura).
+      Fait à l'intégration : README, « Limites connues ».
 
 Non repris, volontairement : la falsification d'empreinte en JS (incohérences détectables dans un vrai
 Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
@@ -95,3 +95,46 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 - [x] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples). Fait :
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).
+
+## Suites (limites notées par chaque branche, regroupées à l'intégration)
+
+Sécurité du garde
+- [ ] **Sous-ressources** (`fetch()`, images, scripts) : ni l'allowlist ni la protection SSRF ne les bloquent
+      (le garde ne couvre que les documents) ; seuls les traqueurs le sont. Étendre le garde `Fetch` à tous
+      les types coûterait une pause par requête : à mesurer.
+- [ ] **DNS rebinding** : détecté **après** la requête (lecture protégée, pas l'effet de bord), et seulement
+      avec `allowConsole=true` (domaine `Network`).
+- [ ] **SSRF derrière un proxy** : ce que le proxy résout de son côté n'est pas couvert (choix assumé à la
+      réconciliation avec l'accès distant) ; contournement (`proxyBypassList`) reconnu pour les noms exacts,
+      jokers et `<local>`, pas pour les plages CIDR appliquées à un nom.
+
+Accès distant
+- [ ] `Security.setOverrideCertificateErrors` (base de `ignoreCertErrorsFor`) est déprécié dans le protocole :
+      surveiller sa disparition (le bridge refuse alors de démarrer, sans repli global).
+- [ ] Pas d'authentification auprès d'un proxy ; identifiants fournis sur défi d'un document seulement (une
+      sous-ressource d'un autre hôte protégé n'en reçoit pas) ; `--http-auth` en clair visible dans `ps`.
+- [ ] `grasp mcp` ne sait pas encore créer une session avec `--proxy` ou `--http-auth` (utiliser `--session`
+      sur une session créée par la CLI).
+
+Lecture et recette
+- [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
+- [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`
+      ignorée : l'étape en cours va à son terme) ; pas d'outils dédiés `expect` ni `state` (accessibles par `run`).
+- [ ] Traqueurs : blocage par domaine seulement (pas de règles d'URL à la EasyList) ; requêtes des workers
+      non couvertes ; liste embarquée à mettre à jour à la main.
+
+État et sessions
+- [ ] `state export|import` : ni IndexedDB, ni Cache Storage ; origines d'anciennes sessions sans cookie
+      seulement via `--origin`.
+- [ ] Recyclage : page rouverte par un nouveau GET (état JS, `sessionStorage`, refs perdus) ; vérifié à
+      l'arrivée d'une commande seulement (une session inactive ou toujours occupée n'est jamais recyclée) ;
+      mesure chrome.exe vieille de 30 s au plus.
+
+Image Docker
+- [ ] Réduire l'image (distroless ou `chrome-headless-shell`) : gain à mesurer, et `headless=false` y renoncerait.
+- [ ] Recette de l'image en CI (build + `doctor` + `e2e.sh`), aujourd'hui faite à la main.
+
+Évaluation d'Obscura
+- [ ] Réévaluer quand Obscura interceptera les redirections (garde contournée par un 302 aujourd'hui).
+- [ ] Licence des instantanés Wikipédia (CC BY-SA) versionnés sous `docs/eval-obscura/snapshots/` : à
+      confirmer ou à retirer.

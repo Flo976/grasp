@@ -15,7 +15,10 @@
 [Démarrage rapide](#démarrage-rapide) ·
 [Snapshot](#snapshot) ·
 [Commandes](#commandes) ·
+[MCP](#serveur-mcp) ·
+[Serveur distant](#tester-un-serveur-distant) ·
 [Mode Windows](#mode-windows-chromeexe-depuis-wsl2) ·
+[Docker](#docker) ·
 [Sécurité](#sécurité) ·
 [Limites](#limites-connues)
 
@@ -88,12 +91,20 @@ limite la lecture à une zone.
 - 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
+- 🤖 **Serveur MCP** : `grasp mcp` sur stdio, branchable dans Claude Code, Claude Desktop ou Cursor en une
+  ligne, sans dépendance ajoutée ([détails](#serveur-mcp)).
+- 📝 **Texte en Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), même budget et
+  même `--scope` que `text` ([détails](#sortie-markdown)).
 - ✅ **Recette scriptée** : `expect text|url|title|sel|value|no-console-errors|no-form-errors…`, code non nul et
   rapport (console, requêtes 4xx/5xx, formulaire, capture à l'échec) ([détails](#recette--expect-et-rapport-de-run)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
 - 🚫 **Traqueurs bloqués** (liste de Peter Lowe, ~3 500 domaines) : pages plus légères, attente plus courte
   ([détails](#blocage-des-traqueurs)).
-- 🔒 **Sécurité par défaut** : allowlist de navigation, protection SSRF, token, socket Unix ([détails](#sécurité)).
+- 🧵 **Sessions parallèles et recyclage** : un Chrome par session, navigateur relancé au-delà de N Mo ou
+  N minutes, plafond de sessions ([détails](#sessions-parallèles-et-recyclage)).
+- 🐳 **Image Docker** non-root, sandbox Chrome conservée ([détails](#docker)).
+- 🔒 **Sécurité par défaut** : allowlist de navigation, protection SSRF ([détails](#protection-ssrf)), token,
+  socket Unix ([détails](#sécurité)).
 
 ## 🛠️ Stack
 
@@ -1254,7 +1265,8 @@ POST /press  {key, target?, …}               POST /hover  {target, …}
 POST /type   {target, text, delay?, …}        (toute action : engine? = native | playwright)
 POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
-POST /run {script, continue?}   → {ok, total, executed, steps[]} ; 400 si le script est invalide (rien d'exécuté)
+POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)
+POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
@@ -1557,23 +1569,35 @@ grasp config unset allowedDomains         # retour au défaut (≠ liste vide)
 grasp security                            # politique telle que le garde l'applique
 ```
 
-Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
-`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `allowPrivateNetwork` (protection SSRF levée,
-`false` par défaut, voir [Protection SSRF](#protection-ssrf)), `blockTrackers` (blocage des
-traqueurs, `true` par défaut, voir [Blocage des traqueurs](#blocage-des-traqueurs)), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
-déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe), `proxyServer`,
-`proxyBypassList`, `hostResolverRules`, `ignoreCertErrorsFor` (voir [Tester un serveur distant](#tester-un-serveur-distant)). Une modification prend effet au redémarrage du
-serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
+Toutes les clés (`grasp config keys` donne le format exact). Absente du fichier = valeur par défaut, jamais
+« désactivée » ; une modification prend effet au redémarrage du serveur ; d'ici là, `grasp security` la signale
+sans la présenter comme appliquée.
 
-Limites de lecture (transmises au bridge à son lancement, à côté de la politique gelée, dont elles ne font
-pas partie) : `snapMax` (octets, 12000), `textMax` (caractères, 4000), `diffMax` (caractères, 4000),
-`stableTimeoutMs` (ms, 5000 ; 0 = pas d'attente de stabilité). `--max` les surcharge à chaque appel.
-`inputDeliveryMs` (ms, 300, de 50 à 10 000) : délai de livraison d'une entrée avant chaque étage de reprise
-(voir [Livraison vérifiée](#livraison-vérifiée-des-entrées)).
-`fallbackEngine` (`none` par défaut, ou `playwright`) : rejeu automatique des clics par le
-[moteur Playwright de repli](#moteur-playwright-de-repli).
-`browserMaxRssMb` (Mo), `browserMaxAgeMin` (minutes) et `maxSessions` : [recyclage et plafond de
-sessions](#sessions-parallèles-et-recyclage), désactivés par défaut (`none` pour revenir à « désactivé »).
+| Clé | Défaut | Rôle |
+|---|---|---|
+| **Navigateur** | | |
+| `chromePath` | découverte | Chemin du navigateur (voir [Découverte du navigateur](#découverte-du-navigateur)) |
+| `headless` | `true` | `false` : fenêtre visible |
+| `cdpUrl` | aucune | Mode attach : piloter un navigateur déjà lancé, jamais tué par Grasp |
+| `windowsProfilesDir` | `%LOCALAPPDATA%\grasp\profiles` | Racine des profils de chrome.exe ([Mode Windows](#mode-windows-chromeexe-depuis-wsl2)) |
+| **Politique (gelée, appliquée par le garde)** | | |
+| `allowedDomains` | `127.0.0.1`, `localhost`, `[::1]` | Allowlist de navigation ; `[]` = tout bloqué, `*.x` = sous-domaines, `*` = tout |
+| `allowEval`, `allowDownload`, `allowUpload`, `allowCookies` | `false` | `eval`, téléchargements, upload, cookies (et [export/import de l'état](#état--export-et-import)) |
+| `allowConsole` | `true` | Lecture de la [console](#console-du-navigateur) |
+| `allowPrivateNetwork` | `false` | Lève la [protection SSRF](#protection-ssrf) |
+| `blockTrackers` | `true` | [Blocage des traqueurs](#blocage-des-traqueurs) |
+| `proxyServer`, `proxyBypassList` | aucun | Proxy de Chrome et contournement ([Tester un serveur distant](#tester-un-serveur-distant)) |
+| `hostResolverRules` | aucune | Règles `MAP`/`EXCLUDE` de résolution d'hôte (vhost joint par son vrai nom) |
+| `ignoreCertErrorsFor` | aucun | Hôtes dont le certificat TLS n'est **pas** vérifié (jamais `*`) |
+| **Serveur** | | |
+| `transport`, `port` | `unix`, `7319` | Socket Unix ou TCP 127.0.0.1 (`serve --tcp --listen IP` pour un [conteneur](#docker)) |
+| `maxSessions` | aucun plafond | Sessions simultanées, 503 au-delà ([sessions parallèles](#sessions-parallèles-et-recyclage)) |
+| `browserMaxRssMb`, `browserMaxAgeMin` | désactivés | Recyclage du navigateur d'une session (Mo, minutes ; `none` = désactivé) |
+| **Lecture et actions (transmises au bridge, hors politique)** | | |
+| `snapMax`, `textMax`, `diffMax` | 12000 o, 4000 car., 4000 car. | Budgets de lecture ; `--max` les surcharge à chaque appel |
+| `stableTimeoutMs` | 5000 | [Attente de stabilité](#attente-de-stabilité) (0 = aucune) |
+| `inputDeliveryMs` | 300 | Délai de [livraison vérifiée](#livraison-vérifiée-des-entrées) d'une entrée (50 à 10 000) |
+| `fallbackEngine` | `none` | `playwright` : rejeu des clics par le [moteur de repli](#moteur-playwright-de-repli) |
 
 ## Tests
 
@@ -1673,6 +1697,9 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   servi depuis le domaine du site passe) ; les requêtes des workers (service workers, workers dédiés)
   échappent au garde `Fetch` de l'onglet ; la liste embarquée vieillit (mise à jour à la main, voir l'en-tête
   de `data/pgl-domains.txt`).
+- **Mode attach hors Chrome** : la garde runtime (redirections comprises) n'est garantie qu'avec Chrome. Un
+  navigateur qui se déclare `Chrome/…` dans `/json/version` peut ne pas l'être : Obscura 0.2.6 suit une
+  redirection 302 hors allowlist sans présenter le saut à `Fetch` (voir [docs/eval-obscura.md](docs/eval-obscura.md)).
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
   par Grasp…]`) lorsqu'il échoue, sans le bloquer.
