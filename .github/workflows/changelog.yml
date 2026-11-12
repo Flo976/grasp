@@ -1,0 +1,40 @@
+name: Journal des changements
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: CHANGELOG.md en règle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Format du journal et version de package.json
+        run: node scripts/check-changelog.mjs
+      - name: Chaque commit qui touche le code touche le journal
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            RANGE="$BASE..$HEAD_SHA"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            # nouvelle branche : ses commits absents de master (ou le dernier, à défaut)
+            BASE_NEW=$(git merge-base origin/master "$AFTER" 2>/dev/null || echo "$AFTER~1")
+            RANGE="$BASE_NEW..$AFTER"
+          else
+            RANGE="$BEFORE..$AFTER"
+          fi
+          node scripts/check-changelog.mjs --range "$RANGE"

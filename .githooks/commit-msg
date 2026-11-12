@@ -1,0 +1,5 @@
+#!/bin/sh
+# Journal des changements obligatoire : un commit qui touche le code (src/, skills/, docker/, data/,
+# Dockerfile, package.json) doit aussi toucher CHANGELOG.md, sauf « [sans changelog] » dans le message.
+# Installé par `npm install` (script prepare : git config core.hooksPath .githooks).
+exec node "$(git rev-parse --show-toplevel)/scripts/check-changelog.mjs" --commit-msg "$1"

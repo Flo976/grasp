@@ -3,7 +3,7 @@ name: grasp
 description: Piloter un vrai Chrome avec la CLI grasp (arbre d'accessibilité, CDP direct) pour naviguer, lire une page, remplir un formulaire, vérifier un résultat ou dérouler une recette web (expect, grasp run). À utiliser dès qu'une tâche demande d'agir sur une page web ou de vérifier un site.
 ---
 
-<!-- Généré par `grasp skill` (grasp 0.1.0). Ne pas modifier à la main : grasp skill > skills/grasp/SKILL.md -->
+<!-- Généré par `grasp skill` (grasp 0.5.0). Ne pas modifier à la main : grasp skill > skills/grasp/SKILL.md -->
 
 # Grasp : mode d'emploi pour un agent
 
@@ -107,7 +107,7 @@ relatif au répertoire du script — au répertoire courant sur stdin —, `~/` 
 - `expect not-clipped <sélecteur> [--timeout ms]` : ni rogné par un ancêtre overflow hidden/clip, ni par le bord du viewport
 - `expect no-horizontal-overflow [--timeout ms]` : pas de défilement horizontal (sinon : éléments qui dépassent)
 
-## Commandes (grasp 0.1.0)
+## Commandes (grasp 0.5.0)
 
 **Serveur** : `grasp serve`, `grasp stop`, `grasp status`, `grasp doctor`, `grasp daemon`, `grasp mcp` (`grasp help <commande>`)
 
