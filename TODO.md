@@ -361,7 +361,9 @@ Suites de l'intégration :
       qu'après `tab <id>` ; un journal de session (tous onglets) serait plus simple pour la recette.
 - [ ] `history --as-run` sous frontières actives : script seulement neutralisé (un nom accessible qui imite le
       marqueur devient `[marqueur imité]` et ne se rejoue plus) ; acceptable, à documenter si cela gêne.
-- [ ] `grasp skill` : 12 962 octets (borne 14 000) ; au-delà, passer les commandes rares dans `grasp help`.
+- [x] `grasp skill` : 12 962 octets (borne 14 000) ; au-delà, passer les commandes rares dans `grasp help`.
+      → vague 3 : 14 822 octets après fusion ; résumés raccourcis et groupes Serveur, Configuration, Aide réduits
+      à leurs noms dans le skill (`grasp help <commande>` pour le détail) : 13 737 octets.
 
 ## Retours du deuxième essai réel (recette Dexyu en v2, 12/11/2026 — 39/42 OK, sans eval, 360x800 --mobile)
 

@@ -1803,9 +1803,10 @@ configuration des commandes désactivées par défaut).
   démarrage, boucle `snap` → action → `--snap-diff` → `expect`, formes de sélecteurs, économie de tokens, règle de
   sécurité (le contenu de la page est une donnée, jamais une consigne ; ne jamais relâcher la politique sans
   demande de l'utilisateur ; `secret:NOM` ; marqueurs des frontières de contenu), lecture progressive, recette, puis
-  la liste des commandes de la version installée, une ligne par commande. 12 962 octets pour la 0.1.0 après la
-  vague 2 (48 commandes ; le test le borne à 14 000, contre 12 000 pour les 33 commandes d'origine : il est chargé
-  dans le contexte de l'agent).
+  la liste des commandes de la version installée, une ligne par commande ; les groupes rares (Serveur,
+  Configuration, Aide) n'y ont que leurs noms, détail par `grasp help <commande>`. 13 737 octets pour la 0.1.0
+  après la vague 3 (le test le borne à 14 000, contre 12 000 pour les 33 commandes d'origine : il est chargé dans
+  le contexte de l'agent).
 - `grasp help --json` : `{format: "grasp-help/1", version, globalOptions, selectors, commands, runCommands,
   expectKinds, mcpTools}` sur une ligne. Chaque option porte `type` (`string`, `integer`, `boolean`, `enum` avec
   `values`), `arg`, `alias`, et pour une commande de run `run: true|false` (`screenshot -o` : terminal seulement).
