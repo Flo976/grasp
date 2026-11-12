@@ -4,7 +4,7 @@ import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, url
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
-import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
+import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, urlBase, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
@@ -923,7 +923,7 @@ export class PageController {
     const now = Date.now();
     if (this.net.has(requestId)) return;
     let key = `${method} ${url}`;
-    try { const u = new URL(url); key = `${method} ${u.origin}${u.pathname}`; } catch { /* URL opaque */ }
+    try { const u = new URL(url); key = `${method} ${urlBase(u)}`; } catch { /* URL opaque */ }
     let ts = this.netStarts.get(key);
     if (ts === undefined) ts = [];
     ts.push(now);

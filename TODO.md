@@ -149,8 +149,10 @@ Image Docker
       vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
 - [ ] **`screenshot -o <fichier>` dans `grasp run`** : aujourd'hui refusé ; utile pour des captures nommées
       dans un rapport de recette.
-- [ ] **`console --level error`** remonte aussi les événements de navigation : ne garder que les erreurs.
-- [ ] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé).
+- [x] **`console --level error`** remonte aussi les événements de navigation : les repères (niveau info) suivent
+      désormais le filtre ; `--level error|warn` ne les rend plus.
+- [x] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé) : `urlBase` (schéma,
+      hôte, chemin) remplace `origin + pathname` dans `redactUrl` et la clé de fusion réseau.
 - [ ] **Poser une session factice sans `allowEval`** : `grasp state import` le permet déjà (documenter ce cas
       d'usage dans la section Recette) ; envisager `grasp storage set local <clé> <valeur>`.
 - [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ

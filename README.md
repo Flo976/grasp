@@ -1021,8 +1021,10 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
 
 - Une ligne par entrée : `#seq niveau source texte (fichier:ligne)`, doublons consécutifs **dans le
   tampon** fusionnés `×N` (la fusion précède le filtre `--level` : deux erreurs séparées par une info ne sont
-  pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error (les repères
-  de navigation restent). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
+  pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error ; les repères
+  de navigation sont de niveau `info` et suivent le filtre comme le reste : présents sans `--level` et en
+  `info`/`debug`, absents en `warn` et `error` (`--level error` ne rend que des erreurs). Une URL opaque
+  s'affiche telle quelle (`navigation → about:blank`). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
   écartées et les entrées perdues par le tampon sont signalées sur stderr. `--clear` vide le tampon
   après lecture (le `seq` continue). Un `--since` **supérieur au seq courant** (curseur d'un tampon recréé :
   bascule de profil, bridge relancé) → 409 « reprenez avec --since 0 », jamais un résultat vide silencieux ;

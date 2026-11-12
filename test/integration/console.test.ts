@@ -4,7 +4,7 @@ import { existsSync, statSync } from 'node:fs';
 import { openPage, type PageFixture } from '../helpers/chrome.js';
 import { startTestSite, type TestSite } from '../helpers/testsite.js';
 import { GraspError } from '../../src/core/errors.js';
-import type { ConsoleEntry } from '../../src/core/console.js';
+import { formatEntry, type ConsoleEntry } from '../../src/core/console.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -116,11 +116,16 @@ test('console : le tampon survit aux navigations, --since, --limit, --level, cle
   const seq = (await fx.page.consoleQuery({})).seq;
   assert.equal((await fx.page.consoleQuery({ since: seq })).entries.length, 0);
   assert.equal((await fx.page.consoleQuery({ since: s0, limit: 3 })).entries.filter((e) => e.source !== 'navigation').length, 3, '--limit ne compte pas les repères');
-  assert.ok((await fx.page.consoleQuery({ since: s0, level: 'error' })).entries.every((e) => e.level === 'error' || e.source === 'navigation'));
+  assert.ok((await fx.page.consoleQuery({ since: s0, level: 'error' })).entries.every((e) => e.level === 'error' && e.source !== 'navigation'));
   const cleared = await fx.page.consoleQuery({ clear: true });
   assert.ok(cleared.entries.length > 0, 'clear renvoie ce qu\'il vide');
   assert.equal((await fx.page.consoleQuery({})).entries.length, 0);
   assert.equal((await fx.page.consoleQuery({})).seq, cleared.seq, 'seq conservé');
+  // Régression (essai réel) : repère vers about:blank affiché « nullblank » (origine opaque concaténée).
+  await fx.page.navigate('about:blank');
+  const blank = await waitFor(fx.page, (x) => x.some((e) => e.source === 'navigation'), cleared.seq);
+  assert.deepEqual(blank.filter((e) => e.source === 'navigation').map((e) => e.text), ['about:blank']);
+  assert.equal(formatEntry(blank.find((e) => e.source === 'navigation')!), `#${blank.find((e) => e.source === 'navigation')!.seq} navigation → about:blank`);
 });
 
 test('console : jamais de corps de requête/réponse ni d\'en-tête Authorization ; jetons masqués dans les URL', async () => {
