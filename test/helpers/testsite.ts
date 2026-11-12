@@ -51,6 +51,51 @@ ${o.tardif === true ? `<script>setTimeout(() => { document.getElementById('bande
 </body></html>`;
 }
 
+/**
+ * Cas limites de la géométrie (à voir en 360x800 SANS --mobile, barre de défilement comprise) : en-tête fixe à
+ * 100 % avec un bouton « Menu » à droite ; bloc #large de 600 px (bouton #loin-droite à x=500, enfant #enfant de
+ * 700 px : c'est lui qui fixe la largeur du document) ; élément absolu dans un ancêtre overflow:hidden NON
+ * positionné (il en échappe) et dans un ancêtre positionné (rogné) ; élément fixe dans un ancêtre overflow:hidden
+ * (il en échappe) et dans un ancêtre transformé (rogné) ; bande fixe de 500 px (ne fait pas défiler la page) ;
+ * élément visibility:hidden. `ombre` : seul un hôte dont la racine fantôme ouverte contient un bloc absolu de
+ * 600 px ; `mobile` : en-tête fixe à 100 % et bloc de 520 px (à voir en --mobile : viewport de mise en page élargi).
+ */
+export function geometrie(o: { ombre?: boolean; mobile?: boolean } = {}): string {
+  const head = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Géométrie</title>
+<style>html,body{margin:0}
+#hdr{position:fixed;left:0;top:0;width:100%;height:40px;background:#036}
+#m{float:right;width:50px;height:20px;margin:0;padding:0;border:0}
+#contenu{margin-top:50px}
+#large{width:600px;height:60px} #loin-droite{margin-left:500px;width:60px;height:20px;padding:0;border:0} #enfant{width:700px;height:10px}
+.coupe{width:100px;height:50px;overflow:hidden}
+.coupe-pos{position:relative;width:100px;height:50px;overflow:hidden}
+.coupe-tr{transform:translateX(0);width:100px;height:50px;overflow:hidden}
+#abs{position:absolute;left:0;top:300px;width:200px;height:20px}
+#abs2{position:absolute;left:0;top:0;width:200px;height:20px}
+#fix{position:fixed;left:0;bottom:0;width:150px;height:20px}
+#fix2{position:fixed;left:0;top:0;width:150px;height:20px}
+#bande{position:fixed;left:0;top:100px;width:500px;height:10px}
+#invisible{visibility:hidden;width:50px;height:20px}
+#large520{width:520px;height:40px}</style></head><body>`;
+  if (o.ombre === true) {
+    return `${head}<div id="hote"></div>
+<script>document.getElementById('hote').attachShadow({ mode: 'open' }).innerHTML = '<div class="dedans" style="position:absolute;left:0;top:0;width:600px;height:10px"></div>';</script>
+</body></html>`;
+  }
+  if (o.mobile === true) return `${head}<div id="hdr"><button id="m">Menu</button></div><div id="contenu"><div id="large520">Large</div></div></body></html>`;
+  return `${head}<div id="hdr"><button id="m">Menu</button></div>
+<div id="contenu">
+<div id="large"><button id="loin-droite">Droite</button><div id="enfant"></div></div>
+<div class="coupe"><div id="abs">Absolu libre</div></div>
+<div class="coupe-pos"><div id="abs2">Absolu rogné</div></div>
+<div class="coupe"><div id="fix">Fixe libre</div></div>
+<div class="coupe-tr"><div id="fix2">Fixe rogné</div></div>
+<div id="bande"></div>
+<div id="invisible">Invisible</div>
+</div></body></html>`;
+}
+
 /** Page haute (3100 px) à zones colorées : capture du viewport, page entière, découpe d'élément. */
 export const CAPTURE_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Capture</title>
@@ -1010,6 +1055,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
     if (u.pathname === '/mise-en-page') { res.end(miseEnPage({ propre: u.searchParams.has('propre'), masque: u.searchParams.has('masque'), tardif: u.searchParams.has('tardif') })); return; }
+    if (u.pathname === '/geometrie') { res.end(geometrie({ ombre: u.searchParams.has('ombre'), mobile: u.searchParams.has('mobile') })); return; }
     if (u.pathname === '/carre.svg') { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#36c"/></svg>'); return; }
     if (u.pathname === '/viewport') { res.end(viewportPage(String(req.headers['user-agent'] ?? ''))); return; }
     if (u.pathname === '/coffre') { res.end(COFFRE_PAGE); return; }

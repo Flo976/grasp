@@ -835,7 +835,8 @@ Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N] [-
                --interactive : éléments actionnables et champs, avec leurs conteneurs et titres ; texte brut omis
                refs identiques au snapshot complet ; dernière ligne « … lecture partielle (--mode) : N lignes sur M »
                --boxes : chaque ligne à ref suivie de sa boîte « @x,y LxH » (px CSS arrondis, coin haut-gauche dans le
-               document, défilement compris ; « @aucune-boîte » si non rendu), viewport rappelé sous l'en-tête ; aussi sur find
+               document, défilement compris ; élément fixe : dans le viewport, suivi de « fixe » ; « @aucune-boîte » si
+               non rendu), viewport rappelé sous l'en-tête ; aussi sur find
              find <texte|/regex/> [--role r[,r2]] [--max N (30)] [--scope <sél>] [--boxes]   lignes du snapshot qui correspondent
                (nom entier, valeur, texte ; sans casse ni accents ; options des listes fermées comprises), avec leur
                conteneur « (dans eXX:row "…") » ; --role text = texte brut ; refs identiques au snapshot complet
@@ -874,11 +875,13 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
                requête terminée avec ce statut (2xx par défaut) depuis le début du document courant
              expect a11y [--max N] [--scope <sél>]                    au plus N problèmes (grasp a11y), 0 par défaut
              expect in-viewport <sél> [--fully]                       tient dans la LARGEUR du viewport (plus bas dans la
-               page : accepté) ; --fully : entièrement visible sans défiler, à la position de défilement courante
+               page : accepté) ; --fully : entièrement visible sans défiler, à la position de défilement courante ;
+               élément fixe : jugé dans le viewport (« boîte fixe »), quel que soit le défilement
              expect not-clipped <sél>                                 ni rogné par un ancêtre overflow hidden/clip (sur l'axe
                qu'il rogne ; auto/scroll : non), ni au-delà de la largeur du viewport
              expect no-horizontal-overflow                            la page ne défile pas horizontalement ; échec : les
-               éléments les plus externes qui dépassent, avec leur position et leur largeur
+               éléments les plus externes qui dépassent, avec leur position et leur largeur (racines fantômes
+               ouvertes comprises ; « contenu jusqu'à x=… » si un descendant dépasse plus loin)
                sélecteur : CSS (unique ; img alt="" comprise), ref ou text: ; mesures dans le monde isolé (sans eval)
                relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console, formulaire et a11y : immédiat) ;
                échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture

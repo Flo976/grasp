@@ -72,7 +72,7 @@ export const OPTIONS: Record<string, OptionSpec> = {
   // Vague 2 : lecture progressive, réseau, dialogues, onglets, historique, viewport, secrets, multi-pages.
   'outline': { type: 'boolean', description: 'snap partiel : repères, tableaux et titres, avec le volume de chaque repère' },
   'interactive': { type: 'boolean', description: 'snap partiel : éléments actionnables et champs, avec leurs conteneurs' },
-  'boxes': { type: 'boolean', description: 'boîte de chaque ligne à ref : @x,y LxH (px CSS, coin haut-gauche dans le document)' },
+  'boxes': { type: 'boolean', description: 'boîte de chaque ligne à ref : @x,y LxH (px CSS, coin haut-gauche dans le document ; élément fixe : dans le viewport, suivi de « fixe »)' },
   'fully': { type: 'boolean', description: 'expect in-viewport : aussi verticalement, sans défiler (position courante)' },
   'role': { type: 'string', arg: 'r[,r2]', description: 'rôles retenus par find (button, link, textbox, option, text…)' },
   'network': { type: 'boolean', description: 'requêtes parties pendant l\'action' },

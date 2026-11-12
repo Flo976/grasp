@@ -105,6 +105,8 @@ test('--boxes : snap et find seulement, sans valeur ; requête boxes=1', () => {
   assert.throws(() => buildRequest(parseArgs(splitLine('snap --boxes=1'))), /--boxes ne prend pas de valeur/);
   assert.equal(boxLabel([19.6, 280.2, 200, 40.4]), '@20,280 200x40');
   assert.equal(boxLabel(null), '@aucune-boîte');
+  // Élément fixe : coordonnées du viewport, signalées.
+  assert.equal(boxLabel([310, 0, 50, 20, 1]), '@310,0 50x20 fixe');
 });
 
 test('snapshot --boxes : suffixe par ligne à ref, ligne d\'explication, budget respecté, refs et diff inchangés', () => {
@@ -134,4 +136,29 @@ test('snapshot --boxes : suffixe par ligne à ref, ligne d\'explication, budget 
   const big = buildSnapshot([r2, ...many], { url: 'u', title: 'T', maxBytes: 2000, boxes: { of: new Map(many.map((k) => [k.backendDOMNodeId!, '@0,0 360x20'])), note: 'n' } });
   assert.ok(Buffer.byteLength(big.text) <= 2000, `taille ${Buffer.byteLength(big.text)}`);
   assert.match(big.text, /omis/);
+});
+
+test('élément fixe : jugé dans le viewport quel que soit le défilement horizontal ; viewport de mise en page élargi dit', () => {
+  // En-tête fixe à 100 % (345 px, barre de défilement exclue), page défilée de 340 px : il ne dépasse pas.
+  const hdr = geo({ l: 0, t: 0, r: 345, b: 40 }, { vw: 345, sx: 340, fixed: true, iw: 360 });
+  assert.deepEqual(judgeInViewport(hdr, false), { ok: true, observed: 'boîte fixe x=0 y=0 345x40 ; viewport 345x800' });
+  assert.deepEqual(judgeNotClipped(hdr), { ok: true, observed: 'boîte fixe x=0 y=0 345x40' });
+  // Le même, non fixe, serait décalé de 340 px dans le document : il dépasse.
+  assert.equal(judgeInViewport({ ...hdr, fixed: false }, false).ok, false);
+  // Un élément fixe trop large dépasse toujours, sans l'indice (innerWidth ≈ largeur visible : simple barre de défilement).
+  assert.equal(judgeNotClipped(geo({ l: 0, t: 0, r: 500, b: 10 }, { vw: 345, fixed: true, iw: 360 })).observed, 'boîte fixe x=0 y=0 500x10 ; dépasse la largeur du viewport (345 px) de 155 px à droite');
+  // --mobile, page qui déborde : viewport de mise en page élargi à 520 px, l'en-tête à 100 % s'élargit avec.
+  const large = geo({ l: 0, t: 0, r: 520, b: 40 }, { fixed: true, iw: 520 });
+  const hint = ' (élément fixe : la page déborde et Chrome a élargi le viewport de mise en page à 520 px — cause à chercher avec expect no-horizontal-overflow)';
+  assert.equal(judgeInViewport(large, false).observed, `boîte fixe x=0 y=0 520x40 ; viewport 360x800 : dépasse de 160 px à droite${hint}`);
+  assert.equal(judgeNotClipped(large).observed, `boîte fixe x=0 y=0 520x40 ; dépasse la largeur du viewport (360 px) de 160 px à droite${hint}`);
+  // Non fixe : pas d'indice.
+  assert.doesNotMatch(judgeInViewport({ ...large, fixed: false }, false).observed, /élargi/);
+});
+
+test('no-horizontal-overflow : descendant plus large que l\'élément cité', () => {
+  const r = judgeHorizontalOverflow({ vw: 360, vh: 800, sw: 700, rootOx: 'visible', culprits: [{ who: 'div#large', l: 0, r: 600, rr: 700 }], count: 1, truncated: false });
+  assert.equal(r.observed, 'largeur du document 700 px > viewport 360 px (+340 px) ; 1 élément(s) dépassent : div#large x=0 largeur 600, contenu jusqu\'à x=700 (+340 px)');
+  // rr pas plus loin que l'élément : rien de plus.
+  assert.equal(judgeHorizontalOverflow({ vw: 360, vh: 800, sw: 600, rootOx: 'visible', culprits: [{ who: 'div#large', l: 0, r: 600, rr: 560 }], count: 1, truncated: false }).items[0], 'div#large x=0 largeur 600 (+240 px)');
 });

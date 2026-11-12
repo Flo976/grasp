@@ -376,7 +376,10 @@ Suites de l'intégration :
   l'arbre a11y). Fait : `expect in-viewport <sél> [--fully]` (largeur du viewport ; `--fully` : visible sans
   défiler), `expect not-clipped <sél>` (ancêtre overflow hidden/clip, bord du viewport), `expect
   no-horizontal-overflow` (éléments qui dépassent cités), `--boxes` sur `snap` et `find` (`@x,y LxH`) ; mesures
-  en monde isolé, CSS/ref/text:, CLI, run, MCP, history --as-run. Test : `mise-en-page.test.ts` (360x800).
+  en monde isolé, CSS/ref/text:, CLI, run, MCP, history --as-run. Relecture : éléments fixes jugés dans le
+  viewport (défilement horizontal sans effet, boîte « fixe »), visibility:hidden sans boîte, racines fantômes
+  ouvertes parcourues, descendant plus large cité « contenu jusqu'à », indice du viewport élargi en --mobile.
+  Test : `mise-en-page.test.ts` (360x800, avec et sans --mobile, page `/geometrie`).
 - [ ] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
   (« pas de meta viewport → largeur de mise en page 980 »).
 - [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques

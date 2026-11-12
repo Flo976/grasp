@@ -533,7 +533,9 @@ esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
 - **`--boxes`** (`?boxes=1`, sur `snap` dans toutes ses formes et sur `find`) : chaque ligne à ref est suivie de
   la **boîte** de son élément, `@x,y LxH` en px CSS arrondis — coin haut-gauche dans le **document** (défilement
   compris, donc indépendant de la position de défilement), largeur, hauteur ; `@aucune-boîte` pour un élément non
-  rendu. Une ligne sous l'en-tête le rappelle avec la taille du viewport :
+  rendu (`display:none`, `visibility:hidden`…). Un élément **fixe** (`position: fixed` sans ancêtre transformé, ou
+  contenu par un tel élément) reste collé au viewport : sa boîte est donnée dans le **viewport**, suivie de
+  `fixe` (`@310,0 50x20 fixe`). Une ligne sous l'en-tête le rappelle avec la taille du viewport :
 
   ```
   $ grasp find Valider --boxes          # viewport 360x800 --mobile
@@ -1253,18 +1255,31 @@ FIN
   - `in-viewport` juge la boîte (`getBoundingClientRect`) dans le **document** : défilement horizontal compris, un
     élément plus bas reste « dans la largeur ». C'est le défaut utile d'une recette mobile (« ce bloc tient-il en
     360 px ? ») ; `--fully` y ajoute la hauteur, à la position de défilement courante (« visible sans défiler »).
-    Ne regarde pas les ancêtres : pour un élément coupé par sa carte, `not-clipped`.
+    Ne regarde pas les ancêtres : pour un élément coupé par sa carte, `not-clipped`. Un élément **fixe** reste
+    dans le viewport quel que soit le défilement : jugé et rapporté dans le viewport (« boîte fixe x=… »).
+  - Pas de boîte (« élément non rendu ») : `display:none`, `visibility:hidden`, `content-visibility` masqué,
+    élément détaché.
   - `not-clipped` remonte la **chaîne des blocs conteneurs** (un élément `position: absolute` échappe à l'overflow
     d'un ancêtre non positionné ; un élément `fixed`, à tous sauf un ancêtre transformé), html et body exclus (leur
     overflow passe au viewport) : chaque ancêtre en `overflow-x` / `overflow-y` `hidden` ou `clip` rogne sur son
     axe, contre sa boîte de remplissage. `auto` / `scroll` ne rognent **pas** (on y défile : un tableau de 700 px
     dans un conteneur qui défile est accepté). Le bord du viewport compte aussi, pour la part de l'élément que
-    laisse voir le plus proche conteneur en `overflow-x` ≠ `visible`.
+    laisse voir le plus proche conteneur en `overflow-x` ≠ `visible` (élément fixe : dans le viewport, sans
+    tenir compte du défilement horizontal).
   - `no-horizontal-overflow` compare `scrollWidth` et `clientWidth` de l'élément qui défile, puis cite les
     éléments **les plus externes** dont le bord droit dépasse (5 dans le message, 20 dans `items`), hors de ceux
-    contenus par un conteneur en `overflow-x` ≠ `visible` et des éléments fixes ; 5 000 éléments examinés au plus
-    (dépassement annoncé). Viewport en `overflow-x: hidden` (posé sur html ou body) : la page ne défile pas mais le
-    contenu qui dépasse est **rogné** ; l'assertion échoue quand même et le dit.
+    contenus par un conteneur en `overflow-x` ≠ `visible` et des éléments fixes ; un descendant qui dépasse plus
+    loin que l'élément cité n'est pas cité à part mais allonge sa ligne (`div#large x=0 largeur 600, contenu
+    jusqu'à x=700 (+340 px)`). Les racines fantômes **ouvertes** sont parcourues (élément cité avec son hôte :
+    `div#hote » div.dedans`) ; une racine fermée, un pseudo-élément ou une marge donnent « aucun élément
+    identifié ». 5 000 éléments examinés au plus (dépassement annoncé). Viewport en `overflow-x: hidden` (posé sur
+    html ou body) : la page ne défile pas mais le contenu qui dépasse est **rogné** ; l'assertion échoue quand même
+    et le dit.
+  - **`--mobile` et page qui déborde** : Chrome élargit alors le viewport de mise en page à la largeur du contenu
+    (`innerWidth` 520 pour un bloc de 520 px), et un en-tête **fixe** à `width: 100%` s'élargit avec. `in-viewport`
+    et `not-clipped` le signalent (il dépasse bien des 360 px visibles), avec l'indice « élément fixe : la page
+    déborde et Chrome a élargi le viewport de mise en page à 520 px — cause à chercher avec expect
+    no-horizontal-overflow » : corrigez la cause, l'en-tête suit.
 
   Messages (page de test `/mise-en-page`, 360x800 `--mobile`) :
 
@@ -2840,9 +2855,10 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
 - Mise en page (`expect in-viewport|not-clipped|no-horizontal-overflow`, `--boxes`) : géométrie du **document
   principal** seulement (pas d'iframe, pas de sélecteur `frame=…`) ; `clip-path`, `contain: paint` et les
-  pseudo-éléments ne sont pas examinés ; un sélecteur CSS doit désigner un seul élément (pas de « tous les `img` ») ;
+  pseudo-éléments et racines fantômes fermées ne sont pas examinés ; un sélecteur CSS doit désigner un seul élément (pas de « tous les `img` ») ;
   `no-horizontal-overflow` ne cherche que le débordement à droite (écriture de gauche à droite) et examine
-  5 000 éléments au plus. Testé en headless à 360x800 `--mobile` (page `/mise-en-page`), pas sur chrome.exe.
+  5 000 éléments au plus. Testé en headless à 360x800, avec et sans `--mobile` (pages `/mise-en-page` et
+  `/geometrie`), pas sur chrome.exe.
 - **Historique et défilement** : `back`/`forward` ne voient que l'historique de l'onglet de la session (un popup
   n'est pas pilotable) ; une page restaurée depuis le cache aller-retour n'est pas re-téléchargée, si bien que
   seul le pré-contrôle du garde la juge. Un `history.back()` lancé par **la page elle-même** n'y passe pas :

@@ -211,7 +211,7 @@ const ACTION_PROPS: Record<string, Prop> = {
 };
 const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, network: ACTION_PROPS.network!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
 
-const BOXES_PROP = B('Ajoute à chaque ligne à ref sa boîte « @x,y LxH » (px CSS, coin haut-gauche dans le document) : vérifier une mise en page (élément trop large pour le viewport) sans eval. Assertions de recette : outil run avec `expect in-viewport|not-clipped <sél>`, `expect no-horizontal-overflow`.');
+const BOXES_PROP = B('Ajoute à chaque ligne à ref sa boîte « @x,y LxH » (px CSS, coin haut-gauche dans le document ; élément fixe : dans le viewport, suivi de « fixe ») : vérifier une mise en page (élément trop large pour le viewport) sans eval. Assertions de recette : outil run avec `expect in-viewport|not-clipped <sél>`, `expect no-horizontal-overflow`.');
 
 /** Nom d'argument MCP (camelCase) → option de la CLI. */
 const FLAG: Record<string, string> = {

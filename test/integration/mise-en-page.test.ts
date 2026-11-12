@@ -120,3 +120,67 @@ test('mise en page mobile : expect in-viewport, not-clipped, no-horizontal-overf
     } finally { mcp.stdin.end(); await waitExit(mcp); }
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });
+
+/**
+ * Cas limites de la mesure (page `/geometrie`, 360x800 SANS --mobile puis avec) : élément fixe après un
+ * défilement horizontal (jugé dans le viewport, boîte « fixe »), absolu qui échappe à un ancêtre overflow:hidden
+ * non positionné, fixe qui échappe à tout ancêtre non transformé, débordement cité une fois par élément le plus
+ * externe (descendant plus large : « contenu jusqu'à »), éléments fixes hors du débordement de la page,
+ * visibility:hidden sans boîte, débordement venu d'une racine fantôme ouverte, et indice du viewport de mise en
+ * page élargi en --mobile.
+ */
+test('géométrie : fixe défilé, absolu et fixe hors des ancêtres, dédoublonnage, ombre, visibility:hidden', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  const paths = resolvePaths(t.env, t.env.HOME!);
+  mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.configFile, JSON.stringify({ allowedDomains: ['127.0.0.1'] }), { mode: 0o600 });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create', '--viewport', '360x800'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const ok = async (args: string[], e: NodeJS.ProcessEnv = env) => { const r = await runCli(e, args); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stdout}${r.stderr}`); return r; };
+    const ko = async (args: string[], re: RegExp, e: NodeJS.ProcessEnv = env) => {
+      const r = await runCli(e, args);
+      assert.equal(r.code, 1, `${args.join(' ')} devait échouer : ${r.stdout}${r.stderr}`);
+      assert.match(r.stderr, re, args.join(' '));
+      return r;
+    };
+    await ok(['nav', `${site.url}/geometrie`]);
+
+    // Un seul élément cité : #large (ses descendants qui dépassent allongent « contenu jusqu'à »), ni la bande
+    // fixe de 500 px ni l'en-tête fixe.
+    await ko(['expect', 'no-horizontal-overflow', '--timeout', '0'], /constaté : largeur du document 700 px > viewport 360 px \(\+340 px\) ; 1 élément\(s\) dépassent : div#large x=0 largeur 600, contenu jusqu'à x=700 \(\+340 px\)$/m);
+    // Absolu dans un ancêtre overflow:hidden non positionné : il en échappe ; positionné : rogné.
+    await ok(['expect', 'not-clipped', '#abs', '--timeout', '0']);
+    await ko(['expect', 'not-clipped', '#abs2', '--timeout', '0'], /rogné par div\.coupe-pos \(overflow hidden, zone x=0 y=\d+ 100x50\) : 100 px à droite$/m);
+    // Fixe dans un ancêtre overflow:hidden : il en échappe ; dans un ancêtre transformé : rogné.
+    await ok(['expect', 'not-clipped', '#fix', '--timeout', '0']);
+    await ko(['expect', 'not-clipped', '#fix2', '--timeout', '0'], /rogné par div\.coupe-tr \(overflow hidden, zone x=0 y=\d+ 100x50\) : 50 px à droite$/m);
+    // visibility:hidden : pas de boîte.
+    await ko(['expect', 'in-viewport', '#invisible', '--timeout', '0'], /constaté : aucune boîte : élément non rendu \(display:none, visibility:hidden/);
+
+    // Défilement horizontal (le clic amène le bouton à x=500 dans la vue) : l'en-tête fixe et son bouton restent
+    // dans le viewport, jugés tels quels, boîte « fixe » en coordonnées du viewport.
+    await ok(['click', '#loin-droite']);
+    await ok(['expect', 'in-viewport', '#loin-droite', '--fully', '--timeout', '0']);
+    await ok(['expect', 'in-viewport', '#m', '--timeout', '0']);
+    await ok(['expect', 'in-viewport', '#m', '--fully', '--timeout', '0']);
+    await ok(['expect', 'not-clipped', '#hdr', '--timeout', '0']);
+    assert.match((await ok(['find', 'Menu', '--boxes'])).stdout, /^e[0-9a-z]+:button "Menu" @310,0 50x20 fixe$/m);
+    assert.match((await ok(['find', 'Droite', '--boxes'])).stdout, /^e[0-9a-z]+:button "Droite" (\[focus\] )?@500,50 60x20$/m);
+    await ko(['expect', 'in-viewport', '#bande', '--timeout', '0'], /constaté : boîte fixe x=0 y=100 500x10 ; viewport 360x\d+ : dépasse de 140 px à droite$/m);
+
+    // Débordement venu d'une racine fantôme ouverte : l'élément est cité avec son hôte.
+    await ok(['nav', `${site.url}/geometrie?ombre=1`]);
+    await ko(['expect', 'no-horizontal-overflow', '--timeout', '0'], /1 élément\(s\) dépassent : div#hote » div\.dedans x=0 largeur 600 \(\+240 px\)$/m);
+
+    // --mobile : la page qui déborde élargit le viewport de mise en page ; l'en-tête fixe à 100 % s'élargit avec,
+    // et le message renvoie à la cause.
+    const id2 = (await runCli(t.env, ['session', 'create', '--viewport', '360x800', '--mobile'])).stdout.trim();
+    const env2 = { ...t.env, GRASP_SESSION: id2 };
+    await ok(['nav', `${site.url}/geometrie?mobile=1`], env2);
+    await ko(['expect', 'in-viewport', '#hdr', '--timeout', '0'], /constaté : boîte fixe x=0 y=0 520x40 ; viewport 360x800 : dépasse de 160 px à droite \(élément fixe : la page déborde et Chrome a élargi le viewport de mise en page à 520 px — cause à chercher avec expect no-horizontal-overflow\)$/m, env2);
+    await ko(['expect', 'no-horizontal-overflow', '--timeout', '0'], /1 élément\(s\) dépassent : div#large520 x=0 largeur 520 \(\+160 px\)$/m, env2);
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});
