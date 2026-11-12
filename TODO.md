@@ -138,3 +138,20 @@ Image Docker
 - [ ] Réévaluer quand Obscura interceptera les redirections (garde contournée par un 302 aujourd'hui).
 - [ ] Licence des instantanés Wikipédia (CC BY-SA) versionnés sous `docs/eval-obscura/snapshots/` : à
       confirmer ou à retirer.
+
+## Secrets jamais vus par l'agent
+
+- [x] **`fill <sél> secret:NOM`** (CLI, `grasp run`, MCP) : valeur prise dans `~/.config/grasp/secrets.json`
+      (0600, hors config ; préféré à `GRASP_SECRET_NOM` : domaines portés par le secret, environnement hérité
+      par Chrome et par le shell de l'agent), restreinte à des domaines (403 avant toute frappe sinon), masquée
+      `secret:NOM` dans toutes les sorties texte (bridge à la source + filet du control plane, journal compris ;
+      encodages URL/formulaire/JSON/HTML, débuts coupés par un budget, champ marqué, valeur effective tronquée).
+      `grasp secrets list|set|rm`, outil MCP `secrets`. Inspiré de Playwright MCP (`lookupSecret`,
+      `_redactSecrets`, Apache-2.0), sans code repris. Tests : `test/unit/secrets.test.ts`,
+      `test/integration/secrets.test.ts`, 8 mutations détectées (README « Secrets »).
+- [ ] Captures et PDF non masqués (un champ texte rempli s'y voit) : flouter les champs marqués avant capture ?
+- [ ] Profil Chrome : cache HTTP, `Web Data` (saisie semi-automatique), `Sessions/` gardent une valeur envoyée
+      par formulaire ; persistant pour un profil nommé. Désactiver la saisie semi-automatique pour les sessions
+      qui utilisent un secret ?
+- [ ] `frame=…` (secret dans une iframe de connexion) : contrôler le domaine du cadre, pas de la page.
+- [ ] Masquage du journal du serveur non couvert par un test de mutation.
