@@ -22,7 +22,7 @@ export const HISTORY_REF_RE = /^e[0-9a-z]{1,4}$/;
 
 /**
  * action : rejouée ; wait / expect : rejouées (synchronisation, vérification) ; read : lecture pure, omise du
- * script ; offline : pas de ligne de run (state import) : laissée en commentaire.
+ * script ; offline : pas de ligne rejouable (state import reçu sans fichier : stdin, API, MCP) : laissée en commentaire.
  */
 export type HistoryKind = 'action' | 'wait' | 'expect' | 'read' | 'offline';
 
@@ -210,7 +210,9 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
     case 'GET /pdf': return L('pdf', []);
     // Le contenu de l'état n'est jamais conservé (cookies) : seulement le fait.
     case 'GET /state/export': return L('state export', []);
-    case 'POST /state/import': return L('state import', [], [], 'offline');
+    // Fichier connu (CLI : commande isolée ou ligne de run) : ligne rejouable par grasp run ; contenu reçu sans
+    // fichier (stdin, API, MCP) : rien à relire, ligne commentée.
+    case 'POST /state/import': return str(b.file) !== undefined ? L('state import', [str(b.file)!]) : L('state import', [], [], 'offline');
     case 'POST /profile': return L('profile', [str(b.name) ?? '']);
     default: return undefined;
   }
@@ -381,7 +383,7 @@ export function asRunScript(entries: HistoryEntry[], o: AsRunOptions): string {
   for (const e of entries) {
     if (e.kind === 'read') { reads.set(e.line.cmd, (reads.get(e.line.cmd) ?? 0) + 1); continue; }
     if (!e.ok) { failed.push(e); continue; }
-    if (e.kind === 'offline') { body.push(`# ${renderLine(e.line)}   # #${e.seq} : hors run, à refaire à part (grasp ${e.line.cmd} <fichier>)`); continue; }
+    if (e.kind === 'offline') { body.push(`# ${renderLine(e.line)} <fichier>   # #${e.seq} : contenu reçu sans fichier (stdin, API ou MCP) : indiquez le fichier à rejouer`); continue; }
     const line: CommandLine = { cmd: e.line.cmd, flags: e.line.flags.filter(([k]) => e.kind !== 'action' || !OUTPUT_FLAGS.has(k)), pos: [...e.line.pos] };
     const notes: string[] = [];
     const t = e.target;

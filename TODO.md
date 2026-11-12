@@ -365,12 +365,17 @@ Suites de l'intégration :
 
 ## Retours du deuxième essai réel (recette Dexyu en v2, 12/11/2026 — 39/42 OK, sans eval, 360x800 --mobile)
 
-- [ ] **`state import` dans `run`** : « commande inconnue » dans un run, alors que le README (l. 118) le donne
+- [x] **`state import` dans `run`** : « commande inconnue » dans un run, alors que le README (l. 118) le donne
   comme alternative à `storage set`. L'implémenter dans `run` (avant toute navigation), ou corriger la doc.
+  → ligne `state import <fichier>` : fichier lu par la CLI avant l'envoi (relatif au répertoire courant), mêmes
+  garde-fous (allowCookies, allowlist) ; API/MCP `run` : refus qui oriente vers `POST /state/import` ou `state_import` ;
+  `history --as-run` la rejoue quand le fichier est connu (`test/integration/storage.test.ts`, `test/unit/run-state.test.ts`).
 - [ ] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
   Poser la valeur pour une origine avant le premier chargement, comme `state import`.
-- [ ] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
+- [x] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
   true`, ce qui pousse un agent à contourner le skill. Proposer plutôt les alternatives (`storage`, `expect`, `find`).
+  → `EVAL_REFUSAL` (src/core/policy.ts), même texte en CLI, run, MCP : alternatives sans eval, `allowEval` présenté
+  comme décision de l'utilisateur humain ; rappel dans SKILL.md et les instructions MCP.
 - [ ] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
   `expect not-clipped <sél>`, ou boîtes englobantes en option de `snap`/`find` (une image alt="" n'est pas dans
   l'arbre a11y).
@@ -378,8 +383,11 @@ Suites de l'intégration :
   (« pas de meta viewport → largeur de mise en page 980 »).
 - [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
   des étapes KO restent dans state/grasp/captures/.
-- [ ] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
+- [x] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
+  → outils `storage` (get|set|rm, local|session) et `state_import` (JSON en argument), mêmes contrôles que la CLI.
 - [ ] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
   une fois par origine suffit.
-- [ ] **Doc `console --level error`** : dire qu'il inclut les erreurs réseau, et préciser si
+- [x] **Doc `console --level error`** : dire qu'il inclut les erreurs réseau, et préciser si
   `expect no-console-errors` les compte.
+  → oui pour les deux (réponses ≥ 400, net::ERR, CORS, bloquées par Grasp ; pas les annulations ni les traqueurs) :
+  dit dans l'aide CLI, le catalogue (help/SKILL.md) et le README ; aucun écart entre les deux à corriger.

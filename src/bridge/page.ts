@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
-import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
+import { EVAL_REFUSAL, checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
@@ -3896,7 +3896,7 @@ export class PageController {
 
   /** eval avec le type du résultat : `undefined` (el.click(), form.submit()) n'a pas de valeur JSON. */
   async evaluateTyped(expression: string): Promise<{ value?: unknown; type: string }> {
-    if (!this.policy.allowEval) throw forbidden('eval est désactivé (grasp config set allowEval true pour l\'autoriser)');
+    if (!this.policy.allowEval) throw forbidden(EVAL_REFUSAL);
     this.actNetSeq = this.netLog.seq;
     const r = await this.s<{ result: { value?: unknown; type: string; subtype?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
     if (r.exceptionDetails) throw badRequest(`exception : ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);

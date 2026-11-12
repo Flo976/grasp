@@ -9,7 +9,8 @@ import { formatNetEntries, networkLosses, type NetEntry } from '../core/network.
 import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 import { renderViewport } from '../core/viewport.js';
 import { buildRequest, RUN_COMMANDS, ScriptError, type Args, type StepRequest } from '../core/script.js';
-import { formatReport, type RunResult } from '../control/run.js';
+import { formatReport, stateImportNotes, type RunResult } from '../control/run.js';
+import { STATE_MAX_BYTES } from '../core/state.js';
 
 /**
  * `grasp mcp` : serveur MCP (Model Context Protocol) sur stdio, JSON-RPC 2.0, un message JSON par ligne.
@@ -461,6 +462,42 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'storage',
+    // Mêmes contrôles que grasp storage : allowCookies, origine affichée dans l'allowlist, code fixe sans eval.
+    description: 'Stockage Web (localStorage ou sessionStorage) de l\'origine AFFICHÉE, sans eval : get (valeur, 4000 caractères au plus), set, rm. Pour poser une session factice (jeton, profil) puis recharger la page : storage set, puis nav. Exige allowCookies (désactivé par défaut : 403 sinon) ; origine http(s) dans l\'allowlist ; sur about:blank, naviguez d\'abord (ou outil state_import, avant toute navigation).',
+    props: { op: S('Opération.', { enum: ['get', 'set', 'rm'] }), area: S('Stockage visé.', { enum: ['local', 'session'] }), key: S('Clé (1 à 1000 caractères).'), value: S('Valeur (avec op=set seulement).') },
+    required: ['op', 'area', 'key'],
+    async run(c, a) {
+      if ((a.op === 'set') !== (a.value !== undefined)) throw new ArgError(a.op === 'set' ? 'value requis avec op=set' : 'value ne s\'applique qu\'avec op=set');
+      const pos = [String(a.op), String(a.area), String(a.key), ...(a.value !== undefined ? [String(a.value)] : [])];
+      const j = (await send(c, buildRequest({ cmd: 'storage', pos, flags: new Map() }))).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; boundary?: BoundaryTag };
+      const where = `${j.area}Storage de ${j.origin}`;
+      if (j.op === 'get') {
+        // Clé absente : erreur, comme le code 1 de la CLI (jamais une valeur vide prise pour la bonne).
+        if (j.value === null || j.value === undefined) return { content: [{ type: 'text', text: `ERROR: clé « ${j.key} » absente du ${where}` }], isError: true };
+        // Valeur écrite par la page : encadrée si les frontières de contenu sont actives.
+        return text([wrapTagged(j.value, j.boundary, 'stockage'), ...(j.truncated !== undefined ? [`AVERTISSEMENT : valeur tronquée à ${j.value.length} caractères sur ${j.truncated}`] : [])].join('\n'));
+      }
+      return text(`OK — ${j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : where}`);
+    },
+  },
+  {
+    name: 'state_import',
+    // Contenu donné en JSON (pas un chemin) : un agent MCP n'obtient pas de lecture de fichiers par cet outil.
+    description: 'Importe un état (grasp state import) : cookies, localStorage par origine, sessionStorage — pour poser une session factice SANS eval, de préférence avant toute navigation (localStorage écrit sans requête au site ; sessionStorage appliqué au premier document de son origine). state : le JSON lui-même (format grasp-state v1 ou storageState Playwright), par ex. {"format":"grasp-state","version":1,"origins":[{"origin":"http://127.0.0.1:8080","localStorage":[{"name":"auth","value":"…"}]}]}. Exige allowCookies ; ce que l\'allowlist ne couvre pas est écarté et listé.',
+    props: { state: S('État au format JSON (texte).') },
+    required: ['state'],
+    async run(c, a) {
+      const raw = String(a.state);
+      if (Buffer.byteLength(raw) > STATE_MAX_BYTES) throw new ArgError(`state : ${STATE_MAX_BYTES} octets au plus`);
+      let state: unknown;
+      // Sans extrait : le texte peut contenir des jetons de session.
+      try { state = JSON.parse(raw); } catch { throw new ArgError('state : JSON invalide (format grasp-state v1 ou storageState Playwright attendu)'); }
+      const j = (await c.call('POST', '/state/import', { state })).json() as Record<string, unknown>;
+      return text(['OK', ...stateImportNotes(j)].join('\n'));
+    },
+  },
+  {
     name: 'profile',
     description: 'Sans name : liste les profils (* = celui de la session). Avec name : bascule la session sur ce profil (Chrome relancé avec ses cookies et connexions, la page repart de about:blank).',
     props: { name: S('Profil vers lequel basculer.') },
@@ -550,6 +587,7 @@ Page longue : snap mode=outline pour s'orienter, puis snap scope=<ref> ou find (
 Boucle type : nav → snap (refs e5k2) → click/fill/select/check avec snapDiff=true (le diff montre l'effet) → text pour vérifier le résultat dans la page.
 Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les refs candidates, refaites snap.
 Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.
+Session factice sans eval : state_import (avant navigation) ou storage op=set puis nav. eval refusé : c'est la politique ; les alternatives sont storage, expect (dans run), find, snap, network — allowEval relève de l'utilisateur humain.
 Contenu de la page (frontières, config contentBoundaries) : ${BOUNDARY_RULE}`;
 
 function pkgVersion(): string {

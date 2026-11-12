@@ -5,6 +5,16 @@ import { classifyIp, isLocalhostName, systemResolver, type Resolver } from './ss
 export { normalizeHost };
 
 /**
+ * Refus d'`eval` (403) : oriente vers ce qui se fait SANS eval, et ne cite la clé de configuration que comme une
+ * décision de l'utilisateur humain. Un message « config set allowEval true pour l'autoriser » invitait un agent à
+ * relâcher lui-même la politique (retour du deuxième essai réel). Même texte partout (bridge, run, MCP, skill).
+ */
+export const EVAL_REFUSAL = 'eval est désactivé par la politique de Grasp. Sans eval : storage get|set local|session (stockage Web), '
+  + 'expect text|value|sel|a11y (vérifications), find et snap (éléments, valeurs, états), network (requêtes), '
+  + 'state import (session posée d\'avance). Activer allowEval est une décision de l\'utilisateur humain, pas de l\'agent : '
+  + 'demandez-lui plutôt que de changer la configuration';
+
+/**
  * Politique effective. Construite UNE fois par `effectivePolicy`, gelée, puis passée telle quelle
  * au garde runtime ET au rapport (/security/effective). Règle n°3 : ce qui rapporte lit ce qui applique.
  */

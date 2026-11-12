@@ -18,7 +18,7 @@ import { toWslPath, windowsLocalAppData } from '../browser/windows.js';
 import { ProfileStore, validateProfileName, type ProfileInfo } from '../core/profiles.js';
 import { reapWindows, spawnBridge, type BridgeHandle } from './bridges.js';
 import { reapStaleInstances } from './stale.js';
-import { compileScript, runScript, type RunResult } from './run.js';
+import { attachImports, compileScript, runScript, type RunResult } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
@@ -877,8 +877,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       }
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
-        const body = await readJson(req);
+        // Corps borné comme un import d'état : il peut porter le contenu des fichiers de `state import` (imports).
+        const body = await readJson(req, STATE_MAX_BYTES);
         const steps = compileScript(str(body, 'script'), { files: optBool(body, 'files') === true });
+        attachImports(steps, body.imports);
         const s = pickSession(req, url);
         // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
         // lesquelles ont été exécutées — l'appelant, lui, ne verra jamais la réponse.

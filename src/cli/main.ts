@@ -20,7 +20,7 @@ import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/co
 import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { formatNetEntries, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { checkRunOut, writeRunShots } from './runfiles.js';
+import { checkRunOut, readRunImports, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
 import { parseArgs, buildRequest, consoleBody, findQuery, networkBody, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
 import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
@@ -233,8 +233,10 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   // files : la CLI écrit elle-même les captures de `screenshot -o` (chemins relatifs, sous --out-dir ou le répertoire courant).
   // Répertoire et chemins vérifiés AVANT l'envoi : rien ne s'exécute si une capture ne pourra pas être écrite.
   const dir = resolvePath(outDir ?? '.');
-  try { checkRunOut(script, dir); } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
-  const r = (await c.call('POST', '/run', { script, files: true, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
+  // state import <fichier> : lus ici (relatifs au répertoire courant), envoyés avec le script ; illisible = rien n'est exécuté.
+  let imports: ReturnType<typeof readRunImports>;
+  try { checkRunOut(script, dir); imports = readRunImports(script); } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
+  const r = (await c.call('POST', '/run', { script, files: true, ...(Object.keys(imports).length > 0 ? { imports } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
   writeRunShots(r, dir);
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
@@ -293,7 +295,8 @@ async function stateCmd(c: Client, a: Args, paths: GraspPaths): Promise<void> {
     try { state = JSON.parse(file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8')); } catch (e) {
       throw new CliError(`lecture de ${file === '-' ? 'stdin' : file} : ${(e as Error).message}`);
     }
-    const r = await c.call('POST', '/state/import', { state });
+    // file : chemin absolu, pour l'historique seulement (history --as-run en refait une ligne state import rejouable).
+    const r = await c.call('POST', '/state/import', { state, ...(file !== '-' ? { file: resolvePath(file) } : {}) });
     const j = r.json() as { cookies: number; origins: number; localStorageKeys: number; sessionStorage: 'applied' | 'pending' | null; skipped: string[] };
     out(json ? r.text() : 'OK');
     if (json) return;
@@ -866,7 +869,8 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
              expect url [~] <url> | title [~] <titre> [--regex]       égalité ; ~ = contient (citez-le : '~')
              expect sel <sél> | no-sel <sél>                          élément visible (CSS) ou présent (ref, text:)
              expect value <sél> [~] <valeur> [--regex]                valeur du champ
-             expect no-console-errors [--ignore <regex>] [--since <seq>]   depuis le début du document courant
+             expect no-console-errors [--ignore <regex>] [--since <seq>]   depuis le début du document courant ;
+               compte tout ce que console --level error montre : console, exceptions, CSP ET requêtes en échec
              expect no-form-errors                                    champs invalides, alertes
              expect request [~] "POST /api/commande" [2xx|201|4xx,5xx] [--regex] [--since <seq>]
                requête terminée avec ce statut (2xx par défaut) depuis le début du document courant
@@ -892,6 +896,8 @@ Réseau       network [--since <seq>] [--failed] [--max N (50)] [--type xhr,fetc
                --failed : ≥ 400, net::ERR, bloquées ; jamais d'en-têtes ni de corps ; exige allowConsole (sinon 403)
 Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
+               --level error inclut les requêtes en échec : source network (réponses ≥ 400, net::ERR_…, CORS)
+               et grasp (bloquées par le garde) ; pas les annulations ni les traqueurs bloqués (info)
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
 Actions      nav <url> | click <sél> | fill <sél> <valeur|secret:NOM> | select <sél> <valeur>
              check <sél> [--uncheck] | press <touche> [sél] | hover <sél> | type <sél> <texte> [--delay ms]
@@ -941,8 +947,10 @@ Onglets      tabs                    onglets de la session : « * t1 "Titre" url
 Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép] [--json]   plusieurs commandes en UN aller-retour
                une commande par ligne, même syntaxe que la CLI (nav back forward reload scroll snap find text a11y
                click fill select check press hover type wait expect eval console network screenshot cookies storage
-               upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
+               state upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
                screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
+               state import <fichier> : LU par la CLI (relatif au répertoire courant, pas de -) avant l'envoi,
+               mêmes garde-fous qu'en commande isolée (allowCookies, allowlist) ; state export : commande isolée ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)
@@ -960,13 +968,15 @@ Multi-pages  diff <urlA> <urlB> [--paths fichier|-] [--max N (50)] [--concurrenc
                sessions éphémères (une par --concurrency, fermées à la fin ; --session <id> : celle-ci seule) ;
                --profile, --proxy, --http-auth comme session create ; tout passe par l'allowlist ; --json
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
-               eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)
+               eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type) ;
+               refusé : passez par storage, expect, find, snap, network ; allowEval se décide par l'utilisateur
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
              state export [fichier|-] [--origin http://hôte:port,…]   cookies + localStorage par origine + sessionStorage
                de l'onglet, JSON versionné (grasp-state v1, lu aussi : storageState Playwright) ; fichier 0600 écrit
                atomiquement ; sans fichier : dans l'état de Grasp, CHEMIN sur stdout ; exige allowCookies ;
                rien hors allowlist
-             state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine
+             state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine ; aussi sur
+               une ligne de grasp run (state import <fichier>) et par l'outil MCP state_import
              storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->
                stockage Web de l'origine AFFICHÉE (allowlist), code fixe sans eval ; exige allowCookies ;
                get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1

@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { writePrivateFile } from '../core/perms.js';
-import { compileScript, type RunResult } from '../control/run.js';
+import { compileScript, type RunImport, type RunResult } from '../control/run.js';
+import { STATE_MAX_BYTES } from '../core/state.js';
 
 /**
  * `screenshot -o <fichier>` dans `grasp run` : le serveur renvoie l'image (base64) dans le résultat de l'étape,
@@ -98,4 +99,37 @@ export function writeRunShots(r: RunResult, outDir: string): void {
       if (r.report !== undefined) r.report.ok = false;
     }
   }
+}
+
+/**
+ * `state import <fichier>` dans `grasp run` : la CLI lit et analyse chaque fichier AVANT d'envoyer le script (le
+ * serveur ne lit jamais un chemin venu d'un script, comme il n'écrit jamais celui d'un `screenshot -o`). Chemin
+ * relatif au répertoire courant, ou absolu, comme la commande isolée. Fichier illisible, JSON invalide ou trop
+ * gros : refus, aucune commande exécutée. Script invalide : rien à lire ici, le serveur rend l'erreur d'analyse.
+ */
+export function readRunImports(script: string, cwd = process.cwd()): Record<string, RunImport> {
+  let steps: ReturnType<typeof compileScript>;
+  try { steps = compileScript(script, { files: true }); } catch { return {}; }
+  const out: Record<string, RunImport> = {};
+  let total = 0;
+  for (const s of steps) {
+    const f = s.rq.loadFrom;
+    if (f === undefined || Object.hasOwn(out, f)) continue;
+    const path = resolve(cwd, f);
+    const where = `ligne ${s.src.line} : state import ${f}`;
+    let raw: string;
+    try {
+      const st = statSync(path);
+      if (!st.isFile()) throw new Error('n\'est pas un fichier');
+      if (st.size > STATE_MAX_BYTES) throw new Error(`${st.size} octets (${STATE_MAX_BYTES} au plus)`);
+      raw = readFileSync(path, 'utf8');
+    } catch (e) { throw new Error(`${where} : lecture impossible : ${(e as Error).message}`); }
+    total += Buffer.byteLength(raw);
+    if (total > STATE_MAX_BYTES) throw new Error(`${where} : fichiers d'état trop gros pour un run (${STATE_MAX_BYTES} octets au plus en tout)`);
+    let state: unknown;
+    // Message sans extrait du fichier : il peut contenir des jetons de session.
+    try { state = JSON.parse(raw); } catch { throw new Error(`${where} : JSON invalide (fichier d'état grasp-state ou storageState Playwright attendu)`); }
+    out[f] = { path, state };
+  }
+  return out;
 }
