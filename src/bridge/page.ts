@@ -15,6 +15,7 @@ import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { TrackerList } from './trackers.js';
 import { STATE_FORMAT, STATE_VERSION, cookieAllowed, cookieOrigin, fromCdpCookie, normalizeOrigin, parseState, toCdpCookieParam, type CdpCookie, type GraspState, type StateItem } from '../core/state.js';
 import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
+import { SCROLL_BUDGET_MS, SCROLL_FN, SCROLL_STEPS_DEFAULT, scrollNote, type ScrollMeasure, type ScrollReport, type ScrollSpec } from './scroll.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -1520,6 +1521,155 @@ export class PageController {
       this.cdp.on('event', on);
     });
     return { promise, cancel: () => { cleanup(); promise.catch(() => undefined); } };
+  }
+
+  // ---------- Historique de l'onglet et défilement (back, forward, reload, scroll) ----------
+
+  /**
+   * back (-1) / forward (+1) : entrée voisine de l'historique de l'onglet (route pushState comprise). Garde
+   * appliqué comme pour nav : l'URL de l'entrée est rejugée (allowlist, SSRF) avant de partir, et le garde Fetch
+   * juge la requête du document s'il y en a une. Même attente de stabilité que nav, mêmes options.
+   */
+  history(delta: -1 | 1, opts: ActionOptions = {}): Promise<ActionResult & { url: string; title: string }> {
+    return this.historyNav(delta === -1 ? 'back' : 'forward', opts, false);
+  }
+
+  /** reload [--hard] : recharge le document courant (--hard : sans le cache HTTP), comme nav. */
+  reload(opts: ActionOptions & { hard?: boolean | undefined } = {}): Promise<ActionResult & { url: string; title: string }> {
+    return this.historyNav('reload', opts, opts.hard === true);
+  }
+
+  private async historyNav(kind: 'back' | 'forward' | 'reload', opts: ActionOptions, hard: boolean): Promise<ActionResult & { url: string; title: string }> {
+    if (opts.console === true) this.assertConsole();
+    const seq = this.consoleBuf.seq;
+    const trk0 = this.trackersBlocked;
+    try {
+      const h = await this.s<{ currentIndex: number; entries: Array<{ id: number; url: string; title: string }> }>('Page.getNavigationHistory');
+      const n = h.entries.length;
+      const entry = h.entries[h.currentIndex + (kind === 'back' ? -1 : kind === 'forward' ? 1 : 0)];
+      if (entry === undefined) {
+        if (kind === 'back') throw conflict(`aucune page précédente dans l'historique de l'onglet (entrée 1 sur ${n})`);
+        if (kind === 'forward') throw conflict(`aucune page suivante dans l'historique de l'onglet (entrée ${h.currentIndex + 1} sur ${n})`);
+        throw conflict("aucun document à recharger (historique de l'onglet vide)");
+      }
+      // Pré-contrôle, comme nav : une entrée restaurée sans requête (cache aller-retour) passe aussi par lui.
+      const v = await checkNavigation(this.ssrfCtx, entry.url, this.dns);
+      if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
+      const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
+      const doc0 = this.docGen;
+      const nav0 = this.navCount;
+      this.blocked = null;
+      this.rebound = null;
+      const since = Date.now();
+      if (kind === 'reload') await this.s('Page.reload', { ignoreCache: hard });
+      else await this.s('Page.navigateToHistoryEntry', { entryId: entry.id });
+      await this.historyCommitted(nav0, since);
+      const stab = await this.waitStable(this.limits.stableTimeoutMs, { since, challenge: true });
+      const loc = await this.location();
+      const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
+      if (this.trackersBlocked > trk0) out.trackersBlocked = this.trackersBlocked - trk0;
+      const notes: string[] = [];
+      // Où l'on est arrivé : l'agent ne le sait pas d'avance (contrairement à nav).
+      if (kind !== 'reload') notes.push(`${kind === 'back' ? 'retour' : 'avance'} : ${loc.url}${loc.title !== '' ? ` « ${loc.title} »` : ''}${this.docGen === doc0 ? ' (même document)' : ''}`);
+      if (!stab.stable) notes.push(PageController.unstableNote(stab));
+      else if (stab.ongoing === true) notes.push(ONGOING_NOTE);
+      else if (stab.background === true) notes.push(BACKGROUND_NOTE);
+      if (notes.length > 0) out.detail = notes.join(' ; ');
+      if (before) out.diff = await this.diffAfter(before, opts, doc0);
+      if (opts.console === true) out.console = this.consoleSince(seq);
+      return out;
+    } catch (e) { throw await this.decorate(e, opts, seq); }
+  }
+
+  /**
+   * Attend que la navigation d'historique ait abouti : document (ou route du même document) changé et chargement
+   * terminé. Page.reload / navigateToHistoryEntry ne rendent pas d'erreur quand le garde annule la requête : le
+   * blocage est lu dans `blocked` (garde Fetch) et `rebound` (rebinding), comme pour nav.
+   */
+  private async historyCommitted(nav0: number, since: number): Promise<void> {
+    const end = Date.now() + 30_000;
+    for (;;) {
+      const b = this.blocked as Blocked | null;
+      if (b !== null && b.at >= since) throw forbidden(`navigation bloquée par le garde : ${b.reason} (${b.url})`);
+      if (this.navCount !== nav0 && !this.navigating()) break;
+      if (Date.now() > end) throw new GraspError(504, 'délai dépassé : la navigation n\'a pas abouti en 30 s');
+      await sleep(25);
+    }
+    const rb = this.rebound as Blocked | null;
+    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${rb.reason} (${rb.url})`);
+  }
+
+  /**
+   * scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]. Défilement en code fixe du monde
+   * isolé (autorisé avec allowEval=false) : la page reçoit ses événements scroll et ses IntersectionObserver comme
+   * pour un défilement de l'utilisateur. Sans option : un écran (90 % de la hauteur visible) vers le bas ; un
+   * sélecteur désigne le conteneur à faire défiler (s'il ne défile pas : son plus proche ancêtre défilant, sinon
+   * la page ; sans --by/--to ni --until-stable, l'élément est seulement amené dans la vue). --until-stable : pas
+   * successifs (jusqu'en bas, ou de --by), chacun suivi de l'attente de stabilité, jusqu'à ce qu'un pas n'ajoute
+   * plus rien au bout de la zone (liste à défilement infini) ; plafonds annoncés. Compte rendu : position et
+   * éléments DOM apparus (absents au départ, toujours présents), dans `scroll` et en note.
+   */
+  async scroll(sel: string | undefined, spec: ScrollSpec, opts: ActionOptions = {}): Promise<ActionResult & { scroll: ScrollReport }> {
+    if (sel !== undefined && /^\s*frame=/.test(sel)) throw badRequest('scroll : sélecteur frame=… non pris en charge (défilement du document principal seulement)');
+    const key = `__graspScroll${process.pid}_${++this.probeSeq}`;
+    const maxSteps = spec.maxSteps ?? SCROLL_STEPS_DEFAULT;
+    let id: number | undefined;
+    const call = (op: string, by?: number, to?: string): Promise<ScrollMeasure> => id === undefined
+      ? this.evalIsolated<ScrollMeasure>(`(${SCROLL_FN}).call(document, ${JSON.stringify(key)}, ${JSON.stringify(op)}, ${JSON.stringify(by ?? null)}, ${JSON.stringify(to ?? null)})`)
+      : this.callIsolated<ScrollMeasure>(id, SCROLL_FN, key, op, by ?? null, to ?? null);
+    let report: ScrollReport | undefined;
+    let from = 0;
+    let steps = 0;
+    let settled: boolean | undefined;
+    let stoppedBy: ScrollReport['stoppedBy'];
+    const res = await this.act(opts, async (snap) => {
+      if (sel !== undefined) id = await this.resolve(sel, snap);
+      const init = await call('init');
+      from = init.top;
+      if (sel !== undefined && init.how !== 'element' && spec.by === undefined && spec.to === undefined && spec.untilStable !== true) {
+        await call('into');
+        steps = 1;
+        return;
+      }
+      if (spec.untilStable !== true) {
+        await call('step', spec.by, spec.to);
+        steps = 1;
+        return;
+      }
+      const up = spec.by !== undefined && spec.by < 0;
+      const t0 = Date.now();
+      let last = init;
+      settled = false;
+      for (;;) {
+        if (steps >= maxSteps) { stoppedBy = 'steps'; break; }
+        if (Date.now() - t0 > SCROLL_BUDGET_MS) { stoppedBy = 'budget'; break; }
+        const tStep = Date.now();
+        await call('step', spec.by, spec.by === undefined ? 'bottom' : undefined);
+        steps++;
+        // Ce que le pas a déclenché (requête de la page suivante, rendu) : attendu comme après une action.
+        await this.waitStable(Math.min(this.limits.stableTimeoutMs, Math.max(0, SCROLL_BUDGET_MS - (Date.now() - t0))), { since: tStep, until: Date.now() + ACTION_WINDOW_MS });
+        const m = await call('measure');
+        if (m.lost === true) break;
+        const grew = m.height > last.height || m.added > last.added;
+        const atEnd = up ? m.top <= 0 : m.top >= m.max - 1;
+        last = m;
+        if (!grew && atEnd) { settled = true; break; }
+      }
+    }, async () => {
+      const m = await call('done');
+      report = m.lost === true
+        ? { how: 'page', from, to: from, max: 0, height: 0, added: null, steps }
+        : { how: m.how, from, to: m.top, max: m.max, height: m.height, added: m.added, steps };
+      if (settled !== undefined) report.settled = settled;
+      if (stoppedBy !== undefined) report.stoppedBy = stoppedBy;
+      return scrollNote(report, maxSteps) + (m.rootLost === true ? ` (zone ${sel ?? ''} retirée de la page : compte fait sur tout le document)` : '');
+    });
+    // Compte rendu impossible (page remplacée pendant le défilement) : dit, jamais un faux zéro.
+    if (report === undefined) {
+      report = { how: 'page', from, to: from, max: 0, height: 0, added: null, steps };
+      res.detail = [res.detail, scrollNote(report, maxSteps)].filter((x) => x !== undefined && x !== '').join(' ; ');
+    }
+    return { ...res, scroll: report };
   }
 
   /**

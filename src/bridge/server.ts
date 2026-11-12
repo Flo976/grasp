@@ -4,6 +4,7 @@ import { readJson, sendBuffer, sendError, sendJson, str, optStr, optBool, optInt
 import { isLevel, type ConsoleLevel } from '../core/console.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
+import { scrollSpecOf } from './scroll.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
@@ -45,6 +46,11 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /session-options': return sendJson(res, 200, sessionOptions());
         case 'GET /location': return sendJson(res, 200, { ...(await page.location()), lastBlocked: page.lastBlocked() });
         case 'POST /navigate': return sendJson(res, 200, await page.nav(str(body, 'url'), opts));
+        // Historique de l'onglet et défilement : même attente et mêmes options que nav.
+        case 'POST /back': return sendJson(res, 200, await page.history(-1, opts));
+        case 'POST /forward': return sendJson(res, 200, await page.history(1, opts));
+        case 'POST /reload': return sendJson(res, 200, await page.reload({ ...opts, hard: optBool(body, 'hard') }));
+        case 'POST /scroll': return sendJson(res, 200, await page.scroll(optStr(body, 'target'), scrollSpecOf(body), opts));
         case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max') }));
         case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max'), scope, { markdown: optFlag(q.get('markdown'), 'markdown') === true }));
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));

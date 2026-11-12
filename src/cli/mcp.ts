@@ -195,6 +195,8 @@ const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max:
 const FLAG: Record<string, string> = {
   snapDiff: 'snap-diff', shotOnError: 'shot-on-error', nameMax: 'name-max', maxWidth: 'max-width',
 };
+FLAG.untilStable = 'until-stable';
+FLAG.maxSteps = 'max-steps';
 
 /** Arguments → ligne de commande Grasp (positionnels dans l'ordre donné, le reste en options). */
 function toArgs(cmd: string, a: Json, positional: string[]): Args {
@@ -241,6 +243,17 @@ function actionTool(name: string, positional: string[], description: string, pro
 
 const TOOLS: Tool[] = [
   actionTool('nav', ['url'], 'Navigue vers une URL (soumise à l\'allowlist de Grasp) et attend la stabilité de la page.', { url: S('URL absolue (http/https).'), ...NAV_PROPS }, ['url']),
+  actionTool('back', [], 'Page précédente de l\'historique de l\'onglet (route pushState d\'une application monopage comprise), garde de navigation appliqué, puis attente de stabilité comme nav. La note dit où l\'on arrive. Aucune page précédente → erreur.', { ...NAV_PROPS }, []),
+  actionTool('forward', [], 'Page suivante de l\'historique de l\'onglet, comme back.', { ...NAV_PROPS }, []),
+  actionTool('reload', [], 'Recharge la page courante (hard=true : sans le cache HTTP), garde appliqué, puis attente de stabilité comme nav.', { hard: B('Recharger sans le cache HTTP.'), ...NAV_PROPS }, []),
+  actionTool('scroll', ['target'], 'Fait défiler la page, ou le conteneur target (un élément qui ne défile pas est amené dans la vue). Défaut : un écran vers le bas. untilStable=true : défile jusqu\'à ce qu\'aucun nouveau contenu n\'apparaisse (listes à défilement infini), en attendant la stabilité à chaque pas. La note donne la position et le nombre de nœuds apparus ; snapDiff montre les nouveaux éléments.', {
+    target: { ...TARGET, description: `Facultatif : conteneur à faire défiler. ${TARGET.description}` },
+    by: { type: 'integer', description: 'Décalage vertical en px (négatif : vers le haut).' },
+    to: S('Bord à atteindre.', { enum: ['top', 'bottom'] }),
+    untilStable: B('Défiler pas à pas tant que du contenu apparaît (10 pas par défaut).'),
+    maxSteps: I('Nombre de pas au plus avec untilStable (1 à 50).', 1),
+    ...NAV_PROPS,
+  }, []),
   {
     name: 'snap', readOnly: true,
     description: 'Snapshot de l\'arbre d\'accessibilité : une ligne par nœud « ref:rôle "nom" [états] ». Les refs (e5k2) sont stables et servent de sélecteur aux actions. Budget 12 000 octets par défaut, troncature annoncée en dernière ligne.',
@@ -306,7 +319,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'run',
-    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
+    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, back, forward, reload, scroll, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
     props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.'), report: B('Rapport de recette (étapes, erreurs console, requêtes en échec, formulaire, page finale) : d\'office avec un expect.') },
     required: ['script'],
     async run(c, a) {

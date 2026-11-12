@@ -128,6 +128,8 @@ export function checkListen(listen: string | undefined, transport: 'unix' | 'tcp
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
 const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect']);
+// Historique de l'onglet et défilement (back, forward, reload, scroll).
+for (const r of ['/back', '/forward', '/reload', '/scroll']) SESSION_ROUTES.add(r);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
