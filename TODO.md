@@ -96,6 +96,14 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).
 
+## Pilotage
+
+- [x] **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action (CLI, API, `grasp run`, MCP) ;
+      défaut sûr inchangé (`confirm`/`prompt` refusés, `alert` fermé, `beforeunload` accepté). Fait (branche
+      `feat/dialogues`, `src/core/dialog.ts`) : tout dialogue vu est rapporté (note, `dialogs`, en tête du
+      `--snap-diff`), y compris hors action (à l'action suivante) et en cas d'échec. Pas d'option de session
+      (choix : une réponse positive se décide par action). Reste : dialogues d'une iframe hors processus non testés.
+
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 
 Sécurité du garde

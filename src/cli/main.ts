@@ -691,6 +691,10 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
              --console    entrées console produites pendant l'action (combinable avec --snap-diff) ; 200 au plus,
                           lignes écartées signalées sur stderr avec la commande pour les relire
              --shot-on-error  en cas d'échec, capture et chemin ajouté au message d'erreur
+             --dialog accept|dismiss|"texte"  réponse aux dialogues JS (confirm, prompt, beforeunload) ouverts
+                          pendant CETTE action ; "texte" : prompt accepté avec ce texte (text:accept pour le mot
+                          « accept ») ; sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS ; tout
+                          dialogue vu est rapporté (note, et « ! dialogue … » en tête du --snap-diff)
              --engine playwright  (click fill select check press hover type upload) action par Playwright branché sur
                           le Chrome de Grasp : attente d'actionnabilité (visible, stable, activé), widgets riches ;
                           optionnel : npm i playwright-core ; absent → ERROR qui le dit. Le garde de navigation et la

@@ -4,6 +4,7 @@ import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, url
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
+import { DIALOGS_REPORTED_MAX, decideDialog, dialogLines, parseDialogOption, type DialogPolicy, type DialogSeen } from '../core/dialog.js';
 import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
@@ -29,6 +30,8 @@ export interface ActionOptions {
   shotOnError?: boolean | undefined;
   /** Moteur de l'action : « native » (CDP direct, défaut) ou « playwright » (repli optionnel). frame= impose Playwright. */
   engine?: string | undefined;
+  /** Réponse aux dialogues ouverts pendant l'action : accept, dismiss, ou texte d'un prompt (défaut : sûr, voir dialog.ts). */
+  dialog?: string | undefined;
 }
 
 /** Moteur Playwright du bridge (voir playwright.ts). */
@@ -49,7 +52,7 @@ export interface EngineConfig {
  */
 export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number; since: number; omitted: number; dropped: number }
 /** `trackersBlocked` : requêtes vers des traqueurs annulées pendant l'action (absent si aucune). */
-export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number }
+export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number; dialogs?: DialogSeen[]; dialogsOmitted?: number }
 export interface Blocked { url: string; reason: string; at: number }
 
 export interface ShotOptions {
@@ -641,7 +644,13 @@ export class PageController {
   /** Politique + proxy effectif de la session : contexte réseau de la protection SSRF. */
   private netCtx: Readonly<SsrfContext> | undefined;
   private get ssrfCtx(): Readonly<SsrfContext> { return this.netCtx ?? this.policy; }
-  private lastDialog: string | null = null;
+  /** Réponse aux dialogues pendant l'action en cours (--dialog) ; undefined : défaut sûr. */
+  private dialogPolicy: DialogPolicy | undefined;
+  /** Une action est en cours : un dialogue ouvert hors action est rapporté à la suivante, marqué comme tel. */
+  private inAction = false;
+  /** Dialogues vus depuis le dernier rapport (bornés), et ceux au-delà de la borne. */
+  private dialogs: DialogSeen[] = [];
+  private dialogsOmitted = 0;
   private mainFrameId = '';
   /** Navigateur qui ne nous appartient pas : pas d'auto-attach sur les autres onglets. */
   private foreign = false;
@@ -1359,10 +1368,11 @@ export class PageController {
           }
           break;
         case 'Page.javascriptDialogOpening': {
-          // Un dialogue bloque tout l'onglet : on le ferme et on le signale.
-          const type: string = e.params.type;
-          this.lastDialog = `${type}: ${e.params.message}`;
-          await this.s('Page.handleJavaScriptDialog', { accept: type === 'alert' || type === 'beforeunload' });
+          // Un dialogue bloque tout l'onglet : on y répond aussitôt (défaut sûr, ou --dialog de l'action) et on le signale.
+          const d = decideDialog(String(e.params.type), String(e.params.message ?? ''), String(e.params.defaultPrompt ?? ''), this.dialogPolicy);
+          if (!this.inAction) d.seen.outside = true;
+          if (this.dialogs.length < DIALOGS_REPORTED_MAX) this.dialogs.push(d.seen); else this.dialogsOmitted++;
+          await this.s('Page.handleJavaScriptDialog', d.params);
           break;
         }
       }
@@ -1426,8 +1436,10 @@ export class PageController {
   /** Navigation comme action : --snap-diff, --console, --shot-on-error. */
   async nav(url: string, opts: ActionOptions = {}): Promise<ActionResult & { url: string; title: string }> {
     if (opts.console === true) this.assertConsole();
+    const policy = parseDialogOption(opts.dialog);
     const seq = this.consoleBuf.seq;
     const trk0 = this.trackersBlocked;
+    this.beginDialogs(policy);
     try {
       const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
       const doc0 = this.docGen;
@@ -1438,9 +1450,15 @@ export class PageController {
       else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
       else if (stab.background === true) out.detail = BACKGROUND_NOTE;
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
+      // Dialogues (beforeunload de la page quittée, alert du nouveau document…) : note, et en tête du diff.
+      const dlg = this.takeDialogs(out);
+      if (dlg.length > 0) {
+        out.detail = [...dlg, ...(out.detail !== undefined ? [out.detail] : [])].join(' ; ');
+        if (out.diff !== undefined) out.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${out.diff}`;
+      }
       if (opts.console === true) out.console = this.consoleSince(seq);
       return out;
-    } catch (e) { throw await this.decorate(e, opts, seq); }
+    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq)); } finally { this.endDialogs(); }
   }
 
   /** Navigue, attend le load PUIS la stabilité du DOM (rendu côté client), et lit titre et URL après. */
@@ -2246,7 +2264,7 @@ export class PageController {
    */
   private async act(opts: ActionOptions, fn: (snap: Snapshot | undefined) => Promise<string | void>, post?: (res: ActionResult) => Promise<string | undefined>): Promise<ActionResult> {
     if (opts.console === true) this.assertConsole();
-    this.lastDialog = null;
+    const policy = parseDialogOption(opts.dialog);
     const seq = this.consoleBuf.seq;
     const t0 = Date.now();
     const nav0 = this.navCount;
@@ -2256,6 +2274,7 @@ export class PageController {
     this.notes = actionNotes;
     this.undelivered = false;
     this.actTarget = undefined;
+    this.beginDialogs(policy);
     try {
       await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
@@ -2277,12 +2296,14 @@ export class PageController {
       if (this.trackersBlocked > trk0) res.trackersBlocked = this.trackersBlocked - trk0;
       // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
       const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
-      const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const dlg = this.takeDialogs(res);
+      const notes = [detail, ...actionNotes, replaced, ...dlg, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);
         // « Aucun changement » après une entrée qui n'a pas atteint la page : ce n'est pas un OK ordinaire.
         if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
+        if (dlg.length > 0) res.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${res.diff}`;
       }
       if (post !== undefined) {
         const extra = await post(res).catch(() => undefined);
@@ -2290,7 +2311,38 @@ export class PageController {
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; }
+    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq)); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; this.endDialogs(); }
+  }
+
+  /** Début d'action : la politique --dialog s'applique jusqu'à endDialogs (fin de l'action, stabilité comprise). */
+  private beginDialogs(policy: DialogPolicy | undefined): void {
+    this.dialogPolicy = policy;
+    this.inAction = true;
+  }
+
+  private endDialogs(): void {
+    this.dialogPolicy = undefined;
+    this.inAction = false;
+  }
+
+  /** Action en échec : les dialogues vus sont ajoutés au message (jamais tus, jamais reportés à l'action suivante). */
+  private dialogError(e: unknown): unknown {
+    const res: ActionResult = { ok: true };
+    const lines = this.takeDialogs(res);
+    if (lines.length === 0) return e;
+    const base = e instanceof GraspError ? e : new GraspError(500, e instanceof Error ? e.message : String(e));
+    return new GraspError(base.status, `${base.message} ; ${lines.join(' ; ')}`, { ...(base.extra ?? {}), dialogs: res.dialogs });
+  }
+
+  /** Dialogues vus depuis le dernier rapport → `res.dialogs` et lignes de note (vidés : chacun n'est rapporté qu'une fois). */
+  private takeDialogs(res: ActionResult): string[] {
+    if (this.dialogs.length === 0 && this.dialogsOmitted === 0) return [];
+    const lines = dialogLines(this.dialogs, this.dialogsOmitted);
+    res.dialogs = this.dialogs;
+    if (this.dialogsOmitted > 0) res.dialogsOmitted = this.dialogsOmitted;
+    this.dialogs = [];
+    this.dialogsOmitted = 0;
+    return lines;
   }
 
   /** Rôles de champ de saisie interchangeables pour un remplacement (searchbox re-rendu en combobox). */

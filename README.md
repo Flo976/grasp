@@ -569,7 +569,10 @@ Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire
   --since 812 --limit 1000`) et dans le JSON (`console.since`, `console.omitted`, `console.dropped`) ;
 - `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur ;
 - `--engine playwright` (`click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`) : l'action
-  passe par le [moteur Playwright de repli](#moteur-playwright-de-repli).
+  passe par le [moteur Playwright de repli](#moteur-playwright-de-repli) ;
+- `--dialog accept|dismiss|"texte"` : réponse aux dialogues JavaScript (`confirm`, `prompt`, `beforeunload`)
+  ouverts **pendant** cette action ; sans l'option, `confirm()`/`prompt()` sont **refusés**. Voir
+  [Dialogues JavaScript](#dialogues-javascript---dialog).
 
 ```
 grasp click '#envoyer' --console --snap-diff
@@ -625,6 +628,53 @@ Un paragraphe avec du **gras**, du `code_inline()` et un [lien](http://127.0.0.1
   voir ni le fausser en redéfinissant ses prototypes. Parcours **itératif** (pile explicite, pas de
   récursion) : testé sur un DOM de 10 000 niveaux. Exception : avec `--scope 'frame=…'` (moteur Playwright),
   la même fonction est évaluée par Playwright dans le monde de la page du cadre.
+
+### Dialogues JavaScript (`--dialog`)
+
+Un dialogue (`alert`, `confirm`, `prompt`, `beforeunload`) bloque tout l'onglet : le bridge y répond
+**toujours** aussitôt (`Page.javascriptDialogOpening` → `Page.handleJavaScriptDialog`), et le dit.
+
+| Dialogue | sans option (défaut sûr) | `--dialog accept` | `--dialog dismiss` | `--dialog "texte"` |
+|---|---|---|---|---|
+| `alert` | fermé | fermé | fermé | fermé |
+| `confirm` | **refusé** | accepté | refusé | accepté |
+| `prompt` | **refusé** (`null`) | accepté, valeur proposée par la page | refusé | accepté avec « texte » |
+| `beforeunload` | accepté (la page est quittée) | accepté | refusé : la page reste, navigation annulée | accepté |
+
+- L'option vaut pour **cette action seulement**, attente de stabilité comprise ; l'action suivante sans option
+  retrouve le défaut. Elle existe sur `nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`, en
+  CLI, dans `grasp run`, par l'API (`"dialog": "accept"` dans le corps JSON) et pour l'outil MCP (`dialog`).
+- `"texte"` : tout autre valeur que `accept`/`dismiss` est la réponse d'un `prompt` ; `text:accept` pour
+  répondre littéralement « accept ». 4096 caractères au plus, caractères de contrôle refusés (400 : l'action
+  n'a pas lieu). `--dialog ""` accepte un `prompt` vide.
+- **Rapport** : chaque dialogue vu est rapporté — note sur stderr (`note: dialogue confirm « Supprimer
+  « Article A » ? » → refusé (défaut sûr — --dialog accept pour répondre)`), champ JSON `dialogs`
+  (`type`, `message`, `accepted`, `promptText`, `byDefault`, `outside`), et en tête du `--snap-diff` :
+
+```
+grasp click '#sup-a' --dialog accept --snap-diff
+  ! dialogue confirm « Supprimer « Article A » ? » → accepté
+  - e8nyw:button "Supprimer A"
+  - "Article A"
+```
+
+- Message de la page borné à 200 caractères sur une ligne, 10 dialogues détaillés par action au plus (au-delà :
+  comptés). `beforeunload` : Chrome ne transmet pas le message de la page (`dialogue beforeunload → …`).
+- Un dialogue ouvert **hors** action (minuterie après la fin d'une action, pendant `wait` ou une lecture)
+  reçoit le défaut sûr et est rapporté à l'action suivante, marqué `[ouvert hors action, avant celle-ci]`.
+- Action en échec : les dialogues vus sont ajoutés au message d'erreur. `nav --dialog dismiss` sur une page
+  gardée par `beforeunload` : `ERROR: … net::ERR_ABORTED ; dialogue beforeunload → refusé (la page reste
+  affichée, navigation annulée)`, sans attendre le `load` (≈ 6 ms mesurés, page de test locale).
+- Chrome n'ouvre un `beforeunload` qu'après une activation de l'utilisateur dans la page : un clic natif de
+  Grasp en est une.
+- Pas d'option de session (accepter tous les `confirm()` d'une session entière) : volontairement, une réponse
+  positive se décide action par action.
+
+Testé contre le site local (`test/integration/dialogues.test.ts`, `dialogues-cli.test.ts`, `test/unit/dialog.test.ts`) :
+`confirm` accepté → article supprimé (vérifié par `text`), défaut → refus et article conservé, `prompt` avec
+texte, valeur proposée, `text:accept` et vide, `alert`, `beforeunload` accepté par `nav` et refusé par `click`
+et par `nav`, dialogue de minuterie hors action ; CLI, `run` et MCP de bout en bout. Le défaut sûr a été
+vérifié par mutation (défaut « tout accepter » réinjecté → tests unitaires et d'intégration au rouge).
 
 ### Livraison vérifiée des entrées
 
@@ -1295,6 +1345,8 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 ### Défauts sûrs
 
 - Token API exigé (32 octets aléatoires, `0600`, comparaison à temps constant).
+- Dialogues JavaScript : `confirm()` et `prompt()` **refusés** ; les accepter se demande action par action
+  (`--dialog`, voir [Dialogues JavaScript](#dialogues-javascript---dialog)).
 - `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Console : lecture **autorisée** (voir
   [Console](#console-du-navigateur) pour la décision et ses garanties).
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**
@@ -1632,6 +1684,9 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
+- Dialogues (`--dialog`) : testés dans le document principal seulement ; un dialogue ouvert par une iframe hors
+  processus n'a pas été testé. Un dialogue ouvert hors action reçoit toujours le défaut sûr. `upload`,
+  `expect`, `wait` n'acceptent pas `--dialog`.
 - Livraison vérifiée : l'hypothèse « écran Windows verrouillé » n'a pas été reproduite sur la machine réelle
   (Grasp ne verrouille pas la session de l'utilisateur) ; la non-livraison est simulée par
   `Input.setIgnoreInputEvents`. La sonde écoute sur `window` en capture : une page qui appelle
