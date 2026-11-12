@@ -484,7 +484,8 @@ esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
   `region`, `dialog`, `banner` et `contentinfo` nommés…), tableaux et titres, plus les régions `alert` et les
   lignes `alerte` (une erreur affichée oriente aussi). Chaque repère ou tableau porte le **volume** de son contenu
   dans le snapshot complet (`— 543 lignes, 140 actionnables`), pour choisir la zone à lire ensuite. Au-delà de 8
-  titres de même niveau sous un même parent (fiches d'un catalogue), les suivants sont comptés sur une ligne.
+  titres de même niveau sous une même ligne retenue (fiches d'un
+  catalogue, chacune dans son article), les suivants sont comptés sur une ligne.
 - **`snap --interactive`** (`?mode=interactive`) : éléments actionnables et champs (rôles de `INTERACTIVE` :
   bouton, lien, champ, case, liste, option, onglet…), avec leur valeur, leurs états, `[invalide: …]` et les
   options d'une liste, les régions `alert` et lignes `alerte` ; pour les situer, leurs **conteneurs** (repères,
@@ -513,7 +514,7 @@ de 120 pays ; pied de page de 80 liens non nommé, donc compté dans aucun repè
 | Lecture | Octets | Lignes | Part du complet |
 |---|---:|---:|---:|
 | `snap --max 10000000` (complet) | 24 153 | 701 | 100 % |
-| `snap` (budget 12 000 par défaut) | 11 862 | — | coupé avant le tableau et le formulaire |
+| `snap` (budget 12 000 par défaut) | 11 862 | — | coupé : la liste des pays n'y figure pas |
 | `snap --outline` | 1 050 | 23 | 4,3 % |
 | `snap --interactive` | 11 362 | 392 | 47 % (tient dans le budget par défaut) |
 | `find madagascar` | 147 | 3 | 0,6 % (option hors du snapshot par défaut) |
