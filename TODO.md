@@ -9,8 +9,10 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       en lecture. Attendu : pages plus rapides, attente de stabilité plus courte, snapshots plus propres.
 - [ ] **Serveur MCP** : `grasp mcp` (stdio) au-dessus de l'API HTTP (`snap`, `click`, `fill`, `wait`,
       `text`, `console`, `screenshot`, `run`…). Branchable dans Claude Desktop / Cursor en une ligne.
-- [ ] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
-      dans le monde isolé `grasp-lecture`.
+- [x] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
+      dans le monde isolé `grasp-lecture`. Fait (branche `feat/texte-markdown`) : aussi `GET /text?markdown=1`
+      et `grasp run` ; budget et `--scope` de `text` ; `frame=…` via Playwright (monde de la page du cadre).
+      Implémentation propre à Grasp (pas de code repris d'Obscura).
 - [ ] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
       transférer une session connectée vers une autre machine ou un conteneur.
 - [ ] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de

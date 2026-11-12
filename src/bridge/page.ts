@@ -9,6 +9,7 @@ import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors
 import { parseKey } from './keys.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
+import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -1453,24 +1454,34 @@ export class PageController {
     }
   }
 
-  /** innerText de la page (ou de la zone `scope`), coupé à `max` caractères (défaut `textMax`) avec une ligne explicite. */
-  async text(max?: number, scope?: string): Promise<string> {
+  /**
+   * innerText de la page (ou de la zone `scope`), coupé à `max` caractères (défaut `textMax`) avec une ligne
+   * explicite. `markdown` : le contenu visible converti en Markdown (code fixe, monde isolé), même budget.
+   */
+  async text(max?: number, scope?: string, opts: { markdown?: boolean } = {}): Promise<string> {
+    const md = opts.markdown === true;
     let t: string;
     if (scope !== undefined && parseFrameTarget(scope) !== null) {
       // Cadre (même d'une autre origine) : lu par le moteur Playwright.
       t = await this.pwUse(async (page) => {
         const { loc } = await this.pwLocator(page, scope, undefined, 'body');
-        try { return await loc.innerText({ timeout: PW_ACTION_TIMEOUT_MS }); } catch (e) { throw pwError(e, 'text'); }
+        try {
+          // Markdown dans un cadre : même fonction fixe, évaluée par Playwright dans le monde de la page du cadre.
+          if (md) return await loc.evaluate<string>(markdownInPage(), undefined, { timeout: PW_ACTION_TIMEOUT_MS });
+          return await loc.innerText({ timeout: PW_ACTION_TIMEOUT_MS });
+        } catch (e) { throw pwError(e, 'text'); }
       });
     } else if (scope !== undefined && scope.trim() !== '') {
       const id = await this.resolve(scope.trim());
-      const r = await this.callIsolated<{ text?: string; frame?: boolean; src?: string }>(id, SCOPE_TEXT_FN);
+      const r = await this.callIsolated<{ text?: string; frame?: boolean; src?: string }>(id, md ? SCOPE_MARKDOWN_FN : SCOPE_TEXT_FN);
       if (r.text === undefined) {
         // Cadre d'une autre origine (ou hors processus) : son document n'est pas accessible depuis la page.
         const src = r.src !== undefined && r.src !== '' ? redactUrl(r.src, 300) : '(sans src)';
-        throw conflict(`la zone ${scope.trim()} est une iframe d'une autre origine (${src}) : son contenu n'est pas lisible depuis la page — pour le lire : grasp text --scope 'frame=${scope.trim()}' (moteur Playwright, npm i playwright-core), ou grasp nav <URL du cadre> (si l'allowlist l'autorise)`);
+        throw conflict(`la zone ${scope.trim()} est une iframe d'une autre origine (${src}) : son contenu n'est pas lisible depuis la page — pour le lire : grasp text${md ? ' --markdown' : ''} --scope 'frame=${scope.trim()}' (moteur Playwright, npm i playwright-core), ou grasp nav <URL du cadre> (si l'allowlist l'autorise)`);
       }
       t = r.text;
+    } else if (md) {
+      t = await this.evalIsolated<string | undefined>(`(${MARKDOWN_FN})(document.body)`) ?? '';
     } else {
       const r = await this.s<{ result: { value?: string } }>('Runtime.evaluate', { expression: 'document.body ? document.body.innerText : ""', returnByValue: true });
       t = r.result.value ?? '';

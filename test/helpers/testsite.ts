@@ -644,6 +644,66 @@ if (location.search.includes('rendu=1')) {
 }
 </script></body></html>`;
 
+/** text --markdown : page riche (titres, emphase, code, liens, images, listes imbriquées, citation, tableau) et contenus cachés. */
+export const MARKDOWN_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Markdown</title>
+<style>.cache { display: none } .invisible { visibility: hidden } .flex { display: flex; gap: 8px }</style></head><body>
+<h1>Guide   de <em>lecture</em></h1>
+<p>Un paragraphe avec du <strong>gras</strong>, de l'<em>italique</em>, du <code>code_inline()</code>,
+un <a href="/doc/intro?x=1#haut">lien relatif</a> et <b> espaces </b>autour.</p>
+<p>Image : <img src="/logo.png" alt="Logo Grasp" width="20" height="20"> et pixel <img src="data:image/png;base64,${'A'.repeat(400)}" alt="Pixel" width="2" height="2"></p>
+<h2>Listes</h2>
+<ul>
+  <li>Premier point</li>
+  <li>Deuxième point
+    <ul><li>Sous-point A</li><li>Sous-point <strong>B</strong>
+      <ol><li>Étape un</li><li>Étape deux</li></ol>
+    </li></ul>
+  </li>
+  <li>Troisième point</li>
+</ul>
+<ol start="3"><li>Trois</li><li>Quatre</li></ol>
+<blockquote><p>Une citation <em>célèbre</em>.</p><p>Second paragraphe cité.</p></blockquote>
+<pre><code class="language-js">function f(x) {
+  return \`\`\`x\`\`\`;
+}</code></pre>
+<table>
+  <caption>Tarifs</caption>
+  <thead><tr><th>Produit</th><th>Prix</th></tr></thead>
+  <tbody><tr><td>Vélo <a href="/velo">fiche</a></td><td>1 | 2 €</td></tr><tr><td>Casque</td><td>30 €</td></tr></tbody>
+</table>
+<a id="carte" href="/carte"><div><h3>Carte cliquable</h3><p>Description de la carte</p></div></a>
+<p>Saut<br>de ligne et <a href="javascript:void 0">pseudo-lien</a>.</p>
+<div class="flex"><span>Bloc flex un</span><span>Bloc flex deux</span></div>
+<hr>
+<div class="cache">Secret display none</div>
+<p hidden>Secret attribut hidden</p>
+<p><span class="invisible">Secret visibility hidden</span>Visible à côté</p>
+<details><summary>Résumé visible</summary><p>Secret replié</p></details>
+<script>var secretScript = 'Secret script';</script>
+<noscript>Secret noscript</noscript>
+<template><p>Secret template</p></template>
+<form><input value="Secret champ"><select><option>Secret option</option></select><textarea>Secret zone</textarea><button type="button">Bouton visible</button></form>
+<hote-fantome></hote-fantome>
+<section id="zone-md"><h2>Zone</h2><p>Texte de la <strong>zone</strong>.</p></section>
+<script>
+customElements.define('hote-fantome', class extends HTMLElement {
+  connectedCallback() { this.attachShadow({ mode: 'open' }).innerHTML = '<p>Texte <em>fantôme</em> : <slot></slot></p>'; }
+});
+document.querySelector('hote-fantome').textContent = 'contenu inséré';
+</script>
+</body></html>`;
+
+/** DOM de 10 000 niveaux de <span> (créé en JS : l'analyseur HTML aplatit au-delà de 512 ; Chrome met des secondes à mettre en page plus profond). */
+export const PROFOND_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Profond</title></head><body><p>Surface</p><div id="r"></div>
+<script>
+let n = document.getElementById('r');
+const N = Number(new URLSearchParams(location.search).get('n') || 10000);
+for (let i = 0; i < N; i++) { const d = document.createElement('span'); n.appendChild(d); n = d; }
+n.innerHTML = '<strong>Fond atteint</strong>';
+</script></body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -706,6 +766,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/fond-reseau') { res.end(FOND_RESEAU_PAGE); return; }
     if (u.pathname.startsWith('/fond/')) { setTimeout(() => res.end('{}'), 60); return; }
     if (u.pathname === '/livres') { res.end(LIVRES_PAGE); return; }
+    if (u.pathname === '/markdown') { res.end(MARKDOWN_PAGE); return; }
+    if (u.pathname === '/profond') { res.end(PROFOND_PAGE); return; }
     if (u.pathname === '/console-spa') { res.end(CONSOLE_SPA_PAGE); return; }
     if (u.pathname === '/console-bruit') { res.end(CONSOLE_BRUIT_PAGE); return; }
     if (u.pathname === '/snap-v3') { res.end(SNAP_V3_PAGE); return; }

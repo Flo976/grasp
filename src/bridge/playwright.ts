@@ -26,6 +26,8 @@ export interface PwLocator {
   pressSequentially(text: string, o?: PwTimeout & { delay?: number }): Promise<void>;
   setInputFiles(files: string[], o?: PwTimeout): Promise<void>;
   innerText(o?: PwTimeout): Promise<string>;
+  /** Fonction appelée avec l'élément dans le cadre ; Playwright la sérialise par sa source. */
+  evaluate<R>(fn: (el: unknown) => R, arg?: unknown, o?: PwTimeout): Promise<R>;
   inputValue(o?: PwTimeout): Promise<string>;
   ariaSnapshot(o?: PwTimeout): Promise<string>;
   waitFor(o?: PwTimeout & { state?: 'attached' | 'detached' | 'visible' | 'hidden' }): Promise<void>;

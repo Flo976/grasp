@@ -461,7 +461,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
 | `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
-| `text [--max N] [--scope <ref\|css\|frame=…>]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
+| `text [--max N] [--scope <ref\|css\|frame=…>] [--markdown]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée) ; `--markdown` : le même contenu visible en Markdown (voir [Sortie Markdown](#sortie-markdown)). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `click <sél>` | Clic souris réel (CDP `Input`) au centre de l'élément, **livraison vérifiée** (voir plus bas). |
 | `fill <sél> <valeur>` | Remplace le contenu du champ ; **vérifie la valeur effective** (maxlength, masque → erreur 409). Éditeur riche (contenteditable : Quill, ProseMirror, TipTap…) : tout le contenu est sélectionné et supprimé, le format de bloc restant (titre, liste…) retiré, puis le texte inséré brut, chaque retour ligne devenant un paragraphe ; texte final vérifié. |
@@ -504,6 +504,48 @@ grasp click '#absent' --shot-on-error
 **Sorties** : `OK` sur stdout ; conseils et notes sur stderr ; erreurs
 `ERROR: <cmd>: <raison>` sur stderr avec un code non nul ; `--json` pour la sortie structurée.
 `export S=$(grasp session create)` capture uniquement l'identifiant.
+
+### Sortie Markdown
+
+`grasp text --markdown` (`GET /text?markdown=1`, aussi sur une ligne de `grasp run`) rend le contenu visible
+de la page ou de la zone en Markdown, au lieu de l'`innerText` à plat :
+
+```
+grasp text --markdown --scope main
+# Guide de *lecture*
+
+Un paragraphe avec du **gras**, du `code_inline()` et un [lien](http://127.0.0.1:8080/doc/intro?x=1#haut).
+
+- Deuxième point
+  - Sous-point **B**
+    1. Étape un
+
+| Produit | Prix |
+| --- | --- |
+| Vélo [fiche](http://127.0.0.1:8080/velo) | 1 \| 2 € |
+```
+
+- **Rendu** : titres `#`, paragraphes, `**gras**`, `*italique*`, `~~barré~~`, `` `code` `` en ligne, blocs
+  `pre` clôturés (langage repris d'une classe `language-…`, clôture allongée si le code contient ```` ``` ````),
+  liens `[texte](href)` avec l'URL **absolue** (`javascript:` rendu en texte simple), images `![alt](src)`
+  (une `data:` longue réduite à son type : `data:image/png;base64,…`), listes ordonnées (`start` respecté) ou
+  non, imbriquées, citations `>`, tableaux GFM (première ligne en en-tête, `|` échappé, légende au-dessus),
+  `---`. Un lien qui englobe des blocs (carte cliquable) devient un seul lien sur une ligne. Le texte n'est
+  pas échappé : la sortie est faite pour être lue par un agent.
+- **Visibilité** : même critère que `text`. Omis : `display: none` (dont `hidden`), texte en
+  `visibility: hidden`, contenu d'un `<details>` fermé (le `<summary>` reste) ou en `content-visibility: hidden`,
+  `script`, `style`, `noscript`, `template`. Les racines fantômes ouvertes sont lues. Différence assumée :
+  les champs (`input`, `select`, `textarea`), SVG, canvas, vidéos et iframes ne produisent rien (`innerText`
+  garde par exemple le texte des `<option>`).
+- **Budget et zone** : ceux de `text` — `textMax` (4000 caractères) ou `--max N`, même dernière ligne
+  `… tronqué : N caractères restants — affinez avec --max N / --scope <ref|css>` (N compté sur le Markdown) ;
+  `--scope <ref|css>`, iframe de même origine lue, autre origine → **409** qui propose
+  `grasp text --markdown --scope 'frame=…'`.
+- **Mécanisme** : code fixe de Grasp exécuté dans le monde isolé `grasp-lecture` (voir
+  [Attente de stabilité](#attente-de-stabilité)) : autorisé avec `allowEval=false`, la page ne peut ni le
+  voir ni le fausser en redéfinissant ses prototypes. Parcours **itératif** (pile explicite, pas de
+  récursion) : testé sur un DOM de 10 000 niveaux. Exception : avec `--scope 'frame=…'` (moteur Playwright),
+  la même fonction est évaluée par Playwright dans le monde de la page du cadre.
 
 ### Livraison vérifiée des entrées
 
@@ -781,7 +823,7 @@ GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
 DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?, console?, shotOnError?}
-GET  /snap?max=&scope=   GET /text?max=&scope=   GET /location   GET /pdf
+GET  /snap?max=&scope=   GET /text?max=&scope=&markdown=1   GET /location   GET /pdf
 POST /wait {text? | sel? | idle?, timeout?}
 GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
 GET  /console?level=&since=&limit=&clear=1    POST /console {level?, since?, limit?, clear?}
