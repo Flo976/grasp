@@ -412,3 +412,17 @@ Suites de l'intégration :
   dit dans l'aide CLI, le catalogue (help/SKILL.md) et le README ; aucun écart entre les deux à corriger.
 - [x] **Note `viewport` sur about:blank** (écart relevé au contrôle final de la vague 3) : avant toute navigation,
   « page : 980x2178 » est maintenant expliqué (mesure d'un document vide, viewport bien réglé), aussi dans `run`.
+
+## Retours du troisième essai réel (recette Dexyu en v3, 12/11/2026 — 46/50 OK, sans eval, 360x800 --mobile)
+
+- [ ] **Sélecteur ambigu sans ref** : `expect not-clipped 'img[…]'` (3 correspondances, images alt="" sans ref)
+  répond « utilisez une ref » sans lister de candidat. Lister les candidats avec leur boîte (`@x,y LxH`) et
+  accepter `--nth N`.
+- [ ] **Rapport de run et `--ignore`** : le résumé (« console : 2 erreurs », « requêtes en échec : 2 ») compte les
+  entrées ignorées par `expect no-console-errors --ignore …`, pourtant OK.
+- [ ] **Chemins de `state import` relatifs au script** quand `run` lit un fichier (script de recette portable).
+- [ ] **`snap --boxes` : « layout » au lieu de « viewport »** pour la largeur de mise en page (980x2177 sans meta).
+- [ ] **MCP** : outil `expect` dédié (assertions de mise en page sans passer par `run`) ; écarts de schéma
+  MCP/CLI documentés (`op`, `state` en JSON, pas d'argument `session`).
+- [ ] **Doc session factice** : `storage get` lit l'état actuel ; une app qui déplace son jeton en mémoire fait
+  croire que l'import est perdu.
