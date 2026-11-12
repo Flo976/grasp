@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { checkSocketFallbackDir, fallbackSocketBase, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
 import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
-import { BOUNDARY_RULE, type BoundaryTag } from '../core/boundaries.js';
+import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.js';
+import { formatNetEntries, networkLosses, type NetEntry } from '../core/network.js';
+import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
+import { renderViewport } from '../core/viewport.js';
 import { buildRequest, RUN_COMMANDS, ScriptError, type Args, type StepRequest } from '../core/script.js';
 import { formatReport, type RunResult } from '../control/run.js';
 
@@ -200,12 +203,13 @@ const ACTION_PROPS: Record<string, Prop> = {
   max: I('Limite du diff en caractères (défaut 4000).', 1),
   scope: S('Restreint le diff à une zone (ref ou CSS).'),
   console: B('Joint les entrées console produites pendant l\'action (200 au plus).'),
+  network: B('Joint les requêtes réseau parties pendant l\'action (méthode, URL masquée, statut, durée ; 100 au plus ; exige allowConsole).'),
   shotOnError: B('En cas d\'échec, capture du viewport ; son chemin est ajouté au message d\'erreur.'),
   engine: S('Moteur de l\'action (défaut native ; playwright = moteur de repli, playwright-core requis).', { enum: ['native', 'playwright'] }),
   dialog: S('Réponse aux dialogues JS ouverts pendant l\'action : accept, dismiss, ou le texte d\'un prompt (accepté avec ce texte ; un texte ne confirme jamais un confirm, seul accept le fait). Sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS. Le dialogue vu est toujours rapporté.'),
   follow: B('Si l\'action ouvre un popup ou un onglet (target=_blank), en faire l\'onglet actif (grasp … --follow).'),
 };
-const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
+const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, network: ACTION_PROPS.network!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
 
 /** Nom d'argument MCP (camelCase) → option de la CLI. */
 const FLAG: Record<string, string> = {
@@ -213,6 +217,7 @@ const FLAG: Record<string, string> = {
 };
 FLAG.untilStable = 'until-stable';
 FLAG.maxSteps = 'max-steps';
+FLAG.mobileUa = 'mobile-ua';
 
 /** Arguments → ligne de commande Grasp (positionnels dans l'ordre donné, le reste en options). */
 function toArgs(cmd: string, a: Json, positional: string[]): Args {
@@ -247,11 +252,15 @@ function actionTool(name: string, positional: string[], description: string, pro
     props: { ...props },
     async run(c, a) {
       const args = map !== undefined ? map(a) : a;
-      const j = (await send(c, buildRequest(toArgs(name, args, positional)))).json() as { diff?: string; detail?: string; console?: Parameters<typeof consoleBlock>[0] };
+      const j = (await send(c, buildRequest(toArgs(name, args, positional)))).json() as { diff?: string; detail?: string; console?: Parameters<typeof consoleBlock>[0]; network?: { entries: NetEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number } };
       const lines: string[] = [];
       if (j.detail) lines.push(`note: ${j.detail}`);
       lines.push(j.diff !== undefined ? j.diff : 'OK');
       if (j.console !== undefined) lines.push(...consoleBlock(j.console));
+      if (j.network !== undefined) {
+        if (j.network.entries.length > 0) lines.push(formatNetEntries(j.network.entries, j.network.boundary));
+        lines.push(...networkLosses(j.network, true), `réseau : ${j.network.entries.length === 0 ? 'aucune requête, ' : ''}seq réseau courant ${j.network.seq}`);
+      }
       return text(lines.join('\n'));
     },
   };
@@ -338,6 +347,77 @@ const TOOLS: Tool[] = [
       if (r.dropped > 0) lines.push(`AVERTISSEMENT : ${r.dropped} entrée(s) perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
       if (r.omitted > 0) lines.push(`${r.omitted} ligne(s) plus ancienne(s) non affichée(s) — limit ou since`);
       lines.push(`seq courant : ${r.seq} — suite : since=${r.seq}${a.clear === true ? ' (tampon vidé)' : ''}`);
+      return text(lines.join('\n'));
+    },
+  },
+  {
+    name: 'network', readOnly: true,
+    description: 'Journal réseau de l\'onglet, une ligne par requête « #seq MÉTHODE url → statut · durée · type » (URL masquée ; jamais d\'en-têtes ni de corps). 50 dernières par défaut ; repartez du seq réseau courant avec since. Exige allowConsole. Pour vérifier qu\'une action a appelé l\'API : run avec `expect request "POST /api/x" 201`.',
+    props: { since: I('Requêtes postérieures à ce seq réseau.'), failed: B('Seulement les échecs (≥ 400, net::ERR, bloquées).'), max: I('Les N dernières (défaut 50).', 1), type: S('Types retenus, séparés par des virgules (document, xhr, fetch, script, image…).') },
+    async run(c, a) {
+      const r = (await send(c, buildRequest(toArgs('network', a, [])))).json() as { entries: NetEntry[]; seq: number; omitted?: number; dropped?: number; boundary?: BoundaryTag };
+      const lines = r.entries.length > 0 ? [formatNetEntries(r.entries, r.boundary)] : [];
+      lines.push(...networkLosses({ omitted: r.omitted, dropped: r.dropped }, false), `seq réseau courant : ${r.seq} — suite : since=${r.seq}`);
+      return text(lines.join('\n'));
+    },
+  },
+  {
+    name: 'a11y', readOnly: true,
+    description: 'Audit d\'accessibilité vérifiable sans interprétation (pas un audit WCAG) : contrôles sans nom, images sans alternative, erreurs non reliées à leur champ, libellés orphelins, références ARIA cassées, rôles invalides, titres sautés ; une ligne par problème avec sa ref et une correction. Pour faire échouer une recette : run avec `expect a11y [--max N]`.',
+    props: { scope: S('Zone : ref ou CSS.'), max: I('Problèmes listés au plus (défaut 30, 500 au plus).', 1) },
+    async run(c, a) {
+      const j = (await send(c, buildRequest(toArgs('a11y', a, [])))).json() as { text: string; note: string };
+      return text(`${j.text}\nnote: ${j.note}`);
+    },
+  },
+  {
+    name: 'tabs', readOnly: true,
+    description: 'Onglets de la session, une ligne par onglet (* = actif ; « (ouvert par t1) » pour un popup). Les commandes visent l\'onglet actif ; un popup ouvert par une action est annoncé dans sa note.',
+    props: {},
+    async run(c) {
+      const j = (await send(c, buildRequest(toArgs('tabs', {}, [])))).json() as { tabs: TabInfo[]; boundary?: BoundaryTag };
+      return text(wrapTagged(formatTabs(j.tabs), j.boundary, 'onglets'));
+    },
+  },
+  {
+    name: 'tab',
+    description: 'Onglet : id (t2) pour en faire l\'onglet actif ; new=true pour en ouvrir un (url facultative, vérifiée avant création) ; close=true pour fermer l\'onglet id (défaut : l\'actif ; jamais le dernier).',
+    props: { id: S('Identifiant d\'onglet (t1, t2…).'), new: B('Ouvrir un nouvel onglet (url facultative).'), url: S('URL du nouvel onglet (avec new).'), close: B('Fermer l\'onglet id (défaut : l\'onglet actif).') },
+    async run(c, a) {
+      if (a.new === true && a.close === true) throw new ArgError('new et close s\'excluent');
+      if (a.url !== undefined && a.new !== true) throw new ArgError('url ne s\'applique qu\'avec new=true');
+      const pos = a.new === true ? ['new', ...(typeof a.url === 'string' ? [a.url] : [])] : a.close === true ? ['close', ...(typeof a.id === 'string' ? [a.id] : [])] : [String(a.id ?? '')];
+      if (a.new === true && a.id !== undefined) throw new ArgError('id ne s\'applique pas avec new=true');
+      const j = (await send(c, buildRequest({ cmd: 'tab', pos, flags: new Map() }))).json() as { closed?: string; active?: TabInfo; detail?: string; boundary?: BoundaryTag } & Partial<TabInfo>;
+      const lines = j.detail ? [`note: ${j.detail}`] : [];
+      lines.push(typeof j.closed === 'string' ? `OK — onglet ${j.closed} fermé ; onglet actif : ${wrapTagged(formatTab(j.active!).trim(), j.boundary, 'onglets')}` : wrapTagged(formatTab(j as TabInfo).trim(), j.boundary, 'onglets'));
+      return text(lines.join('\n'));
+    },
+  },
+  {
+    name: 'viewport',
+    description: 'Viewport émulé de l\'onglet (media queries, snap, text et captures le reflètent ; hérité par les popups). Sans size : réglage et mesures lues dans la page. size : « 360x800 », un appareil (iphone-se, iphone-14, pixel-7, galaxy-s8, ipad-mini, laptop, desktop) ou « reset ».',
+    props: { size: S('LARGEURxHAUTEUR, nom d\'appareil, ou reset.'), device: S('Appareil de base (les autres options priment).'), mobile: B('Mode mobile de Chrome (<meta viewport>).'), dpr: S('devicePixelRatio (ex. 2, 3).'), touch: B('Écran tactile émulé.'), mobileUa: B('User agent Android (opt-in ; pour les requêtes suivantes).') },
+    async run(c, a) {
+      const j = (await send(c, buildRequest(toArgs('viewport', a, ['size'])))).json() as Parameters<typeof renderViewport>[0] & { detail?: string };
+      return text([...(j.detail ? [`note: ${j.detail}`] : []), renderViewport(j)].join('\n'));
+    },
+  },
+  {
+    name: 'history', readOnly: true,
+    description: 'Commandes déjà passées sur la session (500 au plus, en mémoire). asRun=true : script grasp run rejouable (refs traduites en sélecteurs durables, lectures et échecs omis, mots de passe jamais conservés) ; expect=true y ajoute les expect de l\'état final.',
+    props: { since: I('Entrées postérieures à ce seq.'), limit: I('Les N dernières (défaut 50 ; sans asRun).', 1), asRun: B('Script grasp run rejouable.'), expect: B('Avec asRun : expect url, title et text de l\'état final.') },
+    async run(c, a) {
+      if (a.expect === true && a.asRun !== true) throw new ArgError('expect s\'applique avec asRun=true');
+      if (a.limit !== undefined && a.asRun === true) throw new ArgError('limit ne s\'applique pas avec asRun=true (since restreint la fenêtre)');
+      const q = new URLSearchParams();
+      if (a.since !== undefined) q.set('since', String(a.since));
+      if (a.limit !== undefined) q.set('limit', String(a.limit));
+      if (a.asRun === true) q.set('asRun', '1');
+      if (a.expect === true) q.set('expect', '1');
+      const r = (await c.call('GET', `/history${q.size > 0 ? `?${q}` : ''}`)).json() as { script?: string; text?: string; seq: number; lost: number };
+      const lines = r.lost > 0 ? [`AVERTISSEMENT : ${r.lost} entrée(s) plus ancienne(s) oubliée(s)`] : [];
+      lines.push(a.asRun === true ? r.script ?? '' : r.text || '(historique vide)', `seq courant : ${r.seq}`);
       return text(lines.join('\n'));
     },
   },

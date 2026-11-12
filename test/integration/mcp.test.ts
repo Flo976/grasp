@@ -97,7 +97,7 @@ test('mcp : protocole (initialize, ping, tools/list, erreurs JSON-RPC), serveur 
     assert.deepEqual((await mcp.request('ping')).result, {});
 
     const tools = (await mcp.request('tools/list')).result.tools as Array<{ name: string; inputSchema: any }>;
-    assert.deepEqual(tools.map((x) => x.name), ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'click', 'fill', 'secrets', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'screenshot', 'run', 'profile']);
+    assert.deepEqual(tools.map((x) => x.name), ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'click', 'fill', 'secrets', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'network', 'a11y', 'tabs', 'tab', 'viewport', 'history', 'screenshot', 'run', 'profile']);
     for (const x of tools) assert.equal(x.inputSchema.type, 'object');
     assert.deepEqual(tools.find((x) => x.name === 'fill')!.inputSchema.required, ['target', 'value']);
     assert.ok(tools.find((x) => x.name === 'click')!.inputSchema.properties.snapDiff);
@@ -217,6 +217,40 @@ test('mcp : formulaire de bout en bout (snap, fill par ref, select, check, click
     assert.equal(await mcp.close(), 0);
     assert.equal(((await srv.api('GET', '/sessions')).json() as unknown[]).length, 0, 'la session créée par grasp mcp est fermée à sa sortie');
     assert.ok(isAlive(srv.proc.pid!), 'un serveur que grasp mcp n\'a pas lancé reste en place');
+  } finally {
+    mcp.proc.kill('SIGKILL');
+    srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup();
+  }
+});
+
+test('mcp : outils de la vague 2 (network, a11y, viewport, tabs, tab, history, --network sur une action)', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  const srv = await startServer(t.env);
+  const mcp = new Mcp(t.env);
+  try {
+    await mcp.init();
+    const nav = await mcp.call('nav', { url: `${site.url}/onglets`, network: true });
+    assert.equal(nav.isError, false, nav.text);
+    assert.match(nav.text, /^OK\n#\d+ GET http:\/\/127\.0\.0\.1:\d+\/onglets → 200/m);
+    assert.match(nav.text, /réseau : seq réseau courant \d+/);
+    assert.match((await mcp.call('network', { type: 'document' })).text, /GET http:\/\/127\.0\.0\.1:\d+\/onglets → 200[\s\S]*seq réseau courant : \d+/);
+    assert.match((await mcp.call('a11y')).text, /^a11y : (aucun problème relevé|\d+ problème)[\s\S]*pas un audit WCAG/m);
+    const vp = await mcp.call('viewport', { size: '360x740', touch: true });
+    assert.equal(vp.isError, false, vp.text);
+    assert.match(vp.text, /360/);
+    const clk = await mcp.call('click', { target: 'text:Aide', follow: true });
+    assert.match(clk.text, /nouvel onglet t2 ouvert[\s\S]*onglet actif : t2 \(--follow\)/);
+    assert.match((await mcp.call('tabs')).text, /^  t1 "Application"[\s\S]*^\* t2 "Aide"/m);
+    assert.match((await mcp.call('viewport')).text, /360/, 'popup : viewport de la session hérité');
+    assert.match((await mcp.call('tab', { id: 't1' })).text, /^\* t1 "Application"/);
+    assert.equal((await mcp.call('tab', { new: true, close: true })).isError, true);
+    const h = await mcp.call('history', { asRun: true });
+    assert.match(h.text, /^nav http:\/\/127\.0\.0\.1:\d+\/onglets$/m);
+    assert.match(h.text, /^viewport 360x740 --touch$/m);
+    assert.match(h.text, /^click text:Aide --follow$/m);
+    assert.match(h.text, /^tab t1$/m);
+    assert.equal(await mcp.close(), 0);
   } finally {
     mcp.proc.kill('SIGKILL');
     srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup();
