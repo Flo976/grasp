@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { axIssues, domIssue, renderA11y, roleValid, scopeNodes, suggestRole, type A11yIssue } from '../../src/bridge/a11y.js';
+import { axIssues, domIssue, imageFix, renderA11y, roleValid, scopeNodes, suggestRole, type A11yIssue } from '../../src/bridge/a11y.js';
 import type { AXNode } from '../../src/bridge/snapshot.js';
 import { buildRequest, checkRunFlags, parseArgs, splitLine } from '../../src/core/script.js';
 import { describeExpected, expectSpecOf } from '../../src/core/expect.js';
@@ -46,6 +46,18 @@ test('axIssues : contrôles sans nom, images sans nom, titres sautés ; nœuds i
   const inZone = new Set(['h3']);
   assert.deepEqual(axIssues(nodes, (n) => inZone.has(n.nodeId)).map((i) => i.kind), ['titre-saute']);
   assert.deepEqual(axIssues([], () => true), []);
+});
+
+test('imageFix : <img>/input image et role=img explicite signalés (correction selon l\'élément) ; svg sans role jamais', () => {
+  assert.match(imageFix('img', undefined)!, /^alt=/);
+  assert.match(imageFix('INPUT', undefined)!, /^alt=/);
+  assert.equal(imageFix('svg', undefined), undefined, 'icône svg inline : pas une image à décrire');
+  assert.equal(imageFix('svg', 'presentation'), undefined);
+  assert.equal(imageFix('svg', 'imagee graphics-symbol'), undefined, 'premier jeton valide : graphics-symbol');
+  assert.match(imageFix('svg', 'img')!, /^<title> en premier enfant, ou aria-label/);
+  assert.doesNotMatch(imageFix('svg', 'IMG')!, /alt=/);
+  assert.match(imageFix('div', 'foo img')!, /^aria-label/);
+  assert.equal(imageFix('canvas', undefined), undefined);
 });
 
 test('scopeNodes : sous-arbre de la racine (par backendDOMNodeId), undefined si absente', () => {

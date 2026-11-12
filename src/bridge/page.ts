@@ -15,7 +15,7 @@ import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { TrackerList } from './trackers.js';
 import { STATE_FORMAT, STATE_VERSION, cookieAllowed, cookieOrigin, fromCdpCookie, normalizeOrigin, parseState, toCdpCookieParam, type CdpCookie, type GraspState, type StateItem } from '../core/state.js';
 import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
-import { A11Y_DEFAULT_MAX, A11Y_DESC_FN, A11Y_DOM_FN, A11Y_KINDS, A11Y_MAX, A11Y_NOTE, axIssues, domIssue, renderA11y, scopeNodes, type A11yIssue, type A11yKind, type A11yReport, type DomItem, type RawIssue } from './a11y.js';
+import { A11Y_DEFAULT_MAX, A11Y_DESC_FN, A11Y_DOM_FN, A11Y_KINDS, A11Y_MAX, A11Y_NOTE, axIssues, domIssue, imageFix, renderA11y, scopeNodes, type A11yIssue, type A11yKind, type A11yReport, type DomItem, type RawIssue } from './a11y.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -2104,6 +2104,21 @@ export class PageController {
     const refOf = new Map<number, string>();
     for (const [ref, id] of snap.refs) if (!refOf.has(id)) refOf.set(id, ref);
     const raw: RawIssue[] = axIssues(nodes, (n) => inZone === undefined || inZone.has(n.nodeId));
+    {
+      // Images sans nom : l'élément DOM décide (icône <svg> sans role → non signalée ; correction selon l'élément).
+      // DOM.describeNode : lecture CDP, aucun code exécuté dans la page.
+      const drop = new Set<RawIssue>();
+      await Promise.all(raw.filter((r) => r.kind === 'image-sans-alt' && r.backendId !== undefined).map(async (r) => {
+        const d = await this.s<{ node: { localName?: string; nodeName: string; attributes?: string[] } }>('DOM.describeNode', { backendNodeId: r.backendId }).catch(() => undefined);
+        if (d === undefined) return;
+        const at = d.node.attributes !== undefined ? d.node.attributes : [];
+        let role: string | undefined;
+        for (let i = 0; i + 1 < at.length; i += 2) if (at[i] === 'role') role = at[i + 1];
+        const fix = imageFix(d.node.localName ?? d.node.nodeName, role);
+        if (fix === undefined) drop.add(r); else r.fix = fix;
+      }));
+      if (drop.size > 0) raw.splice(0, raw.length, ...raw.filter((r) => !drop.has(r)));
+    }
     {
       // Relevé déjà limité à la zone (formErrors sous scopeId).
       for (const [id, msg] of fe.fields) {

@@ -657,7 +657,7 @@ WCAG : …`.)
 | Type | Relevé quand | Source |
 |---|---|---|
 | `sans-nom` | un `button`, `link`, `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider`, `spinbutton`, `menuitem*`, `tab` ou `treeitem` n'a **aucun nom accessible** (calculé par Chrome : libellé, `aria-label`, contenu, `title`, `placeholder`…) | arbre |
-| `image-sans-alt` | une image (`<img>`, `role=img`) non ignorée n'a aucun nom (`alt=""` = décorative, jamais signalée) | arbre |
+| `image-sans-alt` | une image non ignorée n'a aucun nom : `<img>`, `<input type=image>`, ou élément de `role=img` explicite (`alt=""` = décorative, jamais signalée). Correction selon l'élément : `alt` pour `<img>`, `<title>` ou `aria-label` pour un `<svg role=img>`. Une icône `<svg>` inline **sans** `role` n'est pas signalée (Chrome lui donne pourtant le rôle image : elle accompagne presque toujours un texte) | arbre + DOM |
 | `erreur-non-reliee` | un champ porte un message d'erreur **affiché** que Grasp n'a trouvé qu'à côté du champ (ni `aria-errormessage` ni `aria-describedby`) | [erreurs de formulaire](#erreurs-de-formulaire) |
 | `erreur-masquee` | un message d'erreur affiché est sous `aria-hidden` et rattaché à aucun champ (ligne `alerte` du snapshot) | erreurs de formulaire |
 | `libelle-orphelin` | un `<label for>` affiché ne désigne aucun élément, ou un élément qui n'est pas un champ | DOM |
@@ -681,20 +681,23 @@ WCAG : …`.)
   libellé n'ont pas de ref (ils ne sont pas dans le snapshot) : leur description DOM les désigne.
 - **`expect a11y [--max N] [--scope <sél>]`** : tenue si l'audit relève **au plus N** problèmes (0 par défaut).
   Constat immédiat, comme `no-form-errors`. Échec : `attendu au plus 0 problème(s) d'accessibilité dans la page ;
-  constaté : 17 problème(s) (sans-nom 6, image-sans-alt 2, …) : <5 premières lignes> | … et 12 autre(s)`
+  constaté : 18 problème(s) (sans-nom 6, image-sans-alt 3, …) : <5 premières lignes> | … et 13 autre(s)`
   (50 lignes au plus dans le JSON, champ `expect.items`). Tenue avec des problèmes tolérés : note
-  `17 problème(s) d'accessibilité toléré(s) (--max 17) : …`. Utile pour figer une dette connue et refuser
+  `18 problème(s) d'accessibilité toléré(s) (--max 18) : …`. Utile pour figer une dette connue et refuser
   qu'elle augmente.
 - **Mécanisme** : `Accessibility.getFullAXTree` (le même arbre que `snap`), le relevé des
   [erreurs de formulaire](#erreurs-de-formulaire) (qui dit désormais d'où vient chaque message) et une fonction
   fixe dans le monde isolé `grasp-lecture` : autorisé avec `allowEval=false`, aucune modification de la page.
   Testé sur une page piégée qui fausse ses propres `querySelectorAll`, `getAttribute` et `getElementById` et
-  compte ses mutations : les 17 défauts sont relevés, leurs versions correctes (image `alt=""`, bouton icône
+  compte ses mutations : les 18 défauts sont relevés, leurs versions correctes (image `alt=""`, icônes `<svg>`
+  sans role dans un lien, un bouton ou un paragraphe, `<svg role=img aria-label>`, bouton icône
   avec `aria-label`, erreur reliée par `aria-describedby`, rôle à repli valide, contenu masqué) jamais, et la
   page ne voit aucune mutation (`test/integration/a11y.test.ts`). Mesuré (Chrome headless local, médiane de
   7) : 16 ms sur la page piégée (`snap` : 5 ms), 194 ms sur une page de 2000 liens (`snap` : 183 ms).
-- **Ce qui n'est pas relevé** : un nom présent mais inutile (`aria-label="bouton"`, « cliquez ici »), un champ
-  nommé par son seul `placeholder` (Chrome en fait un nom), les contrastes, l'ordre de tabulation, les pièges
+- **Ce qui n'est pas relevé** : une icône `<svg>` sans `role` ni nom (décorative ou informative, l'audit ne
+  tranche pas : `aria-hidden="true"` si décorative, `role="img"` + `<title>` sinon), un nom présent mais
+  inutile (`aria-label="bouton"`, « cliquez ici »), un champ nommé par son seul `placeholder` (Chrome en fait
+  un nom), les contrastes, l'ordre de tabulation, les pièges
   au clavier, la langue de la page, les tableaux sans en-têtes, les doublons d'id hors références ARIA.
 
 ### Livraison vérifiée des entrées

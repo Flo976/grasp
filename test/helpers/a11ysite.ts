@@ -3,7 +3,8 @@
  *
  * Page piégée : chaque défaut relevé y figure une fois au moins, à côté de sa version correcte (qui ne doit
  * PAS être signalée) — image décorative alt="", bouton icône avec aria-label, erreur reliée par
- * aria-describedby, role à jeton de repli valide, contenu masqué (display:none) porteur de défauts.
+ * aria-describedby, role à jeton de repli valide, contenu masqué (display:none) porteur de défauts, icônes
+ * `<svg>` inline sans aria-hidden dans un lien ou un bouton nommés par leur texte (jamais des images à signaler).
  */
 
 const PIXEL = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2240%22%3E%3Crect width=%2240%22 height=%2240%22 fill=%22%23c00%22/%3E%3C/svg%3E';
@@ -17,6 +18,7 @@ export const A11Y_PAGE = `<!doctype html>
 <nav id="menu">
   <a href="/panier"><svg width="16" height="16" aria-hidden="true"><rect width="16" height="16"/></svg></a>
   <a href="/aide">Aide</a>
+  <a href="/aide-en-ligne"><svg width="16" height="16"><rect width="16" height="16"/></svg> Aide en ligne</a>
   <a href="/compte" aria-label="Mon compte"><svg width="16" height="16" aria-hidden="true"><rect width="16" height="16"/></svg></a>
 </nav>
 <h3>Promotions</h3>
@@ -31,6 +33,10 @@ export const A11Y_PAGE = `<!doctype html>
   <div role="bouton" tabindex="0">Commander</div>
   <div role="landmark">Zone abstraite</div>
   <div role="toggle button" tabindex="0">Repli valide</div>
+  <svg role="img" class="logo-svg" width="20" height="20"><rect width="20" height="20"/></svg>
+  <svg role="img" aria-label="Logo Vélo" width="20" height="20"><rect width="20" height="20"/></svg>
+  <button type="button"><svg width="16" height="16"><rect width="16" height="16"/></svg> Valider le code</button>
+  <p>Livraison offerte <svg width="16" height="16"><rect width="16" height="16"/></svg></p>
 </section>
 <h2>Inscription</h2>
 <form id="inscription" onsubmit="return false">
@@ -70,6 +76,7 @@ export const A11Y_PROPRE_PAGE = `<!doctype html>
 <img src="${PIXEL}" alt="Vélo de ville rouge" width="40" height="40">
 <img src="${PIXEL}" alt="" width="40" height="40">
 <button type="button" aria-label="Fermer la bannière">×</button>
+<button type="button"><svg width="16" height="16"><rect width="16" height="16"/></svg> Valider le code</button>
 <div role="switch" aria-checked="false" tabindex="0" aria-label="Notifications">Notifications</div>
 <h2>Inscription</h2>
 <form onsubmit="return false">

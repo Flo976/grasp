@@ -181,6 +181,22 @@ export function axIssues(nodes: AXNode[], inScope: (n: AXNode) => boolean): RawI
   return out;
 }
 
+/**
+ * Image sans nom de l'arbre → correction à proposer, ou undefined si l'élément n'est pas à signaler. Chrome donne
+ * le rôle `image` à `<img>`, à `role=img` ET à tout `<svg>` inline : une icône `<svg>` sans role, dans un lien
+ * ou un bouton déjà nommé par son texte, n'est pas une image informative à décrire (elle est partout sur un site
+ * réel). Signalés : `<img>`, `<input type=image>`, et tout élément dont le role explicite (premier jeton valide)
+ * est img/image — avec une correction propre à l'élément (un svg n'a pas d'attribut alt).
+ */
+export function imageFix(localName: string, roleAttr: string | undefined): string | undefined {
+  const tag = localName.toLowerCase();
+  if (tag === 'img' || tag === 'input') return 'alt="ce que montre l\'image" (alt="" si décorative)';
+  const first = (roleAttr ?? '').toLowerCase().split(/\s+/).find((t) => ROLE_SET.has(t));
+  if (first !== 'img' && first !== 'image') return undefined;
+  if (tag === 'svg') return '<title> en premier enfant, ou aria-label ; aria-hidden="true" si décoratif';
+  return 'aria-label (ou aria-labelledby) ; aria-hidden="true" si décorative';
+}
+
 /** Sous-arbre de la zone (backendDOMNodeId de sa racine) : ensemble des nodeId ; undefined si la racine n'est pas dans l'arbre. */
 export function scopeNodes(nodes: AXNode[], scopeBackendId: number): Set<string> | undefined {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));

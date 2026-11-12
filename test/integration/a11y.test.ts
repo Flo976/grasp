@@ -22,10 +22,10 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   await fx.page.navigate(`${site.url}/a11y`);
   const r = await fx.page.a11y({ max: 100 });
   const t = r.text;
-  assert.deepEqual(r.counts, { 'sans-nom': 6, 'image-sans-alt': 2, 'erreur-non-reliee': 1, 'erreur-masquee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1, 'role-invalide': 2, 'titre-saute': 2 }, t);
-  assert.equal(r.total, 17);
+  assert.deepEqual(r.counts, { 'sans-nom': 6, 'image-sans-alt': 3, 'erreur-non-reliee': 1, 'erreur-masquee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1, 'role-invalide': 2, 'titre-saute': 2 }, t);
+  assert.equal(r.total, 18);
   assert.equal(r.omitted, 0);
-  assert.match(t.split('\n')[0]!, /^a11y : 17 problèmes — page "Accessibilité piégée" http:\/\/127\.0\.0\.1:\d+\/a11y$/);
+  assert.match(t.split('\n')[0]!, /^a11y : 18 problèmes — page "Accessibilité piégée" http:\/\/127\.0\.0\.1:\d+\/a11y$/);
   // Contrôles sans nom : ref + description DOM qui relie la ligne au code.
   assert.match(lineOf(t, /a\[href="\/panier"\]/), /^sans-nom e[0-9a-z]+:link a\[href="\/panier"\] — aucun nom accessible → texte du lien, ou aria-label/);
   assert.match(lineOf(t, /fermer-promo/), /^sans-nom e[0-9a-z]+:button .*button#fermer-promo — .* → texte visible, ou aria-label/);
@@ -36,6 +36,10 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   // Images : sans ref (une image sans nom n'est pas dans le snapshot), décrites par le DOM.
   assert.match(lineOf(t, /^image-sans-alt img/), /^image-sans-alt img\.promo-visuel|^image-sans-alt img\[src="data:image\/svg\+xml,…"\] — aucune alternative textuelle → alt=/);
   assert.match(t, /^image-sans-alt div\[role="img"\] — /m);
+  // svg role=img sans nom : correction propre au svg (pas d'alt) ; icônes svg inline sans role (lien, bouton,
+  // paragraphe) : jamais signalées.
+  assert.match(lineOf(t, /^\S+ svg/), /^image-sans-alt svg\[role="img"\] — aucune alternative textuelle → <title> en premier enfant, ou aria-label ; aria-hidden="true" si décoratif$/);
+  assert.equal(t.split('\n').filter((l) => /^\S+ svg/.test(l)).length, 1, t);
   // Erreurs : message visible non relié (réutilise la détection des erreurs de formulaire), message masqué.
   assert.match(lineOf(t, /^erreur-non-reliee/), /^erreur-non-reliee e[0-9a-z]+:textbox "Nom" \[invalide: Le nom est obligatoire\] — message « Le nom est obligatoire » affiché mais non relié .* → aria-describedby/);
   assert.match(lineOf(t, /^erreur-masquee/), /^erreur-masquee "Paiement refusé" — erreur affichée mais aria-hidden/);
@@ -48,11 +52,11 @@ test('page piégée : chaque défaut relevé une fois, avec sa ref quand elle ex
   assert.match(t, /^titre-saute e[0-9a-z]+:heading\[3\] "Promotions" — h3 après h1 « Boutique » → h2/m);
   assert.match(t, /^titre-saute e[0-9a-z]+:heading\[4\] "Pied de page" — h4 après h2 « Inscription » → h3/m);
   // Versions correctes : jamais signalées. Contenu masqué (display:none) : non audité.
-  assert.doesNotMatch(t, /Mon compte|Fermer la bannière|Vélo de ville|Téléphone|Repli valide|Masqué|tel-err/);
+  assert.doesNotMatch(t, /Mon compte|Aide en ligne|Valider le code|Livraison offerte|Logo Vélo|Fermer la bannière|Vélo de ville|Téléphone|Repli valide|Masqué|tel-err/);
   assert.equal(r.note.includes('pas un audit WCAG'), true);
   // Ordre : A11Y_KINDS, puis document.
   const kinds = t.split('\n').slice(2).map((l) => l.split(' ')[0]);
-  assert.deepEqual(kinds, ['sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'image-sans-alt', 'image-sans-alt', 'erreur-non-reliee', 'erreur-masquee', 'libelle-orphelin', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'role-invalide', 'titre-saute', 'titre-saute']);
+  assert.deepEqual(kinds, ['sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'sans-nom', 'image-sans-alt', 'image-sans-alt', 'image-sans-alt', 'erreur-non-reliee', 'erreur-masquee', 'libelle-orphelin', 'libelle-orphelin', 'reference-cassee', 'role-invalide', 'role-invalide', 'titre-saute', 'titre-saute']);
 });
 
 test('les refs rendues sont utilisables telles quelles ; la page ne voit rien (aucune mutation) et ne trompe pas l\'audit', async () => {
@@ -64,7 +68,7 @@ test('les refs rendues sont utilisables telles quelles ; la page ne voit rien (a
   const btn = r.issues.find((i) => i.who.includes('#fermer-promo'))?.ref;
   assert.ok(btn !== undefined);
   await fx.page.click(btn);
-  // Les prototypes faussés par la page (querySelectorAll vide, getAttribute null) n'ont rien caché : 17 relevés
+  // Les prototypes faussés par la page (querySelectorAll vide, getAttribute null) n'ont rien caché : 18 relevés
   // ci-dessus. Mutations vues par la page pendant les audits : aucune hors des deux actions (valeur, focus).
   // Témoin : un premier clic (sans audit) donne le compte de base ; son écriture ajoute 1 mutation (childList).
   await fx.page.navigate(`${site.url}/a11y`);
@@ -85,7 +89,7 @@ test('--scope : seulement la zone (les titres sautés se jugent sur la page enti
   assert.deepEqual(f.counts, { 'sans-nom': 3, 'erreur-non-reliee': 1, 'libelle-orphelin': 2, 'reference-cassee': 1 }, f.text);
   assert.match(f.text.split('\n')[0]!, /^a11y : 7 problèmes dans #inscription — page/);
   const p = await fx.page.a11y({ scope: '#promos' });
-  assert.deepEqual(p.counts, { 'sans-nom': 2, 'image-sans-alt': 2, 'role-invalide': 2 }, p.text);
+  assert.deepEqual(p.counts, { 'sans-nom': 2, 'image-sans-alt': 3, 'role-invalide': 2 }, p.text);
   // Le titre « Promotions » (hors zone) n'est pas rapporté dans #promos ; « Pied de page » l'est dans body.
   const b = await fx.page.a11y({ scope: 'body' });
   assert.equal(b.counts['titre-saute'], 2);
@@ -97,12 +101,12 @@ test('--scope : seulement la zone (les titres sautés se jugent sur la page enti
 test('--max : liste bornée, comptes complets, coupure annoncée', async () => {
   await fx.page.navigate(`${site.url}/a11y`);
   const r = await fx.page.a11y({ max: 3 });
-  assert.equal(r.total, 17);
+  assert.equal(r.total, 18);
   assert.equal(r.issues.length, 3);
-  assert.equal(r.omitted, 14);
+  assert.equal(r.omitted, 15);
   const lines = r.text.split('\n');
   assert.equal(lines.length, 2 + 3 + 1, r.text);
-  assert.equal(lines.at(-1), '… 14 problèmes non listés — affinez avec --max N / --scope <ref|css>');
+  assert.equal(lines.at(-1), '… 15 problèmes non listés — affinez avec --max N / --scope <ref|css>');
   assert.match(lines[1]!, /contrôle sans nom : 6 · .* · niveau de titre sauté : 2$/);
 });
 
@@ -118,15 +122,15 @@ test('expect a11y : 417 avec l\'attendu et le constaté (borné) ; --max N tolè
   await fx.page.navigate(`${site.url}/a11y`);
   await assert.rejects(fx.page.expect({ kind: 'a11y' }), (e: unknown) => {
     assert.ok(e instanceof GraspError && e.status === 417, String(e));
-    assert.match(e.message, /^attendu au plus 0 problème\(s\) d'accessibilité dans la page ; constaté : 17 problème\(s\) \(sans-nom 6, image-sans-alt 2, erreur-non-reliee 1, erreur-masquee 1, libelle-orphelin 2, reference-cassee 1, role-invalide 2, titre-saute 2\) : sans-nom e[0-9a-z]+:link/);
-    assert.match(e.message, /\| … et 12 autre\(s\)$/);
+    assert.match(e.message, /^attendu au plus 0 problème\(s\) d'accessibilité dans la page ; constaté : 18 problème\(s\) \(sans-nom 6, image-sans-alt 3, erreur-non-reliee 1, erreur-masquee 1, libelle-orphelin 2, reference-cassee 1, role-invalide 2, titre-saute 2\) : sans-nom e[0-9a-z]+:link/);
+    assert.match(e.message, /\| … et 13 autre\(s\)$/);
     const items = (e.extra?.expect as { items: string[] }).items;
-    assert.equal(items.length, 17);
+    assert.equal(items.length, 18);
     return true;
   });
-  const ok = await fx.page.expect({ kind: 'a11y', max: 17 });
-  assert.match(ok.detail ?? '', /^17 problème\(s\) d'accessibilité toléré\(s\) \(--max 17\)/);
-  await assert.rejects(fx.page.expect({ kind: 'a11y', max: 16 }), /constaté : 17 problème/);
+  const ok = await fx.page.expect({ kind: 'a11y', max: 18 });
+  assert.match(ok.detail ?? '', /^18 problème\(s\) d'accessibilité toléré\(s\) \(--max 18\)/);
+  await assert.rejects(fx.page.expect({ kind: 'a11y', max: 17 }), /constaté : 18 problème/);
   await assert.rejects(fx.page.expect({ kind: 'a11y', scope: '#inscription', max: 6 }), /attendu au plus 6 problème\(s\) d'accessibilité dans #inscription ; constaté : 7/);
 });
 

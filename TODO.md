@@ -122,6 +122,8 @@ Lecture et recette
       autorisé sans eval) : contrôles sans nom, images sans alt, erreur visible non reliée ou masquée, `<label for>`
       orphelin, référence ARIA cassée, rôle invalide, titre sauté ; ref et correction par problème. Testé sur une
       page piégée (`test/integration/a11y.test.ts`, `a11y-cli.test.ts`). Pas un audit WCAG.
+- [x] Audit d'accessibilité, relecture : icône `<svg>` inline sans `role` (dans un lien ou un bouton nommé)
+      plus signalée `image-sans-alt` ; correction propre au `<svg role=img>` (`<title>`/`aria-label`, pas `alt`).
 - [ ] Audit d'accessibilité : contrastes (calcul sur les styles calculés), nom réduit au `placeholder`, noms
       inutiles (« cliquez ici »), outil MCP dédié, iframes.
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
