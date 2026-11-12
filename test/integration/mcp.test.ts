@@ -176,6 +176,7 @@ test('mcp : formulaire de bout en bout (snap, fill par ref, select, check, click
     assert.match(txt, /Ville : Antananarivo/);
     assert.match(txt, /Pays : mg/);
     assert.match(txt, /CGU : oui/);
+    assert.match((await mcp.call('text', { markdown: true })).text, /^# Inscription reçue$/m, 'markdown=true : titre en Markdown');
     assert.match((await mcp.call('wait', { text: 'Inscription reçue', timeout: 5000 })).text, /^OK \(attendu \d+ ms/);
     const late = await mcp.call('wait', { text: 'jamais là', timeout: 300 });
     assert.equal(late.isError, true);

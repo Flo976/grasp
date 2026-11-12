@@ -824,7 +824,7 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 |---|---|---|
 | `nav` | `url`, options d'action | `nav` |
 | `snap` | `max`, `scope`, `nameMax` | `snap --max --scope --name-max` |
-| `text` | `max`, `scope` | `text` |
+| `text` | `max`, `scope`, `markdown` | `text [--markdown]` |
 | `click`, `hover` | `target`, options d'action | idem |
 | `fill`, `select` | `target`, `value`, options d'action | idem |
 | `type` | `target`, `text`, `delay`, options d'action | idem |

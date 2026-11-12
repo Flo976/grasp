@@ -249,8 +249,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'text', readOnly: true,
-    description: 'Texte visible (innerText) de la page ou d\'une zone ; 4000 caractères par défaut, coupure annoncée. La preuve qu\'une action a réussi, c\'est le contenu de la page.',
-    props: { max: I('Limite en caractères.', 1), scope: S('Zone : ref, CSS, text: ou frame=<css de l\'iframe> [>> sél].') },
+    description: 'Texte visible (innerText) de la page ou d\'une zone ; 4000 caractères par défaut, coupure annoncée. La preuve qu\'une action a réussi, c\'est le contenu de la page. markdown=true : même texte visible structuré en Markdown (titres, listes, liens, tableaux, code).',
+    props: { max: I('Limite en caractères.', 1), scope: S('Zone : ref, CSS, text: ou frame=<css de l\'iframe> [>> sél].'), markdown: B('Sortie Markdown (grasp text --markdown).') },
     async run(c, a) {
       const t = (await send(c, buildRequest(toArgs('text', a, [])))).text();
       return text(t !== '' ? t : `note: aucun texte visible ${typeof a.scope === 'string' ? `dans la zone ${a.scope}` : 'dans la page'}`);
