@@ -70,8 +70,8 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `BOUNDARY_RULE` dans `grasp help` et les instructions MCP. Coût : 147 à 151 octets par bloc. Inspiré
       d'agent-browser (`--content-boundaries`) et de l'IDPI de PinchTab. Tests : page piégée `/piege`.
       Défaut `auto` : compromis documenté (le contenu affiché par une page locale peut venir de tiers ; à forcer
-      dans ce cas et derrière un `ssh -L`). Reste : la règle dans le futur `grasp skill` ; test MCP de bout en
-      bout ; mesurer l'effet sur un modèle ; réévaluer le défaut `true` (41 tests à adapter, mesuré).
+      dans ce cas et derrière un `ssh -L`). Règle reprise dans `grasp skill` à l'intégration. Reste : test MCP de
+      bout en bout ; mesurer l'effet sur un modèle ; réévaluer le défaut `true` (41 tests à adapter, mesuré).
 
 ## Recette sur serveur distant (Claude vérifie une tâche à travers un tunnel)
 
@@ -110,7 +110,8 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       Tests : `test/unit/network.test.ts`, `test/integration/network.test.ts`. Après relecture : fenêtre de
       `expect request` étendue au début de la dernière action (fetch puis navigation, formulaire POST en PRG),
       requête d'avant la fenêtre citée avec son `--since`, méthode insensible à la casse et motif strict
-      impossible refusé en 400, cas positif « réponse arrivée pendant --timeout » testé. Reste : outil MCP dédié.
+      impossible refusé en 400, cas positif « réponse arrivée pendant --timeout » testé. Outil MCP `network`
+      ajouté à l'intégration.
 - [x] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
       fin de `run`, avec capture en cas d'échec. — Fait : `run --report` (d'office avec `expect`), texte
       compact et `--json` (`report`) ; capture prise juste après chaque échec (chemin seulement).
@@ -135,7 +136,8 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       à la bascule de profil et au recyclage ; captures `--full`/`--el` qui reviennent au viewport émulé. Tests :
       `viewport.test.ts` (media query vérifiée par `text`), `viewport-cli.test.ts`, `unit/viewport.test.ts`. Relecture : reset d'un
       viewport à la taille de l'écran réel sans attente de 2 s ; `viewport` annoncé dans l'outil MCP `run`.
-      Reste : test réel sur chrome.exe ; outil MCP dédié (aujourd'hui par `run`) ; UA Safari pour les appareils iOS.
+      Intégration : outil MCP `viewport`, viewport hérité par les popups. Reste : test réel sur chrome.exe ; UA
+      Safari pour les appareils iOS.
 
 ## Pilotage
 
@@ -147,6 +149,7 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       (seul `accept` le fait ; `cancel`, `Dismiss`… → refus), valeur en `--…` refusée (400).
       Dialogue ouvert pendant le `--snap-diff` d'après ou `post` : rapporté par l'action (relevé en dernier).
       Reste : dialogues d'une iframe hors processus non testés.
+
 ## Historique et rejeu
 
 - [x] **`grasp history [--as-run] [--since]`** (branche `feat/historique-run`) : commandes de la session mémorisées
@@ -162,9 +165,10 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 - [ ] Actions concurrentes d'une session : le groupe d'objets CDP `grasp` est libéré à la fin de chaque action,
       l'autre peut échouer (« Could not find object with given id », vu 1 fois sur ~10 paires `fill`+`click`) ;
       `notes`/`actTarget` sont aussi partagés. Sérialiser les actions par session, ou un groupe par action.
-- [ ] Remplacer le masque des mots de passe par `secret:NOM` quand les variables de secrets existeront.
-- [ ] Outil MCP `history` ; traduction des refs de `--scope` ; description sans snapshot séparé pour
-      `expect`/`wait --sel`/`upload` par ref.
+- [x] `secret:NOM` (intégration) : `fill <sél> secret:NOM` est enregistré par son nom et rejoué tel quel ; le masque
+      reste pour une valeur littérale saisie dans un champ secret. Outil MCP `history` ajouté.
+- [ ] Traduction des refs de `--scope` ; description sans snapshot séparé pour `expect`/`wait --sel`/`upload`
+      (et `scroll`) par ref.
 
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 
@@ -207,8 +211,8 @@ Onglets et popups
 - [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
       l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
       pause : le premier document échapperait au garde.
-- [ ] Outils MCP dédiés `tabs` / `tab` (aujourd'hui via `run`) ; recyclage et bascule de profil : seul l'onglet actif
-      est rouvert.
+- [x] Outils MCP `tabs` / `tab` (intégration).
+- [ ] Recyclage et bascule de profil : seul l'onglet actif est rouvert.
 
 Lecture et recette
 - [x] **Lecture progressive** (branche `feat/lecture-progressive`) : `snap --outline` (repères, tableaux et titres
@@ -230,7 +234,7 @@ Lecture et recette
 - [x] Audit d'accessibilité, relecture : message d'erreur relié par `aria-describedby` à un champ sans
       `aria-invalid` plus rapporté « non relié » : nouveau type `erreur-sans-invalide` (correction `aria-invalid`).
 - [ ] Audit d'accessibilité : contrastes (calcul sur les styles calculés), nom réduit au `placeholder`, noms
-      inutiles (« cliquez ici »), outil MCP dédié, iframes.
+      inutiles (« cliquez ici »), iframes (outil MCP `a11y` ajouté à l'intégration).
 - [ ] Recette multi-pages : pas d'outil MCP ni de ligne `grasp run` pour `diff`/`audit` ; pas de crawl récursif
       (un niveau depuis une page HTML) ; sitemaps `.xml.gz` non lus ; tolérance aux contenus variables seulement
       par `--ignore` ; pas de comparaison visuelle (captures).
@@ -260,8 +264,9 @@ Image Docker
 
 29 étapes, 27 OK, 2 KO (vrais défauts de l'app). Manques constatés côté Grasp :
 
-- [ ] **Viewport** : `grasp viewport 360x800 [--mobile] [--dpr N]` ou option de session
+- [x] **Viewport** : `grasp viewport 360x800 [--mobile] [--dpr N]` ou option de session
       (`Emulation.setDeviceMetricsOverride`) ; la fenêtre est fixée à 780 px, impossible de tester un défaut mobile.
+      → fait (branche `feat/viewport`, voir « Retours d'essais réels »).
 - [x] **Socket trop long** : repli automatique sur `/tmp/grasp-<uid>/<hash>/` (0700, propriétaire et absence de lien
       vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
 - [x] **`screenshot -o <fichier>` dans `grasp run`** : chemin relatif sans `..`, image renvoyée au client et
@@ -277,8 +282,9 @@ Image Docker
       Recette (fichier minimal, testé) ; `grasp storage get|set|rm local|session <clé> [valeur|-]` sur l'origine
       affichée, code fixe dans le monde isolé, soumis à `allowCookies` (mêmes données que l'export d'état), aussi
       dans `grasp run`.
-- [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
-      (`aria-describedby` absent), etc. Utile en recette.
+- [x] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
+      (`aria-describedby` absent), etc. Utile en recette. → fait (branche `feat/audit-a11y`, voir « Lecture et
+      recette »).
 
 ## Aide pour agents
 
@@ -293,6 +299,8 @@ Image Docker
       `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
       ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
       sans être décrite : rouge ; l'ancien test restait vert).
+- [x] **Catalogue à jour de la vague 2** (intégration) : 47 commandes, outils MCP, options de diff/audit ;
+      `skills/grasp/SKILL.md` régénéré (12 962 octets, borne du test portée à 14 000).
 
 ## Navigation et défilement
 
@@ -327,3 +335,30 @@ Image Docker
       qui utilisent un secret ?
 - [ ] `frame=…` (secret dans une iframe de connexion) : contrôler le domaine du cadre, pas de la page.
 - [ ] Masquage du journal du serveur non couvert par un test de mutation.
+
+## Intégration de la vague 2 (branche `integration/vague-2`)
+
+Treize branches fusionnées (`fix/retours-essai-dexyu`, `feat/skill-aide`, `feat/navigation-historique`,
+`feat/viewport`, `feat/dialogues`, `feat/lecture-progressive`, `feat/frontieres-contenu`, `feat/secrets`,
+`feat/journal-reseau`, `feat/audit-a11y`, `feat/historique-run`, `feat/recette-multipages`, `feat/onglets-popups`).
+Corrections transverses :
+
+- [x] **Bridge × frontières × secrets** : la réponse capturée par `withContentBoundaries` n'avait pas `getHeader`,
+      lu par le masquage des secrets : le bridge tombait dès que les frontières étaient actives. Corrigé ;
+      `writeHead` fusionne ses en-têtes avec ceux de `setHeader` (note des onglets conservée).
+- [x] **Frontières sur les nouvelles sorties** : journal réseau (`reseau`), a11y, onglets, `storage get`
+      (`stockage`), `grasp history` (`historique`), rapports de `diff` (`pages`) et `audit` ; `diff`/`audit`
+      retirent les marqueurs du bridge avant de comparer (`test/integration/boundaries-v2.test.ts`).
+- [x] **Onglets × viewport × secrets** : un popup hérite du viewport émulé et du masque des secrets ;
+      `back`/`forward`/`reload` acceptent `--dialog` et `--network` (beforeunload refusé : 409 aussitôt), et
+      passent comme `scroll` par l'annonce des popups (`test/integration/coherence-v2.test.ts`).
+- [x] **history** connaît toutes les nouvelles commandes et options (aller-retour testé) ; `secret:NOM` rejoué.
+- [x] **MCP** : outils `network`, `a11y`, `tabs`, `tab`, `viewport`, `history` ; propriété `network` des actions.
+
+Suites de l'intégration :
+- [ ] Dialogues d'un popup : non couverts par le `--dialog` de l'action qui l'ouvre (politique par onglet).
+- [ ] `expect request` et `grasp network` ne lisent que l'onglet actif : une requête partie d'un popup n'est vue
+      qu'après `tab <id>` ; un journal de session (tous onglets) serait plus simple pour la recette.
+- [ ] `history --as-run` sous frontières actives : script seulement neutralisé (un nom accessible qui imite le
+      marqueur devient `[marqueur imité]` et ne se rejoue plus) ; acceptable, à documenter si cela gêne.
+- [ ] `grasp skill` : 12 962 octets (borne 14 000) ; au-delà, passer les commandes rares dans `grasp help`.
