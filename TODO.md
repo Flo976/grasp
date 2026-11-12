@@ -126,6 +126,9 @@ Onglets et popups
       (`hub.claimed`), test en mode attach dans `tabs.test.ts`.
 - [x] Notes d'onglet bornées et masquées (URL par `redactUrl` à 300, titre à 80) : un popup OAuth ne recopie plus
       `code=…` en clair ni 20 000 caractères d'URL dans la note.
+- [x] Notes différées (onglet fermé par la page hors action) visibles partout : en tête du résultat de tout outil
+      MCP (le client MCP ignorait `X-Grasp-Notice`, recyclage compris), reportées dans la note du recyclage ;
+      option MCP `follow`.
 - [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
       l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
       pause : le premier document échapperait au garde.

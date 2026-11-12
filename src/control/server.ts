@@ -483,7 +483,15 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try {
       let url: string | undefined;
       let cookies: unknown[] = [];
-      try { const r = await request(sock, 'GET', '/location', undefined, {}, 10_000); if (r.status === 200) url = String(r.json().url); } catch { /* bridge muet : rien à recharger */ }
+      // Note différée du bridge (onglet fermé par la page) consommée par cette lecture : reportée dans la note du
+      // recyclage, sinon perdue avec l'ancien bridge.
+      let pending: string | undefined;
+      try {
+        const r = await request(sock, 'GET', '/location', undefined, {}, 10_000);
+        if (r.status === 200) url = String(r.json().url);
+        const n = r.headers['x-grasp-notice'];
+        if (typeof n === 'string' && n !== '') { try { pending = decodeURIComponent(n); } catch { pending = n; } }
+      } catch { /* bridge muet : rien à recharger */ }
       try { const r = await request(sock, 'GET', '/internal/session-cookies', undefined, {}, 10_000); if (r.status === 200) cookies = r.json().cookies as unknown[]; } catch { /* idem */ }
       const code = await old.stop();
       if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
@@ -506,7 +514,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       s.memory = undefined;
       persistInstances();
       const nsock = { transport: 'unix' as const, socketPath: s.bridge.socketPath };
-      const parts = [`navigateur recyclé : ${why}`];
+      const parts = [...(pending !== undefined ? [pending] : []), `navigateur recyclé : ${why}`];
       if (cookies.length > 0) {
         try {
           const r = await request(nsock, 'POST', '/internal/session-cookies', { cookies }, {}, 10_000);

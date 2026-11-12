@@ -629,7 +629,9 @@ grasp click '#dehors'               # window.open vers un hôte hors allowlist
   ouvert. Pendant une action : l'action réussit (la page a réagi en se fermant), Grasp attend la stabilité de
   l'ouvreur (sa page reçoit le `postMessage`) et le dit. Hors action (popup qui se ferme seul) : la réponse
   **suivante**, quelle qu'elle soit, porte la note (en-tête `X-Grasp-Notice`, `note:` sur stderr, `[n] note:` dans
-  `run`). Commandes en vol sur une cible fermée : rejetées aussitôt (mesuré : Chrome n'y répond jamais).
+  `run`, `note:` en tête du résultat d'un outil MCP). Si cette commande déclenche un recyclage du navigateur, la
+  note est reportée en tête de celle du recyclage (l'ancien bridge, qui la portait, est arrêté). Tests :
+  `tabs-cli.test.ts` (outil MCP `snap` après un popup refermé seul ; recyclage par âge). Commandes en vol sur une cible fermée : rejetées aussitôt (mesuré : Chrome n'y répond jamais).
 - **Notes bornées** : l'URL citée par une note d'onglet (ouverture, retour, onglet actif) passe par le même masquage
   que la console (identifiants retirés ; valeurs des paramètres dont le nom évoque un secret — `code`, `token`,
   `auth`, `session`… — remplacées par `***`) et est coupée à 300 caractères ; le titre à 80. Test : popup dont
@@ -916,12 +918,15 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `run` | `script`, `continue`, `report` | `grasp run [--report\|--no-report]` ; lignes `expect` et [rapport de recette](#recette--expect-et-rapport-de-run) joint d'office |
 | `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
 
-Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright`).
+Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright`),
+`follow` (bascule sur le popup que l'action ouvre ; pas sur `nav`).
 `eval`, `cookies` et `upload` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
 politique (désactivés par défaut).
 
 - **Résultats** : le texte que la CLI écrirait, notes comprises (`note: …` en tête, puisqu'il n'y a pas de
-  stderr côté agent) : `OK` ou le diff, lignes console, `seq courant`. `screenshot` renvoie le **chemin** du
+  stderr côté agent) : `OK` ou le diff, lignes console, `seq courant`. Les notes du serveur portées par l'en-tête
+  `X-Grasp-Notice` (navigateur recyclé, onglet fermé par la page hors action) viennent en tête du résultat de
+  **n'importe quel** outil, lecture comprise (`snap`, `text`), succès comme échec, une seule fois. `screenshot` renvoie le **chemin** du
   fichier (0600) et ses dimensions, pas l'image : `image: true` la joint en plus (base64 ; réduisez avec
   `maxWidth`).
 - **Erreurs** : une erreur Grasp est un résultat `isError: true` dont le texte est `ERROR: <message du
