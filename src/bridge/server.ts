@@ -5,6 +5,7 @@ import { isLevel, type ConsoleLevel } from '../core/console.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
+import type { SecretUse } from '../core/secrets.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -16,6 +17,14 @@ function shotOptions(q: URLSearchParams): ShotOptions {
     el: el !== null && el !== '' ? el : undefined, format: format !== null && format !== '' ? format : undefined,
     quality: optInt(q.get('quality'), 'quality'), maxWidth: optInt(q.get('maxWidth'), 'maxWidth'),
   };
+}
+
+/** Secret substitué par le control plane : nom et domaines (la valeur est dans `value`). */
+function secretUseOf(v: unknown): SecretUse | undefined {
+  if (v === undefined) return undefined;
+  const o = v as Record<string, unknown> | null;
+  if (o === null || typeof o !== 'object' || typeof o.name !== 'string' || !Array.isArray(o.domains) || !o.domains.every((d) => typeof d === 'string')) throw new GraspError(400, 'secretUse : { name, domains } attendu');
+  return { name: o.name, domains: o.domains as string[] };
 }
 
 function level(v: unknown): ConsoleLevel | undefined {
@@ -50,7 +59,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));
         case 'POST /expect': return sendJson(res, 200, await page.expect(expectSpecOf(body), { shotOnError: opts.shotOnError }));
         case 'POST /click': return sendJson(res, 200, await page.click(str(body, 'target'), opts));
-        case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts));
+        case 'POST /fill': return sendJson(res, 200, await page.fill(str(body, 'target'), str(body, 'value'), opts, secretUseOf(body.secretUse)));
         case 'POST /hover': return sendJson(res, 200, await page.hover(str(body, 'target'), opts));
         case 'POST /type': return sendJson(res, 200, await page.type(str(body, 'target'), str(body, 'text'), { ...opts, delay: optInt(body.delay, 'delay') }));
         case 'POST /select': return sendJson(res, 200, await page.select(str(body, 'target'), str(body, 'value'), opts));

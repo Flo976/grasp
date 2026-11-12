@@ -5,12 +5,15 @@
  */
 
 import { EXPECT_DEFAULT_MS, EXPECT_KINDS, expectSpecOf, isExpectKind, type ExpectKind } from './expect.js';
+import { secretRef } from './secrets.js';
 
 export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
 export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen']);
+// grasp secrets set NOM --domains a,b (ajout séparé : la liste ci-dessus est éditée par d'autres branches).
+VALUE_FLAGS.add('domains');
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -241,7 +244,12 @@ export function buildRequest(a: Args): StepRequest {
     case 'snap': return { cmd, method: 'GET', path: `/snap${readQuery(a)}` };
     case 'text': return { cmd, method: 'GET', path: `/text${readQuery(a)}` };
     case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); return { cmd, method: 'POST', path: '/click', body: actionBody(a, { target }) }; }
-    case 'fill': { const [target, v] = need(a, 2, 'fill <sélecteur> <valeur>'); return { cmd, method: 'POST', path: '/fill', body: actionBody(a, { target, value: v }) }; }
+    case 'fill': {
+      const [target, v] = need(a, 2, 'fill <sélecteur> <valeur|secret:NOM>');
+      // secret:NOM : la valeur est substituée par le control plane, jamais transmise par le client.
+      const secret = secretRef(v!);
+      return { cmd, method: 'POST', path: '/fill', body: actionBody(a, secret !== undefined ? { target, secret } : { target, value: v }) };
+    }
     case 'select': { const [target, v] = need(a, 2, 'select <sélecteur> <valeur|libellé>'); return { cmd, method: 'POST', path: '/select', body: actionBody(a, { target, value: v }) }; }
     case 'check': { const [target] = need(a, 1, 'check <sélecteur> [--uncheck]'); return { cmd, method: 'POST', path: '/check', body: actionBody(a, { target, checked: !a.flags.has('uncheck') }) }; }
     case 'press': {

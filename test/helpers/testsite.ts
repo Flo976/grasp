@@ -782,6 +782,34 @@ for (let i = 0; i < N; i++) { const d = document.createElement('span'); n.append
 n.innerHTML = '<strong>Fond atteint</strong>';
 </script></body></html>`;
 
+/**
+ * Secrets (fill … secret:NOM) : la page recopie la saisie partout où une fuite est possible — texte visible,
+ * titre, console (log et erreur), URL d'une requête en échec, champ tronqué par maxlength, éditeur riche —
+ * puis la renvoie dans l'URL et le corps de la page reçue (formulaire GET).
+ */
+export const COFFRE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Coffre</title></head><body>
+<form action="/coffre-recu" method="get">
+<label for="jeton">Jeton</label> <input id="jeton" name="jeton">
+<label for="mdp">Mot de passe</label> <input id="mdp" name="mdp" type="password">
+<label for="court">Code court</label> <input id="court" name="court" maxlength="6">
+<label for="long">Clé longue</label> <input id="long" name="long">
+<button type="submit">Envoyer</button>
+</form>
+<div id="editeur" contenteditable="true" role="textbox" aria-label="Note"></div>
+<p id="echo"></p>
+<script>
+const echo = (v) => {
+  document.getElementById('echo').textContent = 'Saisi : ' + v;
+  console.log('saisie ' + v);
+  console.error('erreur avec ' + v);
+  fetch('/absent.png?v=' + encodeURIComponent(v)).catch(() => {});
+};
+for (const id of ['jeton', 'court', 'long']) document.getElementById(id).addEventListener('change', (e) => echo(e.target.value));
+document.getElementById('editeur').addEventListener('input', (e) => { document.getElementById('echo').textContent = 'Note : ' + e.target.innerText; });
+</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -816,6 +844,12 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cible-ssrf') { res.end('<!doctype html><title>Cible SSRF</title><p>service interne</p>'); return; }
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
+    if (u.pathname === '/coffre') { res.end(COFFRE_PAGE); return; }
+    if (u.pathname === '/coffre-recu') {
+      const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+      res.end(`<!doctype html><title>Reçu ${esc(u.searchParams.get('jeton') ?? '')}</title><h1>Reçu</h1><p id="recu">Jeton reçu : ${esc(u.searchParams.get('jeton') ?? '')}</p><a href="/coffre">Retour</a>`);
+      return;
+    }
     if (u.pathname === '/console') { res.end(CONSOLE_PAGE); return; }
     if (u.pathname === '/console-frame') { res.end('<!doctype html><title>Cadre</title><p>cadre</p><script>console.log("depuis le cadre")</script>'); return; }
     // Cadre qui navigue lui-même vers [::1] (hors allowlist) : la garde doit s'appliquer DANS l'iframe.
