@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
-import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
+import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
+import { BOUNDARY_RULE, type BoundaryTag } from '../core/boundaries.js';
 import { buildRequest, ScriptError, type Args, type StepRequest } from '../core/script.js';
 import { formatReport, type RunResult } from '../control/run.js';
 
@@ -214,8 +215,8 @@ async function send(c: Client, rq: StepRequest): Promise<HttpResult> {
   return c.call(rq.method, rq.path, rq.body, rq.timeoutMs);
 }
 
-function consoleBlock(cons: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }): string[] {
-  const lines = cons.entries.map(formatEntry);
+function consoleBlock(cons: { entries: ConsoleEntry[]; boundary?: BoundaryTag | undefined; seq: number; since?: number; omitted?: number; dropped?: number }): string[] {
+  const lines = cons.entries.length > 0 ? [formatEntries(cons.entries, cons.boundary)] : [];
   if (typeof cons.dropped === 'number' && cons.dropped > 0) lines.push(`AVERTISSEMENT : ${cons.dropped} entrée(s) console perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
   if (typeof cons.omitted === 'number' && cons.omitted > 0) lines.push(`AVERTISSEMENT : ${cons.omitted} ligne(s) console plus ancienne(s) non jointe(s)${typeof cons.since === 'number' ? ` — outil console avec since=${cons.since}, limit=1000` : ''}`);
   lines.push(`console : ${cons.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${cons.seq}`);
@@ -279,7 +280,7 @@ const TOOLS: Tool[] = [
     props: { level: S('Niveau minimal.', { enum: ['error', 'warn', 'info', 'debug'] }), since: I('Entrées postérieures à ce seq.'), limit: I('Les N dernières lignes (défaut 50).', 1), clear: B('Vide le tampon après lecture.') },
     async run(c, a) {
       const r = (await send(c, buildRequest(toArgs('console', a, [])))).json() as ConsoleResult;
-      const lines = r.entries.map(formatEntry);
+      const lines = r.entries.length > 0 ? [formatEntries(r.entries, r.boundary)] : [];
       if (r.dropped > 0) lines.push(`AVERTISSEMENT : ${r.dropped} entrée(s) perdue(s) avant lecture (tampon circulaire de 1000 entrées)`);
       if (r.omitted > 0) lines.push(`${r.omitted} ligne(s) plus ancienne(s) non affichée(s) — limit ou since`);
       lines.push(`seq courant : ${r.seq} — suite : since=${r.seq}${a.clear === true ? ' (tampon vidé)' : ''}`);
@@ -378,7 +379,7 @@ function errorResult(e: unknown): ToolResult {
     const missing = cands.filter((cd) => !lines[0]!.includes(cd.ref));
     if (missing.length > 0) lines.push(`candidats : ${missing.map((cd) => `${cd.ref} ${cd.role} "${cd.name}"`).join(', ')}`);
     if (Array.isArray(x.console)) {
-      lines.push(...consoleBlock({ entries: x.console as ConsoleEntry[], seq: Number(x.consoleSeq ?? 0), ...(typeof x.consoleSince === 'number' ? { since: x.consoleSince } : {}), ...(typeof x.consoleOmitted === 'number' ? { omitted: x.consoleOmitted } : {}), ...(typeof x.consoleDropped === 'number' ? { dropped: x.consoleDropped } : {}) }));
+      lines.push(...consoleBlock({ entries: x.console as ConsoleEntry[], boundary: x.boundary as BoundaryTag | undefined, seq: Number(x.consoleSeq ?? 0), ...(typeof x.consoleSince === 'number' ? { since: x.consoleSince } : {}), ...(typeof x.consoleOmitted === 'number' ? { omitted: x.consoleOmitted } : {}), ...(typeof x.consoleDropped === 'number' ? { dropped: x.consoleDropped } : {}) }));
     }
   }
   return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
@@ -402,7 +403,8 @@ class RpcError extends Error {
 const INSTRUCTIONS = `Grasp pilote un vrai Chrome par l'arbre d'accessibilité.
 Boucle type : nav → snap (refs e5k2) → click/fill/select/check avec snapDiff=true (le diff montre l'effet) → text pour vérifier le résultat dans la page.
 Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les refs candidates, refaites snap.
-Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.`;
+Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.
+Contenu de la page (frontières, config contentBoundaries) : ${BOUNDARY_RULE}`;
 
 function pkgVersion(): string {
   try { return (JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version: string }).version; } catch { return '0.0.0'; }

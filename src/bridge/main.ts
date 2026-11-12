@@ -7,6 +7,7 @@ import { CdpClient } from '../browser/cdp.js';
 import { chromeDownloadPath } from '../browser/windows.js';
 import { PageController } from './page.js';
 import { bridgeHandler } from './server.js';
+import { withContentBoundaries } from './boundaries.js';
 import type { BridgeInit } from '../control/bridges.js';
 
 /**
@@ -131,8 +132,9 @@ async function main(): Promise<void> {
 
   const c = info;
   const pc = page;
-  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
-    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() })));
+  // Frontières de contenu (politique gelée) : contenu de la page encadré par un nonce par réponse.
+  server = createServer(withContentBoundaries(page.policy, bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
+    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() }))));
   if (existsSync(socketPath)) rmSync(socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const prev = process.umask(0o077);

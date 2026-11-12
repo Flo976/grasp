@@ -1,5 +1,6 @@
 import { GraspError } from '../core/errors.js';
-import { formatEntry, type ConsoleEntry } from '../core/console.js';
+import { formatEntries, formatEntry, type ConsoleEntry } from '../core/console.js';
+import { wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
@@ -39,10 +40,10 @@ export interface RunReport {
   steps: Array<{ n: number; line: number; text: string; ok: boolean; ms: number; error?: string; screenshot?: string }>;
   notRun: Array<{ n: number; line: number; text: string }>;
   /** Entrées de niveau error depuis le début du run : console/exceptions/CSP d'un côté, requêtes de l'autre. */
-  console: { since: number; errors: ConsoleEntry[]; requests: ConsoleEntry[]; omitted: number; note?: string } | { unavailable: string };
+  console: { since: number; errors: ConsoleEntry[]; requests: ConsoleEntry[]; omitted: number; note?: string; boundary?: BoundaryTag } | { unavailable: string };
   /** Champs invalides et alertes de la page finale (lignes de snapshot). */
-  forms: { items: string[] } | { unavailable: string };
-  page?: { url: string; title: string };
+  forms: { items: string[]; boundary?: BoundaryTag } | { unavailable: string };
+  page?: { url: string; title: string; boundary?: BoundaryTag };
 }
 
 /** Captures prises par un même run (au-delà, l'échec est rapporté sans capture). */
@@ -110,7 +111,7 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
       const extra = e instanceof GraspError ? e.extra : undefined;
       if (extra !== undefined) {
         step.result = extra;
-        if (Array.isArray(extra.console) && extra.console.length > 0) step.output = (extra.console as ConsoleEntry[]).map(formatEntry).join('\n');
+        if (Array.isArray(extra.console) && extra.console.length > 0) step.output = formatEntries(extra.console as ConsoleEntry[], extra.boundary as BoundaryTag | undefined);
         if (typeof extra.screenshot === 'string') step.screenshot = extra.screenshot;
       }
       // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
@@ -136,11 +137,11 @@ async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: Ste
   let con: RunReport['console'];
   if (startSeq === undefined) con = { unavailable: consoleOff ?? 'console indisponible' };
   else {
-    const read = (since: number) => exec({ cmd: 'console', method: 'POST', path: '/console', body: { since, level: 'error', limit: 200 } }) as Promise<{ entries: ConsoleEntry[]; omitted: number }>;
+    const read = (since: number) => exec({ cmd: 'console', method: 'POST', path: '/console', body: { since, level: 'error', limit: 200 } }) as Promise<{ entries: ConsoleEntry[]; omitted: number; boundary?: BoundaryTag }>;
     try {
       let note: string | undefined;
       let since = startSeq;
-      let c: { entries: ConsoleEntry[]; omitted: number };
+      let c: { entries: ConsoleEntry[]; omitted: number; boundary?: BoundaryTag };
       try { c = await read(since); } catch (e) {
         // Tampon recréé pendant le run (bascule de profil) : tout ce qu'il contient date du run.
         if (!(e instanceof GraspError && e.status === 409)) throw e;
@@ -150,7 +151,7 @@ async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: Ste
       }
       const errs = c.entries.filter((x) => x.source !== 'navigation' && x.level === 'error');
       const isReq = (x: ConsoleEntry) => x.source === 'network' || x.source === 'grasp';
-      con = { since, errors: errs.filter((x) => !isReq(x)), requests: errs.filter(isReq), omitted: c.omitted, ...(note !== undefined ? { note } : {}) };
+      con = { since, errors: errs.filter((x) => !isReq(x)), requests: errs.filter(isReq), omitted: c.omitted, ...(note !== undefined ? { note } : {}), ...(c.boundary !== undefined ? { boundary: c.boundary } : {}) };
     } catch (e) { con = { unavailable: errMsg(e) }; }
   }
   let forms: RunReport['forms'];
@@ -159,10 +160,11 @@ async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: Ste
     forms = { items: [] };
   } catch (e) {
     const items = e instanceof GraspError && e.status === 417 ? (e.extra?.expect as { items?: unknown } | undefined)?.items : undefined;
-    forms = Array.isArray(items) ? { items: items.map(String) } : { unavailable: errMsg(e) };
+    const boundary = e instanceof GraspError ? e.extra?.boundary as BoundaryTag | undefined : undefined;
+    forms = Array.isArray(items) ? { items: items.map(String), ...(boundary !== undefined ? { boundary } : {}) } : { unavailable: errMsg(e) };
   }
   let page: RunReport['page'];
-  try { const l = await exec({ cmd: 'location', method: 'GET', path: '/location' }) as { url: string; title: string }; page = { url: l.url, title: l.title }; } catch { page = undefined; }
+  try { const l = await exec({ cmd: 'location', method: 'GET', path: '/location' }) as { url: string; title: string; boundary?: BoundaryTag }; page = { url: l.url, title: l.title, ...(l.boundary !== undefined ? { boundary: l.boundary } : {}) }; } catch { page = undefined; }
   return {
     ok: r.ok, ms: Date.now() - t0, total: r.total,
     steps: r.steps.map((s) => ({ n: s.n, line: s.line, text: s.text, ok: s.ok, ms: s.ms, ...(s.error !== undefined ? { error: s.error } : {}), ...(s.screenshot !== undefined ? { screenshot: s.screenshot } : {}) })),
@@ -191,10 +193,10 @@ export function formatReport(rep: RunReport): string {
   if ('unavailable' in c) L.push(`console : non lue (${c.unavailable})`);
   else {
     L.push(c.errors.length === 0 ? 'console : aucune erreur pendant le run' : `console : ${plural(c.errors.length, 'erreur', 'erreurs')} pendant le run`);
-    for (const e of c.errors.slice(0, 20)) L.push(`  ${formatEntry(e)}`);
+    if (c.errors.length > 0) L.push(wrapTagged(c.errors.slice(0, 20).map((e) => `  ${formatEntry(e)}`).join('\n'), c.boundary, 'console'));
     if (c.errors.length > 20) L.push(`  … et ${c.errors.length - 20} autre(s)`);
     L.push(c.requests.length === 0 ? 'requêtes en échec : aucune' : `requêtes en échec : ${c.requests.length}`);
-    for (const e of c.requests.slice(0, 20)) L.push(`  ${formatEntry(e)}`);
+    if (c.requests.length > 0) L.push(wrapTagged(c.requests.slice(0, 20).map((e) => `  ${formatEntry(e)}`).join('\n'), c.boundary, 'console'));
     if (c.requests.length > 20) L.push(`  … et ${c.requests.length - 20} autre(s)`);
     if (c.omitted > 0) L.push(`  AVERTISSEMENT : ${c.omitted} entrée(s) plus ancienne(s) non lue(s) (200 au plus) — grasp console --since ${c.since} --level error --limit 1000`);
     if (c.note !== undefined) L.push(`  note: ${c.note}`);
@@ -203,13 +205,13 @@ export function formatReport(rep: RunReport): string {
   if ('unavailable' in f) L.push(`formulaire : non lu (${f.unavailable})`);
   else {
     L.push(f.items.length === 0 ? 'formulaire : aucune erreur' : `formulaire : ${plural(f.items.length, 'erreur', 'erreurs')}`);
-    for (const i of f.items.slice(0, 20)) L.push(`  ${i}`);
+    if (f.items.length > 0) L.push(wrapTagged(f.items.slice(0, 20).map((i) => `  ${i}`).join('\n'), f.boundary, 'formulaire'));
   }
-  if (rep.page !== undefined) L.push(`page finale : ${rep.page.url} « ${rep.page.title} »`);
+  if (rep.page !== undefined) L.push(rep.page.boundary !== undefined ? `page finale :\n${wrapTagged(`${rep.page.url} « ${rep.page.title} »`, rep.page.boundary, 'page')}` : `page finale : ${rep.page.url} « ${rep.page.title} »`);
   return L.join('\n');
 }
 
-interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number } }
+interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number } }
 
 /** Pertes de console jamais tues (mêmes messages que la commande isolée). */
 function losses(c: { since?: number | undefined; omitted?: number | undefined; dropped?: number | undefined }): string[] {
@@ -231,9 +233,9 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
     case 'cookies': return { output: JSON.stringify(result) };
     case 'screenshot': return { output: String(j.path ?? ''), ...(j.truncated === true ? { detail: 'AVERTISSEMENT : capture tronquée (limite de 16384 px de Chrome)' } : {}) };
     case 'console': {
-      const c = j as { entries?: ConsoleEntry[]; seq?: number; omitted?: number; dropped?: number };
+      const c = j as { entries?: ConsoleEntry[]; boundary?: BoundaryTag; seq?: number; omitted?: number; dropped?: number };
       const w = losses({ omitted: c.omitted, dropped: c.dropped });
-      return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
+      return { output: Array.isArray(c.entries) ? formatEntries(c.entries, c.boundary) : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
     case 'wait': return {};
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
@@ -249,7 +251,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const notes: string[] = a.detail !== undefined ? [a.detail] : [];
       if (typeof a.trackersBlocked === 'number' && a.trackersBlocked > 0) notes.push(`traqueurs bloqués : ${a.trackersBlocked} requête(s)`);
       if (a.console !== undefined) {
-        if (a.console.entries.length > 0) parts.push(a.console.entries.map(formatEntry).join('\n'));
+        if (a.console.entries.length > 0) parts.push(formatEntries(a.console.entries, a.console.boundary));
         notes.push(...losses(a.console), `console : ${a.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${a.console.seq}`);
       }
       return { output: parts.join('\n'), detail: notes.join(' ; ') };

@@ -32,9 +32,25 @@ export interface EffectivePolicy {
   ignoreCertErrorsFor: readonly string[];
   /** Requêtes vers les domaines de la liste de traqueurs embarquée : annulées dans le navigateur (garde Fetch). */
   blockTrackers: boolean;
+  /** Contenu de la page encadré par des marqueurs à nonce par réponse, imitations neutralisées (bridge). */
+  contentBoundaries: boolean;
+  /** D'où vient `contentBoundaries` : « auto » (déduit de l'allowlist) ou « config » (true/false explicite). */
+  contentBoundariesSource: 'auto' | 'config';
   /** Le blocage n'est pas configurable : détecter ≠ bloquer, on bloque toujours. */
   navigation: 'enforce';
   tokenRequired: true;
+}
+
+/**
+ * `contentBoundaries=auto` : l'allowlist admet-elle un hôte hors de la boucle locale ? Boucle locale = `localhost`,
+ * `*.localhost`, 127.0.0.0/8, `[::1]`. Tout le reste (nom, joker, `*`, adresse privée ou publique) ouvre l'agent à
+ * un contenu qu'il ne contrôle pas. Liste vide : rien n'est atteignable.
+ */
+export function reachesBeyondLoopback(allowedDomains: readonly string[]): boolean {
+  return allowedDomains.some((d) => {
+    const h = normalizeHost(d).replace(/^\*\./, '');
+    return !(h === 'localhost' || h.endsWith('.localhost') || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === '[::1]' || h === '::1');
+  });
 }
 
 export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> {
@@ -51,6 +67,8 @@ export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> 
     hostResolverRules: Object.freeze([...cfg.hostResolverRules]),
     ignoreCertErrorsFor: Object.freeze(cfg.ignoreCertErrorsFor.map(normalizeHost)),
     blockTrackers: cfg.blockTrackers,
+    contentBoundaries: cfg.contentBoundaries === 'auto' ? reachesBeyondLoopback(cfg.allowedDomains) : cfg.contentBoundaries,
+    contentBoundariesSource: cfg.contentBoundaries === 'auto' ? 'auto' as const : 'config' as const,
     navigation: 'enforce' as const,
     tokenRequired: true as const,
   });

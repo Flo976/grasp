@@ -60,6 +60,17 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
 Non repris, volontairement : la falsification d'empreinte en JS (incohérences détectables dans un vrai
 Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 
+## Sécurité face au contenu des pages
+
+- [x] **Frontières de contenu** (injection de prompt indirecte) : clé `contentBoundaries` (`auto` par défaut :
+      actives dès que l'allowlist sort de la boucle locale ; `true`/`false` forcent). Fait (branche
+      `feat/frontieres-contenu`) : snap, text, markdown, diff, notes, console, erreurs (sauf 400), étapes et rapport
+      de `run` encadrés par `<<<GRASP_PAGE_CONTENT nonce=…>>>` (nonce de 64 bits par réponse, dans le bridge) ;
+      imitations du marqueur neutralisées (casse, pleine chasse, NFKC, invisibles, homoglyphes) et comptées ; règle
+      `BOUNDARY_RULE` dans `grasp help` et les instructions MCP. Coût : 147 à 151 octets par bloc. Inspiré
+      d'agent-browser (`--content-boundaries`) et de l'IDPI de PinchTab. Tests : page piégée `/piege`.
+      Reste : la règle dans le futur `grasp skill` ; test MCP de bout en bout ; mesurer l'effet sur un modèle.
+
 ## Recette sur serveur distant (Claude vérifie une tâche à travers un tunnel)
 
 - [x] **Résolution d'hôte** : clé `hostResolverRules` → `--host-resolver-rules="MAP site.exemple.com
