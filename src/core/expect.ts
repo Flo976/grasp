@@ -5,7 +5,7 @@ import { badRequest } from './errors.js';
  * des scripts (core/script.ts), le bridge qui observe la page, et le rapport de `grasp run`.
  */
 
-export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors'] as const;
+export const EXPECT_KINDS = ['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value', 'no-console-errors', 'no-form-errors', 'a11y'] as const;
 export type ExpectKind = typeof EXPECT_KINDS[number];
 /** exact : égalité ; contains : contient (`~`) ; regex : expression régulière JavaScript (`--regex`). */
 export type ExpectMatch = 'exact' | 'contains' | 'regex';
@@ -25,13 +25,15 @@ export interface ExpectSpec {
   since?: number;
   /** no-console-errors : expression régulière des entrées à ignorer (texte ou URL). */
   ignore?: string;
+  /** a11y : nombre de problèmes d'accessibilité tolérés (défaut 0). */
+  max?: number;
 }
 
 /** Réessai par défaut : la page vient souvent de réagir à l'action précédente (XHR, route, rendu). */
 export const EXPECT_DEFAULT_MS = 5000;
 export const EXPECT_MAX_MS = 60_000;
 
-/** Assertions relues jusqu'au délai ; console et formulaire : constat immédiat. */
+/** Assertions relues jusqu'au délai ; console, formulaire et accessibilité : constat immédiat. */
 export const POLLED: ReadonlySet<ExpectKind> = new Set(['text', 'no-text', 'url', 'title', 'sel', 'no-sel', 'value']);
 
 export function isExpectKind(k: string): k is ExpectKind { return (EXPECT_KINDS as readonly string[]).includes(k); }
@@ -98,6 +100,7 @@ export function describeExpected(spec: ExpectSpec): string {
     case 'value': return `valeur de ${spec.target ?? ''} ${wanted(spec)}`;
     case 'no-console-errors': return `aucune erreur console${spec.ignore !== undefined ? ` (hors /${spec.ignore}/)` : ''}`;
     case 'no-form-errors': return 'aucune erreur de formulaire';
+    case 'a11y': return `au plus ${spec.max ?? 0} problème(s) d'accessibilité ${spec.scope !== undefined ? `dans ${spec.scope}` : 'dans la page'}`;
   }
 }
 
@@ -125,7 +128,7 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
   }
   if (scope !== undefined && scope.trim() !== '') spec.scope = scope.trim();
   if (ignore !== undefined) { compileRegex(ignore); spec.ignore = ignore; }
-  for (const k of ['timeout', 'since'] as const) {
+  for (const k of ['timeout', 'since', 'max'] as const) {
     const v = body[k];
     if (v === undefined || v === null || v === '') continue;
     const n = Number(v);

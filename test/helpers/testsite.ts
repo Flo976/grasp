@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { A11Y_PAGE, A11Y_PROPRE_PAGE } from './a11ysite.js';
 
 export const FORM_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Inscription</title></head>
@@ -865,6 +866,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
     if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
     if (u.pathname === '/erreurs') { res.end(ERREURS_PAGE); return; }
+    if (u.pathname === '/a11y') { res.end(A11Y_PAGE); return; }
+    if (u.pathname === '/a11y-propre') { res.end(A11Y_PROPRE_PAGE); return; }
     if (u.pathname === '/cases') { res.end(CASES_PAGE); return; }
     if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }
     if (u.pathname === '/carrousel') { res.end(CARROUSEL_PAGE); return; }

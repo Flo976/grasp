@@ -193,7 +193,7 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
@@ -201,13 +201,13 @@ const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', '
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
-  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
+  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'], a11y: ['max', 'scope'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], profile: [],
-  expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
+  expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'],
 };
 /** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
 const RUN_GLOBAL: Record<string, string> = {
@@ -240,6 +240,7 @@ export function buildRequest(a: Args): StepRequest {
     case 'nav': { const [url] = need(a, 1, 'nav <url>'); return { cmd, method: 'POST', path: '/navigate', body: actionBody(a, { url }) }; }
     case 'snap': return { cmd, method: 'GET', path: `/snap${readQuery(a)}` };
     case 'text': return { cmd, method: 'GET', path: `/text${readQuery(a)}` };
+    case 'a11y': if (a.pos.length > 0) throw new ScriptError('usage : grasp a11y [--scope <ref|css>] [--max N]'); return { cmd, method: 'GET', path: `/a11y${readQuery(a)}` };
     case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); return { cmd, method: 'POST', path: '/click', body: actionBody(a, { target }) }; }
     case 'fill': { const [target, v] = need(a, 2, 'fill <sélecteur> <valeur>'); return { cmd, method: 'POST', path: '/fill', body: actionBody(a, { target, value: v }) }; }
     case 'select': { const [target, v] = need(a, 2, 'select <sélecteur> <valeur|libellé>'); return { cmd, method: 'POST', path: '/select', body: actionBody(a, { target, value: v }) }; }
@@ -278,9 +279,9 @@ const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
   'text': ['regex', 'scope', 'timeout'], 'no-text': ['regex', 'scope', 'timeout'],
   'url': ['regex', 'timeout'], 'title': ['regex', 'timeout'], 'value': ['regex', 'timeout'],
   'sel': ['timeout'], 'no-sel': ['timeout'],
-  'no-console-errors': ['since', 'ignore'], 'no-form-errors': [],
+  'no-console-errors': ['since', 'ignore'], 'no-form-errors': [], 'a11y': ['max', 'scope'],
 };
-const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'];
+const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'];
 
 /** Usage de chaque assertion (messages d'erreur, aide). */
 export const EXPECT_USAGE: Record<ExpectKind, string> = {
@@ -293,6 +294,7 @@ export const EXPECT_USAGE: Record<ExpectKind, string> = {
   'value': 'expect value <sélecteur> [~] <valeur> [--regex] [--timeout ms]',
   'no-console-errors': 'expect no-console-errors [--ignore <regex>] [--since <seq>]',
   'no-form-errors': 'expect no-form-errors',
+  'a11y': 'expect a11y [--max N] [--scope <sél>]',
 };
 
 /**
@@ -341,7 +343,7 @@ function expectRequest(a: Args): StepRequest {
       break;
     default: if (args.length !== 0) throw usage();
   }
-  for (const k of ['timeout', 'scope', 'since', 'ignore'] as const) {
+  for (const k of ['timeout', 'scope', 'since', 'ignore', 'max'] as const) {
     const v = value(a, k);
     if (v !== undefined) body[k] = v;
   }

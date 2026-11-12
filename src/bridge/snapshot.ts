@@ -70,7 +70,12 @@ export interface Snapshot {
  * ou message visible non relié à côté du champ ; '' si invalide sans message). `alerts` : messages
  * d'erreur visibles absents de l'arbre (aria-hidden) et rattachés à aucun champ.
  */
-export interface FormErrors { fields: Map<number, string>; alerts: string[] }
+export interface FormErrors {
+  fields: Map<number, string>;
+  alerts: string[];
+  /** Champs dont le message vient d'un texte voisin NON relié (ni aria-errormessage, ni aria-describedby) : audit a11y. */
+  unlinked?: Set<number>;
+}
 
 export interface SnapshotOptions {
   url: string;

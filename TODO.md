@@ -117,6 +117,13 @@ Accès distant
       sur une session créée par la CLI).
 
 Lecture et recette
+- [x] **Audit d'accessibilité** : `grasp a11y [--scope] [--max] [--json]` et `expect a11y [--max N]`
+      (branche `feat/audit-a11y`). Arbre d'accessibilité + relevé des erreurs de formulaire + DOM (monde isolé,
+      autorisé sans eval) : contrôles sans nom, images sans alt, erreur visible non reliée ou masquée, `<label for>`
+      orphelin, référence ARIA cassée, rôle invalide, titre sauté ; ref et correction par problème. Testé sur une
+      page piégée (`test/integration/a11y.test.ts`, `a11y-cli.test.ts`). Pas un audit WCAG.
+- [ ] Audit d'accessibilité : contrastes (calcul sur les styles calculés), nom réduit au `placeholder`, noms
+      inutiles (« cliquez ici »), outil MCP dédié, iframes.
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
 - [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`
       ignorée : l'étape en cours va à son terme) ; pas d'outils dédiés `expect` ni `state` (accessibles par `run`).

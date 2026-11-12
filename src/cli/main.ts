@@ -484,6 +484,15 @@ async function main(argv: string[]): Promise<number> {
       else { const sc = a.flags.get('scope'); hint(`note: aucun texte visible ${typeof sc === 'string' ? `dans la zone ${sc}` : 'dans la page'}`); }
       return 0;
     }
+    case 'a11y': {
+      const rq = buildRequest(a);
+      const r = await c.call(rq.method, rq.path);
+      if (json) { out(r.text()); return 0; }
+      const j = r.json() as { text: string; note: string };
+      out(j.text);
+      hint(`note: ${j.note}`);
+      return 0;
+    }
     case 'wait': await waitCmd(c, a); return 0;
     case 'expect': await expectCmd(c, a); return 0;
     case 'run': return runCmd(c, a);
@@ -648,6 +657,10 @@ Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N]   
                snap : dernière ligne « … élagué : … » si des nœuds sont masqués (liens sans nom, iframes non parcourues)
                champ invalide : « [invalide: message] » (aria-invalid, aria-errormessage/describedby, validité native,
                message d'erreur visible sous le champ même aria-hidden) ; message hors arbre sans champ : « alerte "…" »
+             a11y [--scope <ref|css>] [--max N] [--json]   audit d'accessibilité (relevé partiel, pas un audit WCAG) :
+               contrôles sans nom, images sans alt, erreur visible non reliée au champ ou masquée (aria-hidden),
+               <label for> orphelin, aria-labelledby/describedby vers un id absent, role invalide, titre sauté ;
+               une ligne par problème avec sa ref (si elle existe) et une correction ; 30 listés (--max, 500 au plus)
              pdf [-o f.pdf]
 Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, élément visible (CSS) ou présent
                (ref, text:), page stable : DOM ET réseau calmes (défaut) ; délai : 10000 ms (--idle : stableTimeoutMs) ; dépassé → erreur
@@ -664,7 +677,8 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
              expect value <sél> [~] <valeur> [--regex]                valeur du champ
              expect no-console-errors [--ignore <regex>] [--since <seq>]   depuis le début du document courant
              expect no-form-errors                                    champs invalides, alertes
-               relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console et formulaire : immédiat) ;
+             expect a11y [--max N] [--scope <sél>]                    au plus N problèmes (grasp a11y), 0 par défaut
+               relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console, formulaire et a11y : immédiat) ;
                échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)

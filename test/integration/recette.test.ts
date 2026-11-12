@@ -201,7 +201,7 @@ test('commande directe : grasp expect … → OK (code 0) ou ERROR: expect: atte
 
 test('assertion mal écrite : script refusé avant toute exécution, ligne citée', async () => {
   const cases: Array<[string, RegExp]> = [
-    ['expect bidule', /ligne 2 : assertion inconnue « bidule » \(assertions : text, no-text, url, title, sel, no-sel, value, no-console-errors, no-form-errors\)/],
+    ['expect bidule', /ligne 2 : assertion inconnue « bidule » \(assertions : text, no-text, url, title, sel, no-sel, value, no-console-errors, no-form-errors, a11y\)/],
     ['expect url a b', /ligne 2 : usage : grasp expect url \[~\] <url>/],
     ['expect text x --ignore y', /ligne 2 : --ignore ne s'applique pas à expect text/],
     ["expect text --regex '('", /ligne 2 : expression régulière invalide \/\(\//],
