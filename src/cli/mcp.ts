@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { checkSocketFallbackDir, fallbackSocketBase, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
-import { buildRequest, ScriptError, type Args, type StepRequest } from '../core/script.js';
+import { buildRequest, RUN_COMMANDS, ScriptError, type Args, type StepRequest } from '../core/script.js';
 import { formatReport, type RunResult } from '../control/run.js';
 
 /**
@@ -322,7 +322,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'run',
-    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, back, forward, reload, scroll, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, storage, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
+    // Liste tirée de RUN_COMMANDS : une commande ajoutée à run est annoncée à l'agent MCP sans retouche ici.
+    description: `Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (${RUN_COMMANDS.join(', ')}), commentaires #, guillemets à la shell. Viewport émulé : \`viewport 360x800 [--mobile] [--touch] [--dpr N]\`, \`viewport iphone-se\`, \`viewport reset\`.` + ' Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
     props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.'), report: B('Rapport de recette (étapes, erreurs console, requêtes en échec, formulaire, page finale) : d\'office avec un expect.') },
     required: ['script'],
     async run(c, a) {

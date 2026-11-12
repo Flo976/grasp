@@ -4,13 +4,14 @@
  * Une même ligne produit la même requête, qu'elle soit tapée dans le terminal ou lue dans un script.
  */
 
+import { DEVICES, parseSize } from './viewport.js';
 import { EXPECT_DEFAULT_MS, EXPECT_KINDS, expectSpecOf, isExpectKind, type ExpectKind } from './expect.js';
 
 export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir', 'viewport', 'device', 'dpr']);
 // back / forward / reload / scroll : --by N (px), --to top|bottom, --max-steps N.
 for (const f of ['by', 'to', 'max-steps']) VALUE_FLAGS.add(f);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
@@ -214,8 +215,53 @@ export function consoleBody(a: Args): Record<string, unknown> {
   return body;
 }
 
+/** Options d'un viewport (grasp viewport, session create --viewport). */
+export const VIEWPORT_FLAGS = ['device', 'dpr', 'mobile', 'touch', 'mobile-ua'] as const;
+export const VIEWPORT_USAGE = `viewport [<LARGEURxHAUTEUR> | <appareil>] [--device <appareil>] [--mobile] [--dpr N] [--touch] [--mobile-ua] | viewport reset (appareils : ${Object.keys(DEVICES).join(', ')})`;
+
+/**
+ * Corps de POST /viewport (ou champ `viewport` de POST /sessions) : `arg` = « 360x800 » ou un nom d'appareil,
+ * options --device, --dpr, --mobile, --touch, --mobile-ua. Valeurs transmises telles quelles : le serveur valide
+ * (core/viewport.ts), une valeur invalide est une erreur 400, jamais ignorée.
+ */
+export function viewportBody(a: Args, arg: string | undefined): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  const dev = value(a, 'device');
+  if (arg !== undefined) {
+    if (parseSize(arg) !== undefined) body.size = arg;
+    else if (/^[a-z][a-z0-9-]*$/i.test(arg)) {
+      if (dev !== undefined) throw new ScriptError(`viewport : appareil donné deux fois (${arg} et --device ${dev})`);
+      body.device = arg;
+    } else throw new ScriptError(`viewport : « ${arg} » n'est ni une taille LARGEURxHAUTEUR (ex. 360x800) ni un nom d'appareil (${Object.keys(DEVICES).join(', ')})`);
+  }
+  if (dev !== undefined) body.device = dev;
+  const dpr = value(a, 'dpr');
+  if (dpr !== undefined) body.dpr = dpr;
+  for (const [flag, key] of [['mobile', 'mobile'], ['touch', 'touch'], ['mobile-ua', 'mobileUa']] as const) {
+    const v = a.flags.get(flag);
+    if (v === undefined) continue;
+    if (v !== true) throw new ScriptError(`--${flag} ne prend pas de valeur`);
+    body[key] = true;
+  }
+  if (body.size === undefined && body.device === undefined) throw new ScriptError(`usage : grasp ${VIEWPORT_USAGE}`);
+  return body;
+}
+
+/** `viewport` (lecture), `viewport reset`, `viewport <taille|appareil> [options]` → requête du bridge. */
+function viewportRequest(a: Args): StepRequest {
+  if (a.pos.length > 1) throw new ScriptError(`usage : grasp ${VIEWPORT_USAGE}`);
+  const arg = a.pos[0];
+  const opts = VIEWPORT_FLAGS.filter((f) => a.flags.has(f));
+  if (arg === undefined && opts.length === 0) return { cmd: 'viewport', method: 'GET', path: '/viewport' };
+  if (arg === 'reset') {
+    if (opts.length > 0) throw new ScriptError(`viewport reset ne prend aucune option (--${opts[0]})`);
+    return { cmd: 'viewport', method: 'POST', path: '/viewport', body: { reset: true } };
+  }
+  return { cmd: 'viewport', method: 'POST', path: '/viewport', body: viewportBody(a, arg) };
+}
+
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
@@ -230,6 +276,7 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], storage: [], profile: [],
+  viewport: VIEWPORT_FLAGS,
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
   // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
   back: NAV_FLAGS, forward: NAV_FLAGS, reload: [...NAV_FLAGS, 'hard'],
@@ -298,6 +345,7 @@ export function buildRequest(a: Args): StepRequest {
     case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     case 'expect': return expectRequest(a);
+    case 'viewport': return viewportRequest(a);
     default:
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);
       throw new ScriptError(`commande inconnue « ${cmd} » (commandes de run : ${RUN_COMMANDS.join(', ')})`);

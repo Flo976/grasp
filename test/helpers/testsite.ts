@@ -32,6 +32,27 @@ button,a{font-size:20px;margin:40px}</style></head>
 <div id="cible" role="img" aria-label="Cible"></div><div id="bas"></div><div id="pied"></div></body></html>`;
 
 /**
+ * Viewport : une media query (≤ 480 px) bascule la mise en page bureau → mobile (texte ET bouton différents), une
+ * autre (pointer: coarse) révèle « Écran tactile » ; largeur affichée par la page ; bloc bleu de 2000 px pour les
+ * captures ; ligne « UA serveur » rendue par le SERVEUR d'après l'en-tête User-Agent reçu (UA = le mot « Mobile »).
+ */
+export function viewportPage(userAgent: string): string {
+  return `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Viewport</title>
+<style>html,body{margin:0} .mobile{display:none} #tactile{display:none}
+@media (max-width: 480px) { .mobile{display:block} .bureau{display:none} }
+@media (pointer: coarse) { #tactile{display:block} }
+#bloc{height:2000px;background:rgb(0,0,255)}</style></head>
+<body><p class="bureau">Mise en page bureau</p><p class="mobile">Mise en page mobile</p>
+<button class="bureau" onclick="document.getElementById('etat').textContent='Menu ouvert'">Menu bureau</button>
+<button class="mobile" aria-label="Ouvrir le menu" onclick="document.getElementById('etat').textContent='Menu ouvert'">☰</button>
+<p id="etat">Menu fermé</p><p id="tactile">Écran tactile</p><p id="largeur"></p>
+<p>UA serveur : ${/\bMobile\b/.test(userAgent) ? 'mobile' : 'bureau'}</p>
+<script>const l = () => { document.getElementById('largeur').textContent = 'Largeur ' + innerWidth; }; l(); addEventListener('resize', l);</script>
+<div id="bloc"></div></body></html>`;
+}
+
+/**
  * Console : tous les niveaux, objet, exception non rattrapée, promesse rejetée, image 404,
  * fetch vers un hôte hors allowlist (localhost quand seul 127.0.0.1 est autorisé), iframe qui logue.
  */
@@ -818,6 +839,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cible-ssrf') { res.end('<!doctype html><title>Cible SSRF</title><p>service interne</p>'); return; }
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
+    if (u.pathname === '/viewport') { res.end(viewportPage(String(req.headers['user-agent'] ?? ''))); return; }
     if (u.pathname === '/console') { res.end(CONSOLE_PAGE); return; }
     if (u.pathname === '/console-frame') { res.end('<!doctype html><title>Cadre</title><p>cadre</p><script>console.log("depuis le cadre")</script>'); return; }
     // Cadre qui navigue lui-même vers [::1] (hors allowlist) : la garde doit s'appliquer DANS l'iframe.
