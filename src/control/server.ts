@@ -21,6 +21,7 @@ import { compileScript, runScript, type RunResult } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
+import { STATE_MAX_BYTES } from '../core/state.js';
 
 export interface Session {
   id: string;
@@ -48,7 +49,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -401,7 +402,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   }
 
   async function proxy(s: Session, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const body = req.method === 'POST' ? await readBody(req) : undefined;
+    const body = req.method === 'POST' ? await readBody(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : undefined;
     const qs = new URLSearchParams(url.searchParams);
     qs.delete('session');
     const path = `${url.pathname}${qs.size ? `?${qs}` : ''}`;

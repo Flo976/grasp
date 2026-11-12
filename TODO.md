@@ -11,8 +11,13 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       `text`, `console`, `screenshot`, `run`…). Branchable dans Claude Desktop / Cursor en une ligne.
 - [ ] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
       dans le monde isolé `grasp-lecture`.
-- [ ] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
+- [x] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
       transférer une session connectée vers une autre machine ou un conteneur.
+      Fait (branche `feat/etat-export-import`) : format `grasp-state` v1 (sur-ensemble du storageState
+      Playwright), cookies + localStorage par origine + sessionStorage de l'onglet, routes
+      `GET /state/export` / `POST /state/import`, soumis à `allowCookies` et à l'allowlist, fichier 0600
+      atomique ; localStorage par navigation contrôlée (document vide servi par Fetch, aucune requête au
+      site). Reste : IndexedDB, origines d'anciennes sessions sans cookie (seulement via `--origin`).
 - [ ] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de
       l'allowlist (utile quand l'agent reçoit des URL de l'extérieur). Attention à ne pas casser le
       défaut actuel `127.0.0.1` / `localhost` (tests locaux, tunnels).

@@ -44,8 +44,8 @@ export async function readBody(req: IncomingMessage, limit = 4 * 1024 * 1024): P
   return Buffer.concat(chunks);
 }
 
-export async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const b = await readBody(req);
+export async function readJson(req: IncomingMessage, limit?: number): Promise<Record<string, unknown>> {
+  const b = await readBody(req, limit);
   if (b.length === 0) return {};
   try {
     const v: unknown = JSON.parse(b.toString('utf8'));
