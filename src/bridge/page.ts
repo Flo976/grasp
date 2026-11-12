@@ -635,6 +635,11 @@ export class PageController {
   private loading = false;
   private pendingNavAt = 0;
   private blocked: Blocked | null = null;
+  /**
+   * Dernier document du CADRE PRINCIPAL refusé par le garde Fetch (`blocked` couvre aussi les documents des
+   * iframes) : ce qui fait échouer back/forward/reload, dont la commande CDP ne rend pas d'erreur.
+   */
+  private blockedMain: Blocked | null = null;
   /** Document servi par une adresse privée alors que le DNS de Grasp en donnait une publique (rebinding). */
   private rebound: Blocked | null = null;
   /** Résolveur DNS de la protection SSRF (injectable pour les tests). */
@@ -1283,6 +1288,7 @@ export class PageController {
           await this.cdp.send('Fetch.continueRequest', { requestId: e.params.requestId }, e.sessionId);
         } else {
           this.blocked = { url, reason: v.reason, at: Date.now() };
+          if (e.sessionId === this.sessionId && e.params.frameId === this.mainFrameId) this.blockedMain = this.blocked;
           if (this.policy.allowConsole) {
             if (typeof e.params.networkId === 'string') this.blockedNet.add(e.params.networkId);
             this.log({ level: 'error', source: 'grasp', text: `bloqué par Grasp : ${v.reason} — ${redactUrl(url)}`, blocked: true });
@@ -1559,6 +1565,7 @@ export class PageController {
       const doc0 = this.docGen;
       const nav0 = this.navCount;
       this.blocked = null;
+      this.blockedMain = null;
       this.rebound = null;
       const since = Date.now();
       if (kind === 'reload') await this.s('Page.reload', { ignoreCache: hard });
@@ -1571,6 +1578,9 @@ export class PageController {
       const notes: string[] = [];
       // Où l'on est arrivé : l'agent ne le sait pas d'avance (contrairement à nav).
       if (kind !== 'reload') notes.push(`${kind === 'back' ? 'retour' : 'avance'} : ${loc.url}${loc.title !== '' ? ` « ${loc.title} »` : ''}${this.docGen === doc0 ? ' (même document)' : ''}`);
+      // Document d'une iframe refusé par le garde : la page, elle, est affichée (comme pour une action).
+      const fb = this.blocked as Blocked | null;
+      if (fb !== null && fb.at >= since) notes.push(`cadre bloqué : ${fb.reason}`);
       if (!stab.stable) notes.push(PageController.unstableNote(stab));
       else if (stab.ongoing === true) notes.push(ONGOING_NOTE);
       else if (stab.background === true) notes.push(BACKGROUND_NOTE);
@@ -1584,12 +1594,13 @@ export class PageController {
   /**
    * Attend que la navigation d'historique ait abouti : document (ou route du même document) changé et chargement
    * terminé. Page.reload / navigateToHistoryEntry ne rendent pas d'erreur quand le garde annule la requête : le
-   * blocage est lu dans `blocked` (garde Fetch) et `rebound` (rebinding), comme pour nav.
+   * blocage est lu dans `blockedMain` (garde Fetch, document du cadre principal seulement : une iframe refusée
+   * n'empêche pas la page d'arriver) et `rebound` (rebinding), comme pour nav.
    */
   private async historyCommitted(nav0: number, since: number): Promise<void> {
     const end = Date.now() + 30_000;
     for (;;) {
-      const b = this.blocked as Blocked | null;
+      const b = this.blockedMain as Blocked | null;
       if (b !== null && b.at >= since) throw forbidden(`navigation bloquée par le garde : ${b.reason} (${b.url})`);
       if (this.navCount !== nav0 && !this.navigating()) break;
       if (Date.now() > end) throw new GraspError(504, 'délai dépassé : la navigation n\'a pas abouti en 30 s');

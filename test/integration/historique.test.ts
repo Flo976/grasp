@@ -159,6 +159,31 @@ test('scroll simple : un écran, --by (négatif), --to top|bottom, élément ame
 });
 
 /**
+ * Page qui embarque une iframe hors allowlist (publicité, widget : cas courant avec une allowlist stricte). Le garde
+ * annule le document du cadre, pas celui de la page : back (page non éligible au cache aller-retour, donc
+ * redemandée au serveur) et reload aboutissent, le blocage du cadre n'est qu'une note.
+ */
+test('back et reload d\'une page dont une iframe est hors allowlist → OK, page affichée, cadre bloqué en note', async () => {
+  const port = new URL(site.url).port;
+  const page = `${site.url}/hist-cadre?cadre=${encodeURIComponent(`http://localhost:${port}/hist-c`)}`;
+  const n = () => site.hits.filter((h) => h === '/hist-cadre').length;
+  await fx.page.nav(page);
+  await fx.page.nav(`${site.url}/hist-a`);
+  const n0 = n();
+  const b = await fx.page.history(-1);
+  assert.equal(n(), n0 + 1, 'document redemandé au serveur (pas de cache aller-retour)');
+  assert.match(b.title, /^Avec cadre \d+$/);
+  assert.match(b.detail ?? '', /cadre bloqué : domaine hors allowlist : localhost/);
+  const r = await fx.page.reload();
+  assert.equal(n(), n0 + 2);
+  assert.match(r.title, /^Avec cadre \d+$/);
+  assert.equal((await fx.page.location()).title, r.title);
+  const h = await fx.page.reload({ hard: true });
+  assert.equal(n(), n0 + 3);
+  assert.match(h.detail ?? '', /cadre bloqué/);
+});
+
+/**
  * Garde de navigation appliqué à l'historique. Réseau simulé comme dans ssrf.test.ts : Chrome envoie `*.test` sur
  * 127.0.0.1, et le résolveur du garde (injecté) répond ce que « le DNS » dit — ici, il change entre la visite et le
  * retour (public, puis privé). allowConsole=false : sans domaine Network, pas de contrôle anti-rebinding après

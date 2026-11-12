@@ -69,6 +69,15 @@ new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) suite()
 </script></body></html>`;
 
 let reloads = 0;
+let cadres = 0;
+
+/**
+ * Page non éligible au cache aller-retour (no-store, écouteur unload) qui embarque une iframe vers `?cadre=` :
+ * back/forward la redemandent au serveur. Compteur de chargements dans le titre.
+ */
+const cadrePage = (n: number, cadre: string) => `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Avec cadre ${n}</title></head><body>
+<h1>Avec cadre ${n}</h1><iframe src="${cadre.replace(/[<>"&]/g, '')}" title="Cadre"></iframe>
+<script>addEventListener('unload', () => {});</script></body></html>`;
 
 /** Routes de l'historique et du défilement ; false si l'URL n'en est pas une. */
 export function historiqueRoute(u: URL, req: IncomingMessage, res: ServerResponse): boolean {
@@ -88,6 +97,12 @@ export function historiqueRoute(u: URL, req: IncomingMessage, res: ServerRespons
     const cc = String(req.headers['cache-control'] ?? '');
     res.setHeader('cache-control', 'max-age=3600');
     res.end(simple('Rechargement', `<h1>Chargement n° ${reloads}</h1><p id="cache">cache : ${/no-cache/.test(cc) ? 'ignoré' : 'normal'}</p>`));
+    return true;
+  }
+  if (p === '/hist-cadre') {
+    cadres++;
+    res.setHeader('cache-control', 'no-store');
+    res.end(cadrePage(cadres, u.searchParams.get('cadre') ?? '/hist-a'));
     return true;
   }
   if (p === '/defilement-infini') { res.end(INFINI_PAGE); return true; }

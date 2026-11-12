@@ -608,6 +608,10 @@ de test).
   retours), donc invisible du garde `Fetch`. Test par mutation : sans le pré-contrôle, un `back` vers une entrée
   dont le nom résout désormais en privé passe (`test/integration/historique.test.ts`, test « garde »). Pour
   `reload`, la requête part bel et bien : le garde `Fetch` l'arrête aussi (vérifié en retirant le pré-contrôle).
+  Seul le refus du document **principal** fait échouer la commande : une iframe hors allowlist (publicité,
+  widget) est refusée par le garde mais la page arrive quand même → `OK` et note `cadre bloqué : <raison>`
+  (testé : `back` d'une page non éligible au bfcache et `reload [--hard]` d'une page dont l'iframe vise un
+  domaine hors allowlist ; avant correction, ces commandes répondaient à tort 403).
 - **Attente** : celle de `nav` (load, puis 400 ms de calme du DOM et du réseau, plafond `stableTimeoutMs`,
   challenge anti-bot guetté). Une route `pushState` dont la vue arrive en `fetch` après le `popstate` est
   attendue : la lecture qui suit voit déjà la nouvelle vue (testé avec une vue servie en 150 ms).
