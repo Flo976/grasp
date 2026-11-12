@@ -217,7 +217,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 async function runCmd(c: Client, a: Args): Promise<number> {
   if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--report|--no-report] [--out-dir <répertoire>] [--json]');
   const outDir = a.flags.get('out-dir');
-  if (outDir === true || outDir === '') throw new CliError('--out-dir attend un répertoire (captures de screenshot -o)');
+  if (outDir === true || outDir === '') throw new CliError('--out-dir attend un répertoire (captures de screenshot -o et captures d\'échec)');
   if (a.flags.has('report') && a.flags.has('no-report')) throw new CliError('--report et --no-report s\'excluent');
   const file = a.pos[0];
   let script: string;
@@ -234,7 +234,8 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   // Répertoire et chemins vérifiés AVANT l'envoi : rien ne s'exécute si une capture ne pourra pas être écrite.
   const dir = resolvePath(outDir ?? '.');
   try { checkRunOut(script, dir); } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
-  const r = (await c.call('POST', '/run', { script, files: true, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
+  // --out-dir explicite : les captures d'échec (--shot-on-error, rapport) reviennent aussi au client, écrites sous --out-dir.
+  const r = (await c.call('POST', '/run', { script, files: true, ...(outDir !== undefined ? { clientShots: true } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
   writeRunShots(r, dir);
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
@@ -716,7 +717,7 @@ async function main(argv: string[]): Promise<number> {
       const pos = a.pos[0] === 'set' && a.pos[3] === '-' ? [...a.pos.slice(0, 3), readFileSync(0, 'utf8').replace(/\r?\n$/, '')] : a.pos;
       let rq;
       try { rq = buildRequest({ ...a, pos }); } catch (e) { throw new CliError((e as Error).message); }
-      const j = (await c.call(rq.method, rq.path, rq.body)).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; boundary?: BoundaryTag };
+      const j = (await c.call(rq.method, rq.path, rq.body)).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; pending?: boolean; boundary?: BoundaryTag };
       if (json) { out(JSON.stringify(j)); return j.op === 'get' && j.value === null ? 1 : 0; }
       const where = `${j.area}Storage de ${j.origin}`;
       if (j.op === 'get') {
@@ -727,7 +728,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       out('OK');
-      hint(j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : where);
+      hint(j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : j.pending === true ? `${where} : appliqué au premier document de cette origine dans l'onglet` : where);
       return 0;
     }
     case 'state': await stateCmd(c, a, paths); return 0;
@@ -943,6 +944,8 @@ Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép
                click fill select check press hover type wait expect eval console network screenshot cookies storage
                upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
                screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
+               avec --out-dir, les captures d'échec (--shot-on-error, rapport) y vont aussi (echec-etape-<n>.png),
+               chemin final cité ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)
@@ -967,9 +970,12 @@ Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés 
                atomiquement ; sans fichier : dans l'état de Grasp, CHEMIN sur stdout ; exige allowCookies ;
                rien hors allowlist
              state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine
-             storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->
+             storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->   [--origin <url>]
                stockage Web de l'origine AFFICHÉE (allowlist), code fixe sans eval ; exige allowCookies ;
-               get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1
+               get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1 ;
+               --origin : une autre origine, même sur about:blank avant tout chargement (allowlist, SSRF) ;
+               localStorage posé hors de la page (aucune requête, aucun script du site) ; sessionStorage :
+               set seulement, appliqué au premier document de cette origine dans l'onglet
 Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
 Secrets      secrets list | set <NOM> --domains <hôtes> (valeur sur stdin) | rm <NOM>
                fill <sél> secret:NOM : valeur prise côté serveur, refusée hors des domaines du secret, masquée

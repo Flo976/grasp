@@ -367,19 +367,23 @@ Suites de l'intégration :
 
 - [ ] **`state import` dans `run`** : « commande inconnue » dans un run, alors que le README (l. 118) le donne
   comme alternative à `storage set`. L'implémenter dans `run` (avant toute navigation), ou corriger la doc.
-- [ ] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
-  Poser la valeur pour une origine avant le premier chargement, comme `state import`.
+- [x] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
+  Poser la valeur pour une origine avant le premier chargement, comme `state import`. — Fait : `storage get|set|rm
+  … --origin <url>` (CLI, `run`, outil MCP `run`) : localStorage via l'onglet d'état (document vide servi par Grasp),
+  sessionStorage en attente du premier document ; allowlist, SSRF, allowCookies.
 - [ ] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
   true`, ce qui pousse un agent à contourner le skill. Proposer plutôt les alternatives (`storage`, `expect`, `find`).
 - [ ] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
   `expect not-clipped <sél>`, ou boîtes englobantes en option de `snap`/`find` (une image alt="" n'est pas dans
   l'arbre a11y).
-- [ ] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
-  (« pas de meta viewport → largeur de mise en page 980 »).
-- [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
-  des étapes KO restent dans state/grasp/captures/.
+- [x] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
+  (« pas de meta viewport → largeur de mise en page 980 »). — Fait : note en `--mobile` quand la page n'a pas la
+  balise (CLI, run, MCP), aucune sinon.
+- [x] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
+  des étapes KO restent dans state/grasp/captures/. — Fait : avec `--out-dir`, `echec-etape-<n>.png` écrit par la
+  CLI (mêmes contrôles que `-o`), chemin final dans le rapport, le message et `--json`.
 - [ ] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
-- [ ] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
-  une fois par origine suffit.
+- [x] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
+  une fois par origine suffit. — Fait : une fois par origine et par stockage dans un même run.
 - [ ] **Doc `console --level error`** : dire qu'il inclut les erreurs réseau, et préciser si
   `expect no-console-errors` les compte.

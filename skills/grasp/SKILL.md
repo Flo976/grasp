@@ -156,7 +156,7 @@ Commandes de run : nav, back, forward, reload, scroll, snap, find, text, a11y, c
 
 - `grasp eval <expression>` : évalue du JavaScript dans la page (désactivée par défaut : allowEval)
 - `grasp cookies` : cookies de la session (désactivée par défaut : allowCookies)
-- `grasp storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->` : stockage Web de l'origine affichée, sans eval (désactivée par défaut : allowCookies)
+- `grasp storage get|rm local|session <clé> [--origin <url>] | storage set local|session <clé> <valeur|-> [--origin <url>]` : stockage Web de l'origine affichée (ou de --origin, avant le premier chargement), sans eval (désactivée par défaut : allowCookies)
 - `grasp upload <sél> <fichier>…` : envoie des fichiers dans un <input type=file> (désactivée par défaut : allowUpload)
 - `grasp state export [fichier|-] [--origin …] | import <fichier|->` : cookies + stockage Web en JSON (désactivée par défaut : allowCookies)
 
