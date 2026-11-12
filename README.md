@@ -794,7 +794,9 @@ POST /run {script, continue?}   → {ok, total, executed, steps[]} ; 400 si le s
 ```
 
 Codes : 400 entrée invalide · 401 token · 403 politique · 404 introuvable · 409 ambigu, état
-incohérent ou pas de session · 501 moteur Playwright indisponible (playwright-core absent) · 502 navigateur · 504 délai. Le corps d'erreur `{"error": …}` porte aussi
+incohérent ou pas de session · 501 moteur Playwright indisponible (playwright-core absent) · 502 navigateur · 503 plafond
+`maxSessions` atteint ou serveur en cours d'arrêt · 504 délai. En-tête `X-Grasp-Notice` (encodé URL) : note du control plane
+sur cette commande (navigateur recyclé juste avant). Le corps d'erreur `{"error": …}` porte aussi
 `screenshot` (chemin, avec `shotOnError`), `console`/`consoleSeq`/`consoleSince`/`consoleOmitted`/`consoleDropped`
 (avec `console`) et `candidates`
 (ref disparue ou `text:` introuvable). Pour les actions, `max` est la limite du diff en caractères.
@@ -852,6 +854,59 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
   `~/.config/systemd/user/grasp.service` (`Type=simple`, `Restart=on-failure`,
   `KillMode=control-group`) puis lance `systemctl --user enable --now`. Sans systemd
   (conteneur, WSL sans systemd), refus explicite qui propose `grasp serve` au premier plan.
+
+## Sessions parallèles et recyclage
+
+**Une session = un bridge = un Chrome** (son propre `--user-data-dir`, son propre groupe de processus). Les
+sessions ne partagent rien et se pilotent en même temps : le control plane ne sérialise rien (deux commandes
+simultanées sur une même session partent aussi ensemble vers son bridge). Aucun plafond par défaut. Mesuré (Linux, Chrome 150 headless, page de test locale, 20 cœurs, 40 Go) :
+
+| Sessions | Création en parallèle | `nav` en parallèle | Mémoire par session |
+|---|---|---|---|
+| 8 | 1,1 s | 1,0 s | Chrome ≈ 168 Mo (PSS, 13 processus) + bridge ≈ 74 Mo (RSS) |
+| 20 | 1,9 s | 1,8 s | Chrome ≈ 152 Mo (PSS) + bridge ≈ 74 Mo |
+
+Chaque session a vu sa propre page (`text` en parallèle). La limite pratique est donc la mémoire : ≈ 230 Mo par
+session sur une page simple, beaucoup plus sur une application lourde. Le test d'intégration
+(`recyclage.test.ts`) crée 4 sessions en même temps et les pilote en parallèle (API et `grasp run`).
+
+- **`maxSessions`** (défaut : pas de plafond) : au-delà, `POST /sessions` répond **503** `plafond de N session(s)
+  atteint (…) : fermez-en une`. Les créations en cours comptent : N créations simultanées ne dépassent pas le
+  plafond.
+- **Recyclage** : `browserMaxRssMb` (Mo) et `browserMaxAgeMin` (minutes, décimales permises), **désactivés par
+  défaut** (absents ou `none`). Au dépassement, le navigateur de la session est relancé **entre deux commandes,
+  jamais pendant** : la vérification a lieu à l'arrivée d'une commande, et seulement si **aucune autre commande
+  n'est en vol** sur la session (sinon elle attend la suivante). Les commandes qui arrivent pendant la relance
+  l'attendent (pas de 409) ; une seule relance a lieu. Même mécanique que la bascule de profil : fermeture propre
+  (`Browser.close`, cookies écrits), relance sur le **même** `--user-data-dir`, **même identifiant de session**
+  (profil éphémère compris, qui n'est pas supprimé).
+- **Page rechargée** (décision) : l'URL courante est relue avant l'arrêt et rouverte après la relance, par le même
+  `nav` que l'agent (garde et allowlist compris). Un agent qui enchaîne `snap`/`click` retrouve donc sa page ;
+  c'est un **nouveau GET** : un résultat de POST, un état JS, un formulaire rempli ou le `sessionStorage` sont
+  perdus, et les refs `snap` doivent être relues (mémoire du bridge). `about:blank` n'est pas rechargé.
+- **Cookies** : les persistants sont dans le profil ; les cookies **de session** (sans expiration), que la relance
+  perdrait, sont relus dans l'ancien navigateur et reposés dans le nouveau par une route interne du bridge, jamais
+  exposée à l'agent (indépendante d'`allowCookies`, ni journalisée).
+- **Note visible** sur la commande qui suit, une seule fois : en-tête `X-Grasp-Notice` (encodé URL) sur toute
+  réponse — JSON, texte, binaire ou erreur —, affiché par la CLI sur stderr ; dans `grasp run`, en tête des notes
+  de l'étape :
+  ```
+  note: navigateur recyclé : 812 Mo > 800 Mo ; 1 cookie(s) de session reporté(s) ; page rechargée sur https://…/liste
+  note: navigateur recyclé : âge 31 min > 30 min ; page vide, rien à recharger
+  ```
+  `GET /sessions` donne `browserStartedAt`, `recycles` et la dernière mesure (`memoryMb`, `memoryMetric`).
+- **Mesure** — Linux : somme de la **PSS** (`/proc/<pid>/smaps_rollup`) de **tout le groupe de processus** Chrome
+  (navigateur, zygotes, GPU, réseau, renderers), relue à chaque commande (≈ 3 ms). Pas la somme des RSS : mesuré,
+  un Chrome headless neuf totalise ≈ 980 Mo de RSS (chaque page partagée comptée dans chacun des 13 processus)
+  pour ≈ 160 Mo de PSS — un seuil de 800 Mo en RSS recyclerait un navigateur à vide. Repli sur `VmRSS` (annoncé par
+  `memoryMetric: "rss"`) si `smaps_rollup` est illisible. Le bridge (Node) n'est pas compté. chrome.exe : somme
+  de `PrivatePageCount` (octets privés) des `chrome.exe` dont la ligne de commande porte **ce** `--user-data-dir`
+  (même filtre que l'arrêt forcé), par PowerShell (≈ 1 s), **en arrière-plan, au plus toutes les 30 s** : le
+  dépassement est vu à la commande qui suit la mesure.
+- **Échec de la relance** : la session est fermée et la commande reçoit un 502 qui le dit. Un seuil inférieur à
+  l'empreinte d'un navigateur neuf recyclerait à chaque commande : le journal du serveur le signale.
+- Sans effet en mode attach (`cdpUrl`) : Grasp ne relance pas un navigateur qu'il n'a pas lancé (avertissement au
+  démarrage).
 
 ## Chemins (XDG)
 
@@ -912,6 +967,8 @@ pas partie) : `snapMax` (octets, 12000), `textMax` (caractères, 4000), `diffMax
 (voir [Livraison vérifiée](#livraison-vérifiée-des-entrées)).
 `fallbackEngine` (`none` par défaut, ou `playwright`) : rejeu automatique des clics par le
 [moteur Playwright de repli](#moteur-playwright-de-repli).
+`browserMaxRssMb` (Mo), `browserMaxAgeMin` (minutes) et `maxSessions` : [recyclage et plafond de
+sessions](#sessions-parallèles-et-recyclage), désactivés par défaut (`none` pour revenir à « désactivé »).
 
 ## Tests
 
@@ -967,6 +1024,13 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - **chrome.exe orphelin** si le control plane **et** le bridge sont tués par `SIGKILL` en même temps
   (rien ne reste pour appeler `Browser.close` ou PowerShell) : il tourne jusqu'au prochain
   `grasp serve` (ou redémarrage systemd), qui le retrouve via `instances.json` et le tue.
+- **Recyclage** (`browserMaxRssMb`, `browserMaxAgeMin`) : la page est rouverte par un nouveau GET (état JS,
+  `sessionStorage`, résultat de POST, refs et tampon console perdus) ; les autres onglets ou popups n'existent pas
+  (une session = un onglet). La vérification n'a lieu qu'à l'arrivée d'une commande : une session inactive garde
+  son navigateur, quel que soit son âge ou sa mémoire. Une session constamment occupée par des commandes qui se
+  chevauchent n'est jamais au repos, donc jamais recyclée. chrome.exe : mesure vieille de 30 s au plus, en octets
+  privés (pas résidents). La PSS répartit les pages partagées entre tous leurs utilisateurs : celle d'une session
+  baisse un peu quand d'autres Chrome tournent.
 - La bascule de profil relance le navigateur : la page courante n'est pas conservée. Pendant la
   bascule, les deux profils sont réservés (création de session ou suppression → 409) ; une session
   fermée pendant la bascule l'interrompt (409) sans laisser de navigateur.

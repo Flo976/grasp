@@ -588,6 +588,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Contrôle d'un onglet via CDP. Détient le garde de navigation : la même `policy` (gelée) sert
  * au pré-contrôle de /navigate, à l'interception Fetch dans le navigateur, et au rapport.
  */
+/** Cookie de session transféré d'un navigateur à son remplaçant (recyclage). */
+export interface SessionCookie {
+  name: string; value: string; domain: string; path: string; secure: boolean; httpOnly: boolean;
+  sameSite?: string; priority?: string; sourceScheme?: string; sourcePort?: number; partitionKey?: unknown;
+}
+
 export class PageController {
   private loading = false;
   private pendingNavAt = 0;
@@ -2614,6 +2620,24 @@ export class PageController {
     if (!this.policy.allowCookies) throw forbidden('l\'accès aux cookies est désactivé (grasp config set allowCookies true)');
     const { cookies } = await this.s<{ cookies: unknown[] }>('Network.getCookies');
     return cookies;
+  }
+
+  /**
+   * Recyclage (control plane seulement, jamais routé vers l'agent) : cookies de SESSION du navigateur (sans
+   * expiration), que la relance perdrait — les cookies persistants, eux, sont sur disque dans le profil.
+   */
+  async sessionCookies(): Promise<SessionCookie[]> {
+    const { cookies } = await this.cdp.send<{ cookies: Array<SessionCookie & { session?: boolean }> }>('Storage.getCookies');
+    return cookies.filter((c) => c.session === true).map((c) => {
+      const out: SessionCookie = { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly };
+      for (const k of ['sameSite', 'priority', 'sourceScheme', 'sourcePort', 'partitionKey'] as const) if (c[k] !== undefined) (out as unknown as Record<string, unknown>)[k] = c[k];
+      return out;
+    });
+  }
+
+  async restoreCookies(cookies: SessionCookie[]): Promise<number> {
+    if (cookies.length > 0) await this.cdp.send('Storage.setCookies', { cookies });
+    return cookies.length;
   }
 
   async upload(sel: string, files: string[], opts: { engine?: string | undefined } = {}): Promise<ActionResult> {
