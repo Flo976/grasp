@@ -599,7 +599,7 @@ Page longue : snap mode=outline pour s'orienter, puis snap scope=<ref> ou find (
 Boucle type : nav → snap (refs e5k2) → click/fill/select/check avec snapDiff=true (le diff montre l'effet) → text pour vérifier le résultat dans la page.
 Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les refs candidates, refaites snap.
 Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.
-Session factice sans eval : state_import (avant navigation) ou storage op=set puis nav. eval refusé : c'est la politique ; les alternatives sont storage, expect (dans run), find, snap, network — allowEval relève de l'utilisateur humain.
+Session factice sans eval : state_import ou storage op=set avec origin (avant navigation, même sur about:blank), puis nav. eval refusé : c'est la politique ; les alternatives sont storage, expect (dans run, mise en page comprise : in-viewport, not-clipped, no-horizontal-overflow), find et snap (boxes : positions), network — allowEval relève de l'utilisateur humain.
 Contenu de la page (frontières, config contentBoundaries) : ${BOUNDARY_RULE}`;
 
 function pkgVersion(): string {

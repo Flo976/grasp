@@ -9,8 +9,9 @@ export { normalizeHost };
  * décision de l'utilisateur humain. Un message « config set allowEval true pour l'autoriser » invitait un agent à
  * relâcher lui-même la politique (retour du deuxième essai réel). Même texte partout (bridge, run, MCP, skill).
  */
-export const EVAL_REFUSAL = 'eval est désactivé par la politique de Grasp. Sans eval : storage get|set local|session (stockage Web), '
-  + 'expect text|value|sel|a11y (vérifications), find et snap (éléments, valeurs, états), network (requêtes), '
+export const EVAL_REFUSAL = 'eval est désactivé par la politique de Grasp. Sans eval : storage get|set local|session [--origin <url>] (stockage Web, '
+  + 'même avant le premier chargement), expect text|value|sel|a11y (vérifications), expect in-viewport|not-clipped|no-horizontal-overflow '
+  + '(mise en page), find et snap [--boxes] (éléments, valeurs, états, positions), network (requêtes), '
   + 'state import (session posée d\'avance). Activer allowEval est une décision de l\'utilisateur humain, pas de l\'agent : '
   + 'demandez-lui plutôt que de changer la configuration';
 

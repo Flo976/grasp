@@ -92,6 +92,10 @@ test('mcp : protocole (initialize, ping, tools/list, erreurs JSON-RPC), serveur 
     assert.equal(init.result.protocolVersion, '2025-06-18');
     assert.equal(init.result.serverInfo.name, 'grasp');
     assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
+    // Instructions : alternatives à eval de la vague 3 (storage avec origin, assertions de mise en page), sans config set.
+    assert.match(init.result.instructions, /storage op=set avec origin/);
+    assert.match(init.result.instructions, /in-viewport, not-clipped, no-horizontal-overflow/);
+    assert.doesNotMatch(init.result.instructions, /config set/);
     // Version inconnue : le serveur propose la sienne.
     const old = await mcp.request('initialize', { protocolVersion: '1999-01-01', capabilities: {}, clientInfo: { name: 't', version: '1' } });
     assert.equal(old.result.protocolVersion, '2025-06-18');

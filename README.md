@@ -2432,7 +2432,8 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
   (`--dialog`, voir [Dialogues JavaScript](#dialogues-javascript---dialog)).
 - `eval`, téléchargements, upload, cookies (et donc `state export|import`) : **désactivés**. Le refus d'`eval` (403)
   **ne dicte pas** la commande qui relâcherait la politique : il oriente vers ce qui se fait sans eval (`storage
-  get|set`, `expect text|value|sel|a11y`, `find`, `snap`, `network`, `state import`) et présente `allowEval` comme
+  get|set [--origin <url>]`, `expect text|value|sel|a11y`, `expect in-viewport|not-clipped|no-horizontal-overflow`,
+  `find` et `snap` [`--boxes`], `network`, `state import`) et présente `allowEval` comme
   une décision de l'utilisateur humain, pas de l'agent (un message « config set allowEval true pour l'autoriser »
   poussait un agent à contourner son skill — retour du deuxième essai réel). Même texte en CLI, dans `run` et par MCP.
   Les refus des autres clés (`allowCookies` pour `storage`, `state`, `cookies` ; `allowUpload` ; `allowConsole`

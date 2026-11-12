@@ -90,7 +90,8 @@ test('history : state import avec fichier connu → ligne rejouable par run ; sa
 
 test('refus d\'eval : alternatives sans eval, la clé de config présentée comme décision de l\'utilisateur, jamais comme commande à lancer', () => {
   assert.match(EVAL_REFUSAL, /^eval est désactivé/);
-  for (const alt of ['storage', 'expect text', 'find', 'snap', 'network']) assert.ok(EVAL_REFUSAL.includes(alt), `alternative ${alt} absente`);
+  // Vague 3 : --origin (session posée avant chargement) et assertions de mise en page, alternatives sans eval elles aussi.
+  for (const alt of ['storage', '--origin', 'expect text', 'in-viewport', 'not-clipped', 'no-horizontal-overflow', '--boxes', 'find', 'snap', 'network']) assert.ok(EVAL_REFUSAL.includes(alt), `alternative ${alt} absente`);
   assert.match(EVAL_REFUSAL, /décision de l'utilisateur humain, pas de l'agent/);
   assert.doesNotMatch(EVAL_REFUSAL, /config set/);
   assert.doesNotMatch(EVAL_REFUSAL, /pour l'autoriser/);
