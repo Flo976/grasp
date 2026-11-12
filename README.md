@@ -547,7 +547,7 @@ esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
   ```
   $ grasp find Valider --boxes          # viewport 360x800 --mobile
   page "Mise en page" http://127.0.0.1:46363/mise-en-page
-  boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document (défilement compris) ; viewport 360x800
+  boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document (défilement compris) ; layout 360x800
   find « Valider » : 1 correspondance
   e9kfo:button "Valider" @20,280 200x40
   ```
@@ -712,7 +712,14 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
 `frame=<css de l'iframe> >> <css|text:…>` pour un élément **dans** une iframe, même d'une autre origine
 (imbriquable : `frame=#a >> frame=#b >> button` ; moteur Playwright, voir plus bas).
-Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire. Toute action
+Un sélecteur ambigu répond 409 avec les candidats, sans choix arbitraire : refs pour une ref ou un `text:`, et
+pour un CSS qui correspond à plusieurs éléments, la balise, la boîte `@x,y LxH` et un sélecteur prêt à l'emploi
+de chacun (sélecteur stable unique s'il existe, sinon `… >> nth=N`) — un élément hors de l'arbre d'accessibilité
+(image `alt=""`) n'a pas de ref à proposer. **`<css> >> nth=N`** choisit la N-ième correspondance (0 = la
+première, ordre du document, syntaxe de Playwright) : `expect not-clipped 'img.ico >> nth=1'`, `click 'li >> nth=0'`,
+aussi dans `run` et les outils MCP ; au-delà du nombre d'éléments, 404 qui le dit. `nth` ne vaut que pour un CSS
+(pas `text:`, dont le 409 liste des refs) ; avec `--engine playwright`, un CSS ambigu garde l'erreur stricte de
+Playwright (sans liste de candidats). Toute action
 (`nav`, `back`, `forward`, `reload`, `scroll`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`) accepte :
 
 - `--snap-diff` : diff du snapshot dans le même aller-retour, après stabilité du DOM, borné à 4000
@@ -1159,11 +1166,13 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   `ERROR: capture non écrite : …` et le run en échec, mais les étapes suivantes **ont déjà été exécutées**
   (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
 - **`state import <fichier>`** : comme `screenshot -o` en écriture, le fichier est **lu par la CLI**, jamais par
-  le serveur : chemin relatif au répertoire courant (ou absolu), comme la commande isolée — **pas** à `--out-dir`,
+  le serveur : chemin relatif au **répertoire du fichier de script** (`grasp run recettes/dexyu.grasp` lit
+  `state import session.json` dans `recettes/`, d'où que la commande soit lancée : le script de recette reste
+  portable), au répertoire courant pour un script sur stdin, ou absolu — **pas** à `--out-dir`,
   qui ne vaut que pour ce que la CLI écrit (captures `-o` et captures d'échec) ; `-` (stdin) refusé
   dans un run. **Aucun shell ne passe sur une ligne de run** : la CLI développe elle-même `~` en tête (`~` seul ou
   `state import ~/etat.json`), mais ni `~utilisateur` ni les variables d'environnement (`$HOME/etat.json` est pris
-  à la lettre, relatif au répertoire courant). Tous les fichiers sont lus et analysés **avant l'envoi** :
+  à la lettre, relatif comme ci-dessus). Tous les fichiers sont lus et analysés **avant l'envoi** :
   illisible, JSON invalide (message sans extrait du fichier, qui peut contenir des jetons) ou plus de 64 Mo en
   tout → `ERROR: run: ligne N : state import … — aucune commande exécutée`. Le corps complet du run (script,
   fichiers, enveloppe JSON) est mesuré lui aussi avant l'envoi : au-delà de 68 Mo, limite du serveur pour
@@ -1368,6 +1377,11 @@ page finale : http://127.0.0.1:45955/boutique « Boutique »
 
 #### Session factice sans `allowEval`
 
+> **`storage get` lit l'état actuel, pas ce qui a été importé.** Beaucoup d'applications lisent leur jeton au
+> démarrage puis le **retirent** du stockage (pour le garder en mémoire) ou le réécrivent : après `nav`,
+> `storage get local auth` peut alors répondre « clé absente » (code 1) alors que l'import a bien servi. Vérifiez
+> la session **par la page** (`expect text "Connecté"`, `expect url ~ /compte`), pas en relisant le stockage.
+
 Une application qui garde sa session dans le stockage Web (jeton, profil, préférences) se teste connectée sans
 passer par son formulaire et **sans activer `eval`** : `allowCookies` suffit (désactivé par défaut ; il couvre
 déjà l'export et l'import de l'[état](#état--export-et-import), mêmes données). Deux voies, toutes deux testées
@@ -1394,7 +1408,7 @@ déjà l'export et l'import de l'[état](#état--export-et-import), mêmes donn�
 
    L'origine doit être dans l'allowlist (sinon écartée et signalée). Le fichier peut contenir un vrai jeton :
    0600, comme un export. **Dans un run**, même ligne (fichier lu par la CLI avant l'envoi, relatif au répertoire
-   courant) :
+   du script, au répertoire courant sur stdin) :
 
    ```bash
    grasp run <<'FIN'
@@ -1759,6 +1773,7 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `check` | `target`, `checked` (défaut `true`), options d'action | `check [--uncheck]` |
 | `press` | `key`, `target?`, options d'action | idem |
 | `wait` | `text` \| `sel` \| `idle`, `timeout` | idem |
+| `expect` | `assertion` : la ligne `grasp expect` sans le mot `expect` (`not-clipped 'img.ico >> nth=1'`, `text "Merci" --timeout 0`) | `expect …` ([recette](#recette--expect-et-rapport-de-run)) |
 | `console` | `level`, `since`, `limit` (50), `clear` | idem |
 | `network` | `since`, `failed`, `max`, `type` | `network` ([journal réseau](#journal-réseau)) |
 | `a11y` | `scope`, `max` | `a11y` ([audit](#audit-daccessibilité)) |
@@ -1774,6 +1789,11 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 Options d'action : `snapDiff`, `max`, `scope`, `console`, `network`, `shotOnError`, `dialog`, `engine` (`native` \|
 `playwright` ; pas pour `nav`, `back`, `forward`, `reload`, `scroll`), `follow` (bascule sur le popup que l'action
 ouvre ; pas sur `nav`, `back`, `forward`, `reload`, `scroll`).
+**Écarts de forme avec la CLI** (le comportement est le même) : les sous-commandes deviennent un argument (`storage`
+prend `op` = `get|set|rm` au lieu de `storage set …`), `state_import` reçoit le JSON lui-même et non un chemin (un
+agent MCP n'obtient pas un moyen de lire des fichiers), les options sont en camelCase (`snapDiff`, `shotOnError`) et
+aucun outil ne prend `session` : la session est celle de `grasp mcp` (`--session <id>` au lancement). `expect`
+et `run` prennent au contraire la syntaxe CLI telle quelle.
 `eval`, `cookies` et `upload` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
 politique (désactivés par défaut). `storage` et `state_import` en sont, pour qu'un agent en `grasp mcp` puisse poser
 une session factice **sans eval** ; un `state import <fichier>` dans l'outil `run` est refusé (le serveur ne lit

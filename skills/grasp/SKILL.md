@@ -36,10 +36,11 @@ Répétez 3 et 4. Champ invalide : `[invalide: message]` dans le snapshot et le 
 
 - ref `e5k2` : issue de snap ; stable (hash du rôle, du nom et du rang), à préférer
 - css `#email` : sélecteur CSS (préfixe css: facultatif)
+- nth `img.ico >> nth=1` : N-ième correspondance d'un CSS (0 = la première)
 - text `text:Valider` : nom accessible : égal d'abord, puis sans casse, puis contenu dans un contrôle
 - frame `frame=#editeur >> text:Gras` : élément dans une iframe, même d'une autre origine (moteur Playwright, pas de ref)
 
-Ambigu ou ref remplacée → erreur 409 avec les refs candidates (jamais de choix arbitraire) : refaites `snap`.
+Ambigu ou ref remplacée → erreur 409 avec les candidats (jamais de choix arbitraire) : refaites `snap`, ou `>> nth=N` pour un CSS.
 Ref d'une page précédente → 404 : refaites `snap`.
 
 ## Économiser les tokens
@@ -89,7 +90,7 @@ Script analysé en entier avant exécution (option inconnue = refus), arrêt au 
 rapport de recette d'office avec un `expect` (étapes, erreurs console, requêtes 4xx/5xx, formulaire, capture à chaque échec).
 Commandes de run : nav, back, forward, reload, scroll, snap, find, text, a11y, click, fill, select, check, press, hover, type, wait, expect, eval, console, network, screenshot, cookies, storage, state, upload, profile, viewport, tabs, tab.
 Session factice sans eval (allowCookies), avant le premier `nav` : `state import session.json` (lu par la CLI,
-relatif au répertoire courant, `~/` développé) ou `storage set local <clé> <valeur> --origin <url>`.
+relatif au répertoire du script — au répertoire courant sur stdin —, `~/` développé) ou `storage set local <clé> <valeur> --origin <url>`.
 
 - `expect text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible contient <texte>
 - `expect no-text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible ne contient pas <texte>

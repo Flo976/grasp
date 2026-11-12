@@ -118,7 +118,8 @@ export function runFilePath(f: string, cwd = process.cwd(), home = homedir()): s
 /**
  * `state import <fichier>` dans `grasp run` : la CLI lit et analyse chaque fichier AVANT d'envoyer le script (le
  * serveur ne lit jamais un chemin venu d'un script, comme il n'écrit jamais celui d'un `screenshot -o`). Chemin
- * relatif au répertoire courant, absolu, ou en `~/` (voir runFilePath). Fichier illisible, JSON invalide ou trop
+ * relatif à `cwd` (le répertoire du fichier de script, ou le répertoire courant pour un script sur stdin), absolu,
+ * ou en `~/` (voir runFilePath). Fichier illisible, JSON invalide ou trop
  * gros : refus, aucune commande exécutée. Script invalide : rien à lire ici, le serveur rend l'erreur d'analyse.
  * `max` : total des fichiers (paramètre pour les tests).
  */

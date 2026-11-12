@@ -8,7 +8,7 @@ import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.
 import { formatNetEntries, networkLosses, type NetEntry } from '../core/network.js';
 import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 import { renderViewport } from '../core/viewport.js';
-import { buildRequest, RUN_COMMANDS, ScriptError, type Args, type StepRequest } from '../core/script.js';
+import { buildRequest, checkRunFlags, parseArgs, RUN_COMMANDS, ScriptError, splitLine, type Args, type StepRequest } from '../core/script.js';
 import { formatReport, stateImportNotes, type RunResult } from '../control/run.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 
@@ -315,7 +315,7 @@ const TOOLS: Tool[] = [
       return text(t !== '' ? t : `note: aucun texte visible ${typeof a.scope === 'string' ? `dans la zone ${a.scope}` : 'dans la page'}`);
     },
   },
-  actionTool('click', ['target'], 'Clic souris réel au centre de l\'élément, livraison vérifiée. Sélecteur ambigu ou ref disparue → erreur avec les refs candidates, jamais de choix arbitraire.', { target: TARGET, ...ACTION_PROPS }, ['target']),
+  actionTool('click', ['target'], 'Clic souris réel au centre de l\'élément, livraison vérifiée. Sélecteur ambigu ou ref disparue → erreur avec les candidats (refs, ou pour un CSS : boîte et sélecteur unique ; `css >> nth=N`), jamais de choix arbitraire.', { target: TARGET, ...ACTION_PROPS }, ['target']),
   actionTool('fill', ['target', 'value'], 'Remplace le contenu d\'un champ (ou d\'un éditeur riche) et vérifie la valeur effective. Mot de passe ou jeton : value="secret:NOM" (outil secrets) — la valeur est prise côté serveur, refusée hors des domaines du secret, et rendue secret:NOM dans toutes les sorties.', { target: TARGET, value: S('Valeur, ou secret:NOM pour un secret du serveur.'), ...ACTION_PROPS }, ['target', 'value']),
   {
     name: 'secrets', readOnly: true,
@@ -340,6 +340,26 @@ const TOOLS: Tool[] = [
     async run(c, a) {
       const j = (await send(c, buildRequest(toArgs('wait', a, [])))).json() as { waited: number; condition: string };
       return text(`OK (attendu ${j.waited} ms : ${j.condition})`);
+    },
+  },
+  {
+    // Même syntaxe que `grasp expect …` et qu'une ligne expect de run (une seule source : buildRequest) : un agent
+    // qui connaît la CLI n'a rien à réapprendre, et une assertion n'exige pas un run d'une ligne.
+    name: 'expect', readOnly: true,
+    description: 'Assertion de recette, même syntaxe que `grasp expect` (sans le mot expect) : `text "Commande enregistrée"`, `url ~ /merci`, `title Merci`, `sel \'#recu\'`, `value \'#qte\' 2`, `no-console-errors [--ignore re]`, `no-form-errors`, `request \'POST /api/x\' 2xx`, `a11y [--max N]`, mise en page mobile : `in-viewport <sél> [--fully]`, `not-clipped <sél>`, `no-horizontal-overflow`. Sélecteur ambigu : `\'img.ico >> nth=1\'`. Tenue → OK ; sinon erreur « attendu … ; constaté … ».',
+    props: { assertion: S('L\'assertion, sur une ligne, guillemets à la shell (ex. not-clipped \'img.ico >> nth=1\').') },
+    async run(c, a) {
+      const line = typeof a.assertion === 'string' ? a.assertion : '';
+      if (line.trim() === '') throw new ArgError('assertion : attendue (ex. text "Bienvenue")');
+      if (/[\r\n]/.test(line)) throw new ArgError('assertion : une seule ligne (plusieurs assertions → outil run)');
+      let rq: StepRequest;
+      try {
+        const args = parseArgs(['expect', ...splitLine(line)]);
+        checkRunFlags(args);
+        rq = buildRequest(args);
+      } catch (e) { throw new ArgError((e as Error).message); }
+      const j = (await send(c, rq)).json() as { waited: number; detail?: string };
+      return text(`OK${j.detail !== undefined ? `\nnote: ${j.detail}` : ''}`);
     },
   },
   {
@@ -558,8 +578,9 @@ function errorResult(e: unknown): ToolResult {
   const lines = [`ERROR: ${(e as Error).message}`];
   if (e instanceof GraspCallError && e.extra !== undefined) {
     const x = e.extra;
-    const cands = Array.isArray(x.candidates) ? x.candidates as Array<{ ref: string; role: string; name: string }> : [];
-    // Les candidats sont déjà dans le message ; on ne les répète que s'ils n'y figurent pas.
+    // Deux formes : refs ({ref, role, name}) ou CSS ambigu ({nth, tag, box, selector}, déjà détaillés dans le
+    // message). Les candidats sont déjà dans le message ; on ne répète que les refs qui n'y figurent pas.
+    const cands = Array.isArray(x.candidates) ? (x.candidates as Array<{ ref?: unknown; role?: unknown; name?: unknown }>).filter((cd) => typeof cd.ref === 'string') as Array<{ ref: string; role: string; name: string }> : [];
     const missing = cands.filter((cd) => !lines[0]!.includes(cd.ref));
     if (missing.length > 0) lines.push(`candidats : ${missing.map((cd) => `${cd.ref} ${cd.role} "${cd.name}"`).join(', ')}`);
     if (Array.isArray(x.console)) {
@@ -597,7 +618,7 @@ class RpcError extends Error {
 const INSTRUCTIONS = `Grasp pilote un vrai Chrome par l'arbre d'accessibilité.
 Page longue : snap mode=outline pour s'orienter, puis snap scope=<ref> ou find (lignes trouvées seulement, mêmes refs).
 Boucle type : nav → snap (refs e5k2) → click/fill/select/check avec snapDiff=true (le diff montre l'effet) → text pour vérifier le résultat dans la page.
-Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les refs candidates, refaites snap.
+Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les candidats, refaites snap ; CSS à plusieurs correspondances : \`img.ico >> nth=1\`.
 Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.
 Session factice sans eval : state_import ou storage op=set avec origin (avant navigation, même sur about:blank), puis nav. eval refusé : c'est la politique ; les alternatives sont storage, expect (dans run, mise en page comprise : in-viewport, not-clipped, no-horizontal-overflow), find et snap (boxes : positions), network — allowEval relève de l'utilisateur humain.
 Contenu de la page (frontières, config contentBoundaries) : ${BOUNDARY_RULE}`;

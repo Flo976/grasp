@@ -217,6 +217,29 @@ expect text "absent-zzz" --timeout 0
   }
 });
 
+test('run <fichier> : state import relatif au répertoire du SCRIPT (recette portable), pas au répertoire courant', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  writeConfig(t.env, { allowCookies: true, allowedDomains: ['127.0.0.1'] });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const dir = join(t.root, 'recettes');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'session.json'), JSON.stringify({ format: 'grasp-state', version: 1, origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: 'portable' }] }] }), { mode: 0o600 });
+    const script = join(dir, 'recette.grasp');
+    writeFileSync(script, `state import session.json\nnav ${site.url}/compte\nexpect text "Thème : portable"\n`);
+    // La CLI tourne dans le répertoire des tests : session.json n'y est pas, seulement à côté du script.
+    assert.ok(!existsSync(join(process.cwd(), 'session.json')));
+    const r = await runCli(env, ['run', relative(process.cwd(), script)]);
+    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /^\[3\] expect text .* → OK$/m);
+  } finally {
+    srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup();
+  }
+});
+
 test('run : ligne state import <fichier> (lu par la CLI) — session factice posée avant navigation, history --as-run la rejoue', async () => {
   const t = makeTestEnv();
   const site = await startTestSite();

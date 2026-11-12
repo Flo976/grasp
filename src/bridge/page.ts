@@ -164,7 +164,8 @@ export interface StateImportResult {
 }
 
 export interface WaitOptions { text?: string | undefined; sel?: string | undefined; idle?: boolean | undefined; timeout?: number | undefined }
-export interface ExpectResult { ok: true; kind: string; waited: number; detail?: string }
+/** since/seq : fenêtre console examinée par no-console-errors (rapport de run). */
+export interface ExpectResult { ok: true; kind: string; waited: number; detail?: string; since?: number; seq?: number }
 export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel' | 'idle' }
 /**
  * Résultat d'une attente de stabilité (DOM et réseau). `error` : l'attente elle-même a échoué (jamais
@@ -2082,8 +2083,11 @@ export class PageController {
         const got = r.result.value;
         if (r.exceptionDetails === undefined && Array.isArray(got)) got.forEach((b, i) => { of.set(uniq[i]!, boxLabel(b)); });
       }
-      const vp = await this.evalIsolated<{ w: number; h: number }>('(() => { const se = document.scrollingElement || document.documentElement; return { w: se.clientWidth, h: se.clientHeight }; })()');
-      size = ` ; viewport ${vp.w}x${vp.h}`;
+      const vp = await this.evalIsolated<{ w: number; h: number; meta: boolean }>('(() => { const se = document.scrollingElement || document.documentElement; return { w: se.clientWidth, h: se.clientHeight, meta: document.querySelector(\'meta[name="viewport" i]\') !== null }; })()');
+      // « layout » : la zone de mise en page en px CSS, repère des boîtes. Elle diffère du viewport émulé quand la
+      // page n'a pas de <meta name=viewport> en --mobile (980 px) : le même mot ne désigne pas deux nombres.
+      const emu = this.vp !== undefined && (this.vp.width !== vp.w || this.vp.height !== vp.h) ? ` (viewport émulé ${this.vp.width}x${this.vp.height}${this.vp.mobile && !vp.meta && vp.w !== this.vp.width ? ' ; sans <meta name=viewport>, Chrome met en page sur 980 px' : ''})` : '';
+      size = ` ; layout ${vp.w}x${vp.h}${emu}`;
     } catch {
       this.isoCtx = undefined;
       return { of, note: 'boîtes : mesure impossible (page en cours de changement) — relancez' };
@@ -2526,12 +2530,13 @@ export class PageController {
         throw e;
       }
     }
-    const css = sel.startsWith('css:') ? sel.slice(4) : sel;
-    const r = await this.evalIsolated<number>(`((s) => {
-      let els; try { els = document.querySelectorAll(s); } catch { return -1; }
+    const { css, nth } = splitNth(sel.startsWith('css:') ? sel.slice(4) : sel);
+    const r = await this.evalIsolated<number>(`((s, nth) => {
+      let els; try { els = [...document.querySelectorAll(s)]; } catch { return -1; }
+      if (nth !== null) els = nth < els.length ? [els[nth]] : [];
       for (const el of els) if (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0) return 1;
       return els.length > 0 ? 2 : 0;
-    })(${JSON.stringify(css)})`);
+    })(${JSON.stringify(css)}, ${JSON.stringify(nth ?? null)})`);
     if (r === -1) throw badRequest(`sélecteur CSS invalide : ${css}`);
     return r === 1 ? 'ok' : r === 2 ? 'hidden' : 'absent';
   }
@@ -2568,7 +2573,8 @@ export class PageController {
         const items = errs.map(formatEntry);
         throw fail(`${errs.length} erreur(s) depuis #${since} : ${list(items)}`, items.slice(0, 50));
       }
-      return { ok: true, kind: spec.kind, waited: Date.now() - t0, ...(note !== undefined ? { detail: note } : {}) };
+      // since/seq : fenêtre examinée, pour que le rapport de run n'applique ce --ignore qu'à elle.
+      return { ok: true, kind: spec.kind, waited: Date.now() - t0, since, seq: r.seq, ...(note !== undefined ? { detail: note } : {}) };
     }
     if (spec.kind === 'a11y') {
       if (spec.scope !== undefined && parseFrameTarget(spec.scope) !== null) throw badRequest('expect a11y --scope : zone frame=… non prise en charge');
@@ -2966,16 +2972,66 @@ export class PageController {
     throw new GraspError(404, `aucun élément nommé « ${t} »${masked}${near.length > 0 ? ` — noms proches : ${near.map(fmtCandidate).join(', ')}` : ' — vérifiez avec `snap`'}`, { candidates: near });
   }
 
+  /**
+   * `css` désigne-t-il `id` et lui seul ? Simple comptage, sans construire de 409 ni de candidats : appelé pour
+   * chaque sélecteur stable proposé (candidats d'un 409, sélecteur durable de l'historique), il ne doit jamais
+   * relancer resolveCss — un candidat lui-même ambigu ferait reboucler la construction des candidats.
+   */
+  private async uniqueCss(css: string, id: number): Promise<boolean> {
+    try {
+      const { root } = await this.s<{ root: { nodeId: number } }>('DOM.getDocument', { depth: 0 });
+      const { nodeIds } = await this.s<{ nodeIds: number[] }>('DOM.querySelectorAll', { nodeId: root.nodeId, selector: css });
+      if (nodeIds.length !== 1) return false;
+      return (await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { nodeId: nodeIds[0] })).node.backendNodeId === id;
+    } catch { return false; }
+  }
+
+  /**
+   * Sélecteur CSS, éventuellement suivi de ` >> nth=N` (N-ième correspondance, à partir de 0, dans l'ordre du
+   * document — même syntaxe que Playwright). Plusieurs correspondances sans nth → 409 qui liste les candidats
+   * (balise, boîte `@x,y LxH`, sélecteur prêt à l'emploi : un sélecteur stable unique s'il existe, sinon
+   * `… >> nth=N`) : un élément hors de l'arbre d'accessibilité (image alt="") n'a pas de ref à proposer.
+   */
   private async resolveCss(selector: string): Promise<number> {
+    const { css, nth } = splitNth(selector);
     const { root } = await this.s<{ root: { nodeId: number } }>('DOM.getDocument', { depth: 0 });
     let ids: number[];
     try {
-      ({ nodeIds: ids } = await this.s<{ nodeIds: number[] }>('DOM.querySelectorAll', { nodeId: root.nodeId, selector }));
-    } catch { throw badRequest(`sélecteur CSS invalide : ${selector}`); }
-    if (ids.length === 0) throw notFound(`aucun élément ne correspond à ${selector}`);
-    if (ids.length > 1) throw conflict(`${ids.length} éléments correspondent à ${selector} — précisez le sélecteur ou utilisez une ref`);
-    const { node } = await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { nodeId: ids[0] });
-    return node.backendNodeId;
+      ({ nodeIds: ids } = await this.s<{ nodeIds: number[] }>('DOM.querySelectorAll', { nodeId: root.nodeId, selector: css }));
+    } catch { throw badRequest(`sélecteur CSS invalide : ${css}`); }
+    if (ids.length === 0) throw notFound(`aucun élément ne correspond à ${css}`);
+    const backend = async (nodeId: number) => (await this.s<{ node: { backendNodeId: number } }>('DOM.describeNode', { nodeId })).node.backendNodeId;
+    if (nth !== undefined) {
+      if (nth >= ids.length) throw notFound(`${css} >> nth=${nth} : ${ids.length} élément(s) seulement (nth=0 à ${ids.length - 1})`);
+      return backend(ids[nth]!);
+    }
+    if (ids.length > 1) {
+      const shown = ids.slice(0, 5);
+      const lines: string[] = [];
+      const candidates: Array<{ nth: number; tag: string; box: string; selector: string }> = [];
+      // Identifiants backend relevés d'abord : la vérification des sélecteurs stables (resolveCss) rappelle
+      // DOM.getDocument, qui invalide les nodeId de cette requête.
+      const backs: Array<number | undefined> = [];
+      for (const nodeId of shown) backs.push(await backend(nodeId).catch(() => undefined));
+      for (const [i, id] of backs.entries()) {
+        try {
+          if (id === undefined) throw new Error('nœud disparu');
+          const d = await this.callIsolated<{ tag: string; box: number[] | null }>(id, CANDIDATE_FN);
+          let pick = `${css} >> nth=${i}`;
+          const stable = await this.callIsolated<string[]>(id, STABLE_CSS_FN).catch(() => [] as string[]);
+          for (const c of Array.isArray(stable) ? stable : []) {
+            // Borné (texte de la page : aria-label, data-testid…) ; au-delà, le nth suffit.
+            if (c === css || c.length > 80) continue;
+            if (await this.uniqueCss(c, id)) { pick = c; break; }
+          }
+          const box = boxLabel(d.box);
+          candidates.push({ nth: i, tag: d.tag, box, selector: pick });
+          lines.push(`nth=${i} ${d.tag} ${box} → ${pick}`);
+        } catch { lines.push(`nth=${i} (illisible)`); }
+      }
+      throw new GraspError(409, `${ids.length} éléments correspondent à ${css} : ${lines.join(' ; ')}${ids.length > 5 ? ` ; … et ${ids.length - 5} autre(s)` : ''} — choisissez un de ces sélecteurs, ou ajoutez \` >> nth=N\` (à partir de 0)`, { candidates });
+    }
+    return backend(ids[0]!);
   }
 
   /**
@@ -3014,7 +3070,7 @@ export class PageController {
     }
     const cands = await this.callIsolated<string[]>(id, STABLE_CSS_FN).catch(() => [] as string[]);
     for (const c of Array.isArray(cands) ? cands : []) {
-      try { if (await this.resolveCss(c) === id) return { ...base, durable: c, how: 'css', note }; } catch { /* non unique ou invalide : suivant */ }
+      if (await this.uniqueCss(c, id)) return { ...base, durable: c, how: 'css', note };
     }
     return { ...base, note: `${note}, aucun sélecteur CSS unique` };
   }
@@ -4299,6 +4355,27 @@ const SECRET_FIELD_FN = `function () {
  * série, hexadécimal, :r1: de React…) n'est pas durable ; le chemin positionnel (nth-of-type) part de l'ancêtre
  * identifié le plus proche, en dernier recours.
  */
+/**
+ * ` >> nth=N` en fin de sélecteur CSS : N-ième correspondance (0 = la première), ordre du document. Syntaxe de
+ * Playwright, choisie pour être reconnue d'un agent ; le reste est le sélecteur CSS tel quel.
+ */
+export function splitNth(sel: string): { css: string; nth?: number } {
+  const m = /^([\s\S]*?)\s*>>\s*nth=(\d+)\s*$/.exec(sel);
+  if (m === null) return { css: sel };
+  if (m[1]!.trim() === '') throw badRequest(`« ${sel} » : sélecteur CSS attendu avant >> nth=N`);
+  return { css: m[1]!.trim(), nth: Number(m[2]) };
+}
+
+/** Candidat d'un sélecteur ambigu : balise courte (tag#id.classe) et boîte dans le document. */
+const CANDIDATE_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el) return { tag: '?', box: null };
+  const cls = typeof el.className === 'string' ? el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
+  const tag = el.nodeName.toLowerCase() + (el.id ? '#' + el.id : '') + cls.map((c) => '.' + c).join('');
+  const r = el.getBoundingClientRect();
+  return { tag: tag.length > 60 ? tag.slice(0, 60) + '…' : tag, box: r.width === 0 && r.height === 0 && el.getClientRects().length === 0 ? null : [r.left + scrollX, r.top + scrollY, r.width, r.height] };
+}`;
+
 const STABLE_CSS_FN = `function () {
   const el = this.nodeType === 1 ? this : this.parentElement;
   if (!el) return [];

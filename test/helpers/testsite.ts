@@ -1054,6 +1054,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/cible-ssrf') { res.end('<!doctype html><title>Cible SSRF</title><p>service interne</p>'); return; }
     if (u.pathname === '/link-out') { res.end('<!doctype html><title>Liens</title><a href="http://example.com/">Externe</a>'); return; }
     if (u.pathname === '/capture') { res.end(CAPTURE_PAGE); return; }
+    // Sélecteur ambigu sans ref : trois icônes alt="" (hors arbre d'accessibilité), la deuxième rognée par sa carte.
+    if (u.pathname === '/icones') { res.end('<!doctype html><meta name="viewport" content="width=device-width"><title>Icônes</title><style>.carte{width:100px;overflow:hidden;margin:8px} img.ico{width:24px;height:24px;display:block} #c2 img{margin-left:90px}</style><div class="carte" id="c1"><img class="ico" alt="" src="/carre.svg"></div><div class="carte" id="c2"><img class="ico" alt="" src="/carre.svg"></div><div class="carte"><img class="ico" alt="" src="/carre.svg"></div><p><a href="/p" aria-label="Aide">?</a> <a href="/p" aria-label="Aide">?</a></p>'); return; }
     if (u.pathname === '/mise-en-page') { res.end(miseEnPage({ propre: u.searchParams.has('propre'), masque: u.searchParams.has('masque'), tardif: u.searchParams.has('tardif') })); return; }
     if (u.pathname === '/geometrie') { res.end(geometrie({ ombre: u.searchParams.has('ombre'), mobile: u.searchParams.has('mobile') })); return; }
     if (u.pathname === '/carre.svg') { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#36c"/></svg>'); return; }

@@ -134,6 +134,40 @@ expect title Merci --timeout 0
   assert.match(r.stderr, /ERROR: run: 2 étapes en échec : 4, 5/);
 });
 
+test('rapport : les entrées écartées par expect no-console-errors --ignore ne sont pas recomptées dans le résumé', async () => {
+  const r = await run(`nav ${site.url}/boutique
+fill '#qte' 13
+click text:Commander
+expect text "Erreur serveur"
+expect no-console-errors --ignore commande
+`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^console : aucune erreur pendant le run$/m, r.stdout);
+  assert.match(r.stdout, /^requêtes en échec : aucune$/m);
+  assert.match(r.stdout, /^  2 entrées ignorées \(--ignore de l'étape \[5\]\) — non comptées ci-dessus/m);
+  const j = JSON.parse((await run(`nav ${site.url}/boutique
+fill '#qte' 13
+click text:Commander
+expect text "Erreur serveur"
+expect no-console-errors --ignore commande
+`, ['--json'])).stdout) as RunResult;
+  const c = j.report!.console as { errors: unknown[]; requests: unknown[]; ignored?: number; ignoredBy?: number[] };
+  assert.deepEqual([c.errors.length, c.requests.length, c.ignored, c.ignoredBy], [0, 0, 2, [5]]);
+  // Le --ignore ne vaut que pour la fenêtre examinée par son étape : une erreur produite APRÈS reste comptée.
+  const apres = await run(`nav ${site.url}/boutique
+fill '#qte' 13
+click text:Commander
+expect text "Erreur serveur"
+expect no-console-errors --ignore commande
+click text:Commander
+expect text "Erreur serveur"
+`);
+  assert.equal(apres.code, 0, apres.stderr);
+  assert.match(apres.stdout, /^console : 1 erreur pendant le run$/m, apres.stdout);
+  assert.match(apres.stdout, /^requêtes en échec : 1$/m);
+  assert.match(apres.stdout, /^  2 entrées ignorées \(--ignore de l'étape \[5\]\)/m);
+});
+
 test('rapport : --report sans expect, --no-report avec, --json structuré', async () => {
   const sans = await run(`nav ${site.url}/boutique\nexpect title Boutique\n`, ['--no-report']);
   assert.equal(sans.code, 0);

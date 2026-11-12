@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
-import { join, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkSocketFallbackDir, fallbackSocketBase, resolvePaths, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
@@ -233,12 +233,14 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   // files : la CLI écrit elle-même les captures de `screenshot -o` (chemins relatifs, sous --out-dir ou le répertoire courant).
   // Répertoire et chemins vérifiés AVANT l'envoi : rien ne s'exécute si une capture ne pourra pas être écrite.
   const dir = resolvePath(outDir ?? '.');
-  // state import <fichier> : lus ici (relatifs au répertoire courant, ~/ développé), envoyés avec le script ;
-  // illisible, ou corps au-delà de la limite du serveur = rien n'est exécuté.
+  // state import <fichier> : lus ici, envoyés avec le script ; chemin relatif au RÉPERTOIRE DU SCRIPT quand run lit
+  // un fichier (un script de recette reste portable : `grasp run recettes/a.grasp` depuis n'importe où), au
+  // répertoire courant pour un script sur stdin ; ~/ développé. Illisible, ou corps au-delà de la limite du
+  // serveur = rien n'est exécuté.
   let body: Record<string, unknown>;
   try {
     checkRunOut(script, dir);
-    const imports = readRunImports(script);
+    const imports = readRunImports(script, file === undefined || file === '-' ? process.cwd() : dirname(resolvePath(file)));
     // --out-dir explicite : les captures d'échec (--shot-on-error, rapport) reviennent aussi au client, écrites sous --out-dir.
     body = { script, files: true, ...(outDir !== undefined ? { clientShots: true } : {}), ...(Object.keys(imports).length > 0 ? { imports } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report };
     checkRunBody(body);
@@ -846,7 +848,7 @@ Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N] [-
                refs identiques au snapshot complet ; dernière ligne « … lecture partielle (--mode) : N lignes sur M »
                --boxes : chaque ligne à ref suivie de sa boîte « @x,y LxH » (px CSS arrondis, coin haut-gauche dans le
                document, défilement compris ; élément fixe : dans le viewport, suivi de « fixe » ; « @aucune-boîte » si
-               non rendu), viewport rappelé sous l'en-tête ; aussi sur find
+               non rendu), zone de mise en page rappelée sous l'en-tête (« layout LxH », 980 px de large en --mobile sans meta viewport) ; aussi sur find
              find <texte|/regex/> [--role r[,r2]] [--max N (30)] [--scope <sél>] [--boxes]   lignes du snapshot qui correspondent
                (nom entier, valeur, texte ; sans casse ni accents ; options des listes fermées comprises), avec leur
                conteneur « (dans eXX:row "…") » ; --role text = texte brut ; refs identiques au snapshot complet
@@ -968,7 +970,7 @@ Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép
                click fill select check press hover type wait expect eval console network screenshot cookies storage
                state upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
                screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
-               state import <fichier> : LU par la CLI avant l'envoi (relatif au répertoire courant, pas à --out-dir, ~/ développé,
+               state import <fichier> : LU par la CLI avant l'envoi (relatif au répertoire du script, au répertoire courant sur stdin ; pas à --out-dir ; ~/ développé ;
                pas de $VAR ni de -), mêmes garde-fous qu'en commande isolée (allowCookies, allowlist) ;
                state export : commande isolée ;
                avec --out-dir, les captures d'échec (--shot-on-error, rapport) y vont aussi (echec-etape-<n>.png),

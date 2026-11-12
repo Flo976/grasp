@@ -149,7 +149,7 @@ Répétez 3 et 4. Champ invalide : \`[invalide: message]\` dans le snapshot et l
 
 ${SELECTORS.map((s) => `- ${s.form} \`${s.example}\` : ${s.description}`).join('\n')}
 
-Ambigu ou ref remplacée → erreur 409 avec les refs candidates (jamais de choix arbitraire) : refaites \`snap\`.
+Ambigu ou ref remplacée → erreur 409 avec les candidats (jamais de choix arbitraire) : refaites \`snap\`, ou \`>> nth=N\` pour un CSS.
 Ref d'une page précédente → 404 : refaites \`snap\`.
 
 ## Économiser les tokens
@@ -199,7 +199,7 @@ Script analysé en entier avant exécution (option inconnue = refus), arrêt au 
 rapport de recette d'office avec un \`expect\` (étapes, erreurs console, requêtes 4xx/5xx, formulaire, capture à chaque échec).
 Commandes de run : ${RUN_COMMANDS.join(', ')}.
 Session factice sans eval (allowCookies), avant le premier \`nav\` : \`state import session.json\` (lu par la CLI,
-relatif au répertoire courant, \`~/\` développé) ou \`storage set local <clé> <valeur> --origin <url>\`.
+relatif au répertoire du script — au répertoire courant sur stdin —, \`~/\` développé) ou \`storage set local <clé> <valeur> --origin <url>\`.
 
 ${expect.map((s) => `- \`${s.usage}\` : ${s.summary}`).join('\n')}
 

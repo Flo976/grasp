@@ -56,14 +56,14 @@ test('mise en page mobile : expect in-viewport, not-clipped, no-horizontal-overf
     // Élément non rendu, absent, ambigu.
     await ko(['expect', 'not-clipped', '#cache', '--timeout', '0'], /constaté : aucune boîte : élément non rendu/);
     await ko(['expect', 'in-viewport', '#absent', '--timeout', '0'], /constaté : aucun élément ne correspond à #absent$/m);
-    await ko(['expect', 'in-viewport', 'td', '--timeout', '0'], /2 éléments correspondent à td — précisez le sélecteur/);
+    await ko(['expect', 'in-viewport', 'td', '--timeout', '0'], /2 éléments correspondent à td : nth=0 td @\d+,\d+ \d+x\d+ → .* ; nth=1 td .* — choisissez un de ces sélecteurs, ou ajoutez ` >> nth=N`/);
     // Syntaxe refusée avant tout appel.
     await ko(['expect', 'not-clipped', '#photo', '--fully'], /--fully ne s'applique pas à expect not-clipped/);
     await ko(['text', '--boxes'], /--boxes ne s'applique qu'à snap et find/);
 
     // --boxes : position et taille par ligne à ref ; la ref sert ensuite d'expect (même résolution que les actions).
     const find = (await ok(['find', 'Valider', '--boxes'])).stdout;
-    assert.match(find, /^boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document \(défilement compris\) ; viewport 360x800$/m);
+    assert.match(find, /^boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document \(défilement compris\) ; layout 360x800$/m);
     const line = /^(e[0-9a-z]+):button "Valider" @20,\d+ 200x40$/m.exec(find);
     assert.ok(line !== null, find);
     const snap = (await ok(['snap', '--interactive', '--boxes'])).stdout;
@@ -117,6 +117,23 @@ test('mise en page mobile : expect in-viewport, not-clipped, no-horizontal-overf
       const r = await rpc('tools/call', { name: 'run', arguments: { script: 'expect no-horizontal-overflow --timeout 0', report: false } });
       assert.equal(r.result.isError, true);
       assert.match(r.result.content[0].text, /attendu aucun débordement horizontal de la page ; constaté : largeur du document 520 px > viewport 360 px/);
+      // Outil expect : la syntaxe CLI telle quelle, sans run d'une ligne.
+      const e1 = await rpc('tools/call', { name: 'expect', arguments: { assertion: "in-viewport '#valider'" } });
+      assert.equal(e1.result.isError, undefined, JSON.stringify(e1));
+      assert.match(e1.result.content[0].text, /^OK/);
+      const e2 = await rpc('tools/call', { name: 'expect', arguments: { assertion: "not-clipped '#photo' --timeout 0" } });
+      assert.equal(e2.result.isError, true);
+      assert.match(e2.result.content[0].text, /rogné par div\.carte .*100 px à droite/);
+      const e3 = await rpc('tools/call', { name: 'expect', arguments: { assertion: "text a\ntext b" } });
+      assert.equal(e3.result.isError, true);
+      assert.match(e3.result.content[0].text, /une seule ligne/);
+      const e4 = await rpc('tools/call', { name: 'expect', arguments: { assertion: 'text x --frobnicate' } });
+      assert.equal(e4.result.isError, true);
+      // CSS ambigu par MCP : les candidats du message, sans ligne « candidats : undefined … ».
+      const e5 = await rpc('tools/call', { name: 'expect', arguments: { assertion: 'in-viewport td --timeout 0' } });
+      assert.equal(e5.result.isError, true);
+      assert.match(e5.result.content[0].text, /2 éléments correspondent à td : nth=0 td @/);
+      assert.doesNotMatch(e5.result.content[0].text, /undefined/);
     } finally { mcp.stdin.end(); await waitExit(mcp); }
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });

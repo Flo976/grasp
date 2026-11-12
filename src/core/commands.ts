@@ -206,7 +206,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'press', group: 'Actions', usage: 'press <touche> [sél]', summary: 'touche (Enter, Tab, Escape, ArrowDown, Control+a…)', options: ACTION, run: true, mcp: 'press' },
   { name: 'hover', group: 'Actions', usage: 'hover <sél>', summary: 'survol (menus, infobulles)', options: ACTION, run: true, mcp: 'hover' },
   // Recette et scripts
-  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'fully', 'shot-on-error'], run: true,
+  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'fully', 'shot-on-error'], run: true, mcp: 'expect',
     subcommands: EXPECT_KINDS.map((k) => ({ name: k, usage: EXPECT_USAGE[k], summary: EXPECT_SUMMARY[k], options: [...EXPECT_FLAGS[k], 'shot-on-error'] })) },
   { name: 'run', group: 'Recette', usage: 'run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép]', summary: 'plusieurs commandes en UN aller-retour, une par ligne', options: ['continue', 'report', 'no-report', 'out-dir'], mcp: 'run' },
   { name: 'history', group: 'Recette', usage: 'history [--since <seq>] [--limit N] [--clear] | history --as-run [--expect] [--since <seq>] [-o fichier]', summary: 'commandes de la session ; --as-run : script grasp run rejouable', options: ['since', 'limit', 'clear', 'as-run', 'expect'], cliOptions: ['output'], mcp: 'history' },
@@ -217,7 +217,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'cookies', group: 'Sensibles', usage: 'cookies', summary: 'cookies de la session', options: [], run: true, disabledByDefault: 'allowCookies' },
   { name: 'storage', group: 'Sensibles', usage: 'storage get|rm local|session <clé> | set local|session <clé> <valeur|-> [--origin <url>]', summary: 'stockage Web de l\'origine affichée ou de --origin (même avant chargement), sans eval', options: ['origin'], run: true, mcp: 'storage', disabledByDefault: 'allowCookies',
     subcommands: [
-      { name: 'get', usage: 'storage get local|session <clé> [--origin <url>]', summary: 'valeur sur stdout (clé absente : code 1)', options: ['origin'] },
+      { name: 'get', usage: 'storage get local|session <clé> [--origin <url>]', summary: 'valeur ACTUELLE sur stdout (clé absente : code 1 — une app peut retirer un jeton importé après l\'avoir lu : vérifiez la session par la page)', options: ['origin'] },
       { name: 'set', usage: 'storage set local|session <clé> <valeur|-> [--origin <url>]', summary: 'écrit (- : valeur lue sur stdin) ; --origin : avant tout chargement de cette origine', options: ['origin'] },
       { name: 'rm', usage: 'storage rm local|session <clé> [--origin <url>]', summary: 'supprime la clé', options: ['origin'] },
     ] },
@@ -225,7 +225,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON (run : state import <fichier>)', options: [], run: true, mcp: 'state_import', disabledByDefault: 'allowCookies',
     subcommands: [
       { name: 'export', usage: 'state export [fichier|-] [--origin http://hôte:port,…]', summary: 'exporte (fichier 0600 ; sans fichier : chemin sur stdout) ; commande isolée, pas dans run', options: ['origin'] },
-      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire courant, ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
+      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire du script (courant sur stdin), ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
     ] },
   // Configuration
   { name: 'security', group: 'Configuration', usage: 'security', summary: 'politique telle que le garde l\'applique', options: [] },
@@ -252,6 +252,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 export const SELECTORS: ReadonlyArray<{ form: string; example: string; description: string }> = [
   { form: 'ref', example: 'e5k2', description: 'issue de snap ; stable (hash du rôle, du nom et du rang), à préférer' },
   { form: 'css', example: '#email', description: 'sélecteur CSS (préfixe css: facultatif)' },
+  { form: 'nth', example: "img.ico >> nth=1", description: 'N-ième correspondance d\'un CSS (0 = la première)' },
   { form: 'text', example: 'text:Valider', description: 'nom accessible : égal d\'abord, puis sans casse, puis contenu dans un contrôle' },
   { form: 'frame', example: "frame=#editeur >> text:Gras", description: 'élément dans une iframe, même d\'une autre origine (moteur Playwright, pas de ref)' },
 ];

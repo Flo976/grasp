@@ -3,6 +3,7 @@ import { formatEntries, formatEntry, type ConsoleEntry } from '../core/console.j
 import { wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { buildRequest, checkRunFlags, MAX_RUN_SHOT_FILES, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 import { renderViewport } from '../core/viewport.js';
+import { compileRegex } from '../core/expect.js';
 import { formatNetEntries, networkLosses, type NetEntry } from '../core/network.js';
 import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 
@@ -49,7 +50,11 @@ export interface RunReport {
   steps: Array<{ n: number; line: number; text: string; ok: boolean; ms: number; error?: string; screenshot?: string }>;
   notRun: Array<{ n: number; line: number; text: string }>;
   /** Entrées de niveau error depuis le début du run : console/exceptions/CSP d'un côté, requêtes de l'autre. */
-  console: { since: number; errors: ConsoleEntry[]; requests: ConsoleEntry[]; omitted: number; note?: string; boundary?: BoundaryTag } | { unavailable: string };
+  /**
+   * `ignored` : entrées écartées par le `--ignore` d'une étape `expect no-console-errors` exécutée du run (le
+   * résumé compte ce que la recette compte) ; `ignoredBy` : numéros de ces étapes.
+   */
+  console: { since: number; errors: ConsoleEntry[]; requests: ConsoleEntry[]; omitted: number; ignored?: number; ignoredBy?: number[]; note?: string; boundary?: BoundaryTag } | { unavailable: string };
   /** Champs invalides et alertes de la page finale (lignes de snapshot). */
   forms: { items: string[]; boundary?: BoundaryTag } | { unavailable: string };
   page?: { url: string; title: string; boundary?: BoundaryTag };
@@ -239,9 +244,33 @@ async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: Ste
         note = 'tampon console recréé pendant le run (bascule de profil) : relu depuis son début';
         c = await read(0);
       }
-      const errs = c.entries.filter((x) => x.source !== 'navigation' && x.level === 'error');
+      const all = c.entries.filter((x) => x.source !== 'navigation' && x.level === 'error');
+      // Mêmes exclusions que la recette : le --ignore des étapes `expect no-console-errors` exécutées (même règle
+      // que le bridge : texte ou URL de l'entrée). Sans cela, le résumé annonçait des erreurs que l'étape, OK,
+      // avait volontairement écartées.
+      // Chaque --ignore ne vaut que pour la FENÊTRE que son étape a examinée (since exclu, seq inclus, renvoyés par
+      // le bridge) : une erreur d'avant ou d'après l'étape, que la recette n'a jamais jugée, reste comptée.
+      const ignores: Array<{ n: number; re: RegExp; since: number; seq: number }> = [];
+      for (const st of r.steps) {
+        const b = steps[st.n - 1]?.rq.body;
+        const res = st.result as { kind?: unknown; since?: unknown; seq?: unknown } | undefined;
+        if (!st.ok || st.cmd !== 'expect' || b?.kind !== 'no-console-errors' || typeof b.ignore !== 'string') continue;
+        if (typeof res?.since !== 'number' || typeof res.seq !== 'number') continue;
+        try { ignores.push({ n: st.n, re: compileRegex(b.ignore), since: res.since, seq: res.seq }); } catch { /* refusée à l'étape même */ }
+      }
+      const by = new Set<number>();
+      const isIgnored = (x: ConsoleEntry) => {
+        let hit = false;
+        for (const g of ignores) {
+          if (x.seq <= g.since || x.seq > g.seq) continue;
+          if (g.re.test(x.text) || (x.url !== undefined && g.re.test(x.url))) { by.add(g.n); hit = true; }
+        }
+        return hit;
+      };
+      const errs = all.filter((x) => !isIgnored(x));
+      const ignored = all.length - errs.length;
       const isReq = (x: ConsoleEntry) => x.source === 'network' || x.source === 'grasp';
-      con = { since, errors: errs.filter((x) => !isReq(x)), requests: errs.filter(isReq), omitted: c.omitted, ...(note !== undefined ? { note } : {}), ...(c.boundary !== undefined ? { boundary: c.boundary } : {}) };
+      con = { since, errors: errs.filter((x) => !isReq(x)), requests: errs.filter(isReq), omitted: c.omitted, ...(ignored > 0 ? { ignored, ignoredBy: [...by].sort((a, b) => a - b) } : {}), ...(note !== undefined ? { note } : {}), ...(c.boundary !== undefined ? { boundary: c.boundary } : {}) };
     } catch (e) { con = { unavailable: errMsg(e) }; }
   }
   let forms: RunReport['forms'];
@@ -288,6 +317,7 @@ export function formatReport(rep: RunReport): string {
     L.push(c.requests.length === 0 ? 'requêtes en échec : aucune' : `requêtes en échec : ${c.requests.length}`);
     if (c.requests.length > 0) L.push(wrapTagged(c.requests.slice(0, 20).map((e) => `  ${formatEntry(e)}`).join('\n'), c.boundary, 'console'));
     if (c.requests.length > 20) L.push(`  … et ${c.requests.length - 20} autre(s)`);
+    if (c.ignored !== undefined && c.ignored > 0) L.push(`  ${plural(c.ignored, 'entrée ignorée', 'entrées ignorées')} (--ignore de ${(c.ignoredBy !== undefined ? c.ignoredBy : []).length > 1 ? 'les étapes' : 'l\'étape'} ${(c.ignoredBy !== undefined ? c.ignoredBy : []).map((n) => `[${n}]`).join(', ')}) — non comptée${c.ignored > 1 ? 's' : ''} ci-dessus ; grasp console --level error pour les voir`);
     if (c.omitted > 0) L.push(`  AVERTISSEMENT : ${c.omitted} entrée(s) plus ancienne(s) non lue(s) (200 au plus) — grasp console --since ${c.since} --level error --limit 1000`);
     if (c.note !== undefined) L.push(`  note: ${c.note}`);
   }
