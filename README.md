@@ -715,6 +715,12 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   refusées. 20 captures nommées au plus par run (chaque image transite en base64 dans la réponse) ; la sortie,
   `--json` comprise, ne contient que le chemin écrit. Via l'API HTTP ou MCP (qui n'écrivent pas de fichier côté
   client), une ligne `screenshot -o` est refusée : le serveur n'écrit jamais là où un script le demande.
+  **Vérifié avant l'envoi** : la CLI crée `--out-dir` et contrôle chaque chemin (ancêtre existant qui est un
+  répertoire inscriptible, liens qui sortent, cible qui serait un répertoire) **sans rien écrire** ; au moindre
+  problème, `ERROR: run: ligne 3 : screenshot -o … : … — aucune commande exécutée`, code 1, aucune étape partie.
+  Reste l'échec tardif (répertoire supprimé ou disque plein pendant le run) : l'étape de capture passe en
+  `ERROR: capture non écrite : …` et le run en échec, mais les étapes suivantes **ont déjà été exécutées**
+  (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique

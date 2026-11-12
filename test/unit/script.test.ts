@@ -126,3 +126,57 @@ test('writeUnder (screenshot -o dans run) : sous le répertoire de sortie seulem
     assert.equal(lstatSync(join(out, 'piege.png')).isSymbolicLink(), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('checkRunOut : --out-dir et chemins de screenshot -o vérifiés AVANT le run, sans rien écrire', async () => {
+  const { checkRunOut } = await import('../../src/cli/runfiles.js');
+  const { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'grasp-out-'));
+  try {
+    const out = join(root, 'out');
+    // Répertoire de sortie créé (comme avant), sous-répertoires des captures NON créés.
+    checkRunOut('nav /\nscreenshot -o captures/a.png\n', out);
+    assert.deepEqual(readdirSync(out), []);
+    // --out-dir sous un fichier.
+    writeFileSync(join(root, 'f'), 'x');
+    assert.throws(() => checkRunOut('screenshot -o a.png\n', join(root, 'f', 'sub')), /--out-dir .*f\/sub/);
+    // Capture sous un fichier, sur un répertoire, ou par un lien qui sort : ligne citée.
+    writeFileSync(join(out, 'g'), 'x');
+    assert.throws(() => checkRunOut('nav /\nscreenshot -o g/a.png\n', out), /ligne 2 : screenshot -o g\/a\.png : .*n'est pas un répertoire/);
+    mkdirSync(join(out, 'rep'));
+    assert.throws(() => checkRunOut('screenshot -o rep\n', out), /ligne 1 : .*est un répertoire/);
+    const dehors = join(root, 'dehors');
+    mkdirSync(dehors);
+    symlinkSync(dehors, join(out, 'fuite'));
+    assert.throws(() => checkRunOut('screenshot -o fuite/x.png\n', out), /lien symbolique/);
+    assert.equal(existsSync(join(out, 'captures')), false);
+    // Script invalide : pas de vérification locale, le serveur rendra l'erreur d'analyse.
+    checkRunOut('cliq e1\n', out);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('writeRunShots : échec d\'écriture tardif → étape KO dans le résultat, jamais une exception qui jette le run', async () => {
+  const { writeRunShots } = await import('../../src/cli/runfiles.js');
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'grasp-out-'));
+  try {
+    writeFileSync(join(root, 'f'), 'x');
+    const r = {
+      ok: true, total: 2, executed: 2,
+      steps: [
+        { n: 1, line: 1, text: 'screenshot -o a.png', cmd: 'screenshot', ok: true, result: { saveAs: 'a.png', data: Buffer.from('img').toString('base64') } },
+        { n: 2, line: 2, text: 'snap', cmd: 'snap', ok: true, output: 'x' },
+      ],
+    } as unknown as Parameters<typeof writeRunShots>[0];
+    // Répertoire de sortie devenu inutilisable entre la vérification et l'écriture.
+    assert.doesNotThrow(() => writeRunShots(r, join(root, 'f', 'sub')));
+    assert.equal(r.ok, false);
+    assert.equal(r.steps[0]!.ok, false);
+    assert.match(r.steps[0]!.error!, /capture non écrite/);
+    assert.equal((r.steps[0]!.result as { data?: string }).data, undefined, 'jamais le base64 en sortie');
+    assert.equal(r.steps[1]!.ok, true, 'les autres étapes restent rendues telles quelles');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

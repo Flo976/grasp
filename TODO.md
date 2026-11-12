@@ -149,6 +149,9 @@ Image Docker
       vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
 - [x] **`screenshot -o <fichier>` dans `grasp run`** : chemin relatif sans `..`, image renvoyée au client et
       écrite par la CLI sous `--out-dir` (0600, liens qui sortent refusés) ; 20 par run ; refusé via HTTP/MCP.
+- [x] **`grasp run --out-dir` vérifié avant le run** : répertoire et chemins de `screenshot -o` contrôlés par la
+      CLI avant l'envoi (aucune étape exécutée sinon) ; un échec d'écriture tardif marque l'étape KO sans jeter
+      le résultat du run.
 - [x] **`console --level error`** remonte aussi les événements de navigation : les repères (niveau info) suivent
       désormais le filtre ; `--level error|warn` ne les rend plus.
 - [x] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé) : `urlBase` (schéma,

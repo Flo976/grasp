@@ -167,6 +167,28 @@ screenshot --el h1 -o titre.jpg
   assert.match(api.json().error, /screenshot -o n'est disponible que depuis la CLI/);
 });
 
+test('run : --out-dir ou chemin de screenshot -o inutilisable → refus AVANT le run, aucune étape exécutée (pas de clic après une étape KO)', async () => {
+  assert.equal((await runCli(env, ['nav', `${site.url}/sonde`])).code, 0);
+  const fichier = join(t.root, 'pasunrep');
+  writeFileSync(fichier, 'x');
+  const script = `screenshot -o a.png\nclick '#compter'\n`;
+  // --out-dir sous un fichier : avant correction, le run s'exécutait (clic compris) puis la CLI jetait le résultat.
+  const r = await runCli(env, ['run', '--out-dir', join(fichier, 'sub')], script);
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '', 'rien exécuté');
+  assert.match(r.stderr, /^ERROR: run: --out-dir .*pasunrep\/sub : .*aucune commande exécutée/m);
+  // Chemin de capture qui passe sous un fichier : même refus avant le run, ligne citée.
+  const outDir = join(t.root, 'sortie-ko');
+  mkdirSync(outDir);
+  writeFileSync(join(outDir, 'f'), 'x');
+  const r2 = await runCli(env, ['run', '--out-dir', outDir], `screenshot -o f/a.png\nclick '#compter'\n`);
+  assert.equal(r2.code, 1);
+  assert.equal(r2.stdout, '', 'rien exécuté');
+  assert.match(r2.stderr, /ligne 1 : screenshot -o f\/a\.png : .*aucune commande exécutée/);
+  const txt = await runCli(env, ['text']);
+  assert.match(txt.stdout, /Compte : 0/, 'le clic de la 2e ligne n\'est jamais parti');
+});
+
 test('run : client déconnecté (Ctrl-C, délai de l\'agent) → les étapes restantes ne sont PAS exécutées, et le journal dit où le run s\'est arrêté', async () => {
   assert.equal((await runCli(env, ['nav', `${site.url}/sonde`])).code, 0);
   // --continue : sans l'arrêt sur déconnexion, le clic partirait même après l'échec de l'attente.

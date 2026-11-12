@@ -16,7 +16,7 @@ import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { writeRunShots } from './runfiles.js';
+import { checkRunOut, writeRunShots } from './runfiles.js';
 import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
 
 /**
@@ -208,8 +208,11 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   // Rapport : --report, --no-report, sinon décidé par le serveur (oui dès qu'une ligne est un expect).
   const report = a.flags.has('report') ? { report: true } : a.flags.has('no-report') ? { report: false } : {};
   // files : la CLI écrit elle-même les captures de `screenshot -o` (chemins relatifs, sous --out-dir ou le répertoire courant).
+  // Répertoire et chemins vérifiés AVANT l'envoi : rien ne s'exécute si une capture ne pourra pas être écrite.
+  const dir = resolvePath(outDir ?? '.');
+  try { checkRunOut(script, dir); } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
   const r = (await c.call('POST', '/run', { script, files: true, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
-  try { writeRunShots(r, resolvePath(outDir ?? '.')); } catch (e) { throw new CliError(`--out-dir ${outDir ?? '.'} : ${(e as Error).message}`); }
+  writeRunShots(r, dir);
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
     out(`[${st.n}] ${st.text} → ${st.ok ? 'OK' : `ERROR: ${st.error ?? 'échec'}`}`);
