@@ -1650,7 +1650,7 @@ export class PageController {
     for (const n of nodes) {
       if (n.role?.value !== 'StaticText' || n.backendDOMNodeId === undefined) continue;
       const src = bySeen.get((typeof n.name?.value === 'string' ? n.name.value : '').replace(/\s+/g, ' ').trim());
-      if (src !== undefined) out.set(n.backendDOMNodeId, src);
+      if (src !== undefined) out.set(n.backendDOMNodeId, this.secretRedactor.redact(src));
     }
     return out;
   }
@@ -1970,6 +1970,12 @@ export class PageController {
   }
 
   private async hasText(t: string): Promise<'ok' | 'absent'> {
+    if (this.secretRedactor.size > 0) {
+      // Secret saisi dans la session : comparaison sur le texte masqué (pas d'oracle sur une valeur recopiée).
+      const n = (s: string) => s.replace(/\s+/g, ' ');
+      const body = await this.evalIsolated<string>('document.body ? document.body.innerText : ""');
+      return n(this.secretRedactor.redact(body ?? '')).includes(n(t)) ? 'ok' : 'absent';
+    }
     const found = await this.evalIsolated<boolean>(`((t) => { const n = (s) => s.replace(/\\s+/g, ' '); return !!document.body && n(document.body.innerText).includes(n(t)); })(${JSON.stringify(t)})`);
     return found ? 'ok' : 'absent';
   }
@@ -2062,14 +2068,15 @@ export class PageController {
       case 'text': case 'no-text': {
         const zone = spec.scope !== undefined ? 'de la zone' : 'de la page';
         const raw = spec.scope !== undefined ? await this.text(EXPECT_TEXT_MAX, spec.scope) : await this.evalIsolated<string>(`document.body ? document.body.innerText.slice(0, ${EXPECT_TEXT_MAX}) : ''`);
-        const t = normSpace(raw);
+        // Comparé sur le texte MASQUÉ : sinon `--regex '^préfixe'` servirait d'oracle sur un secret recopié.
+        const t = normSpace(this.secretRedactor.redact(raw));
         const f = findText(t, spec);
         if (spec.kind === 'text') return { ok: f.index >= 0, observed: t === '' ? `aucun texte visible ${zone === 'de la zone' ? 'dans la zone' : 'dans la page'}` : `absent ; texte ${zone} : ${excerpt(t)}` };
         return { ok: f.index < 0, observed: `présent : ${around(t, f.index, f.length)}` };
       }
       case 'url': case 'title': {
         const loc = await this.location();
-        const v = spec.kind === 'url' ? loc.url : loc.title;
+        const v = this.secretRedactor.redact(spec.kind === 'url' ? loc.url : loc.title);
         return { ok: matchValue(v, spec), observed: short(v) };
       }
       case 'sel': case 'no-sel': {
@@ -2083,7 +2090,11 @@ export class PageController {
           if (e instanceof GraspError && e.status === 404) return { ok: false, observed: e.message };
           throw e;
         }
-        const v = await this.callIsolated<string>(id, VALUE_FN);
+        const raw = await this.callIsolated<string>(id, VALUE_FN);
+        // Champ marqué (fill … secret:NOM) : seule sa forme masquée est comparée, `secret:NOM` (même valeur
+        // reformatée ou tronquée par la page) ; sinon ~ et --regex reconstitueraient la valeur caractère par caractère.
+        const own = this.secretNodes.get(id);
+        const v = own !== undefined && raw !== '' ? `secret:${own}` : this.secretRedactor.redact(raw);
         return { ok: matchValue(v, spec), observed: short(v) };
       }
       default: throw badRequest(`assertion ${spec.kind} non relue`);

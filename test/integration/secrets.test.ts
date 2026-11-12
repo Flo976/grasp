@@ -144,7 +144,7 @@ test('fill secret:NOM : saisi dans la page, masqué dans snap, text, markdown, d
   assert.match((await cli('text')).stdout, /Jeton reçu : secret:AILLEURS/);
   await cli('snap');
   // run : étapes, sorties, rapport de recette (console en erreur, requêtes 4xx) ; texte et JSON.
-  const script = `nav ${site.url}/coffre\nfill #jeton secret:JETON --console\nsnap\nexpect value #jeton ~ Jx7\nexpect text "Saisi : Jx7"\nexpect no-console-errors\n`;
+  const script = `nav ${site.url}/coffre\nfill #jeton secret:JETON --console\nsnap\nexpect value #jeton secret:JETON\nexpect text "Saisi : secret:JETON"\nexpect no-console-errors\n`;
   for (const extra of [[], ['--json']]) {
     const r = await runCli(env, ['run', '--continue', ...extra], script);
     outs.push([`run ${extra.join(' ')}`, r.stdout + r.stderr]);
@@ -152,6 +152,46 @@ test('fill secret:NOM : saisi dans la page, masqué dans snap, text, markdown, d
   }
   for (const [what, s] of outs) assertNoLeak(what, s);
   assertNoLeak('journal du serveur', srv.stderr());
+});
+
+test('pas d\'oracle : expect, wait et text: comparent sur la valeur masquée, jamais sur la valeur', async () => {
+  // Sans cela, `expect value #mdp --regex '^<préfixe><c>'` (code 0 = bon caractère) reconstitue la valeur
+  // caractère par caractère, sans eval ; de même sur le texte recopié par la page (expect text, wait --text).
+  const outs: Array<[string, string]> = [];
+  const cli = async (...args: string[]) => {
+    const r = await runCli(env, args);
+    outs.push([args.join(' '), r.stdout + r.stderr]);
+    return r;
+  };
+  const ok = async (...args: string[]) => { const r = await cli(...args); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stdout}${r.stderr}`); };
+  const ko = async (...args: string[]) => { const r = await cli(...args); assert.notEqual(r.code, 0, `${args.join(' ')} a réussi : oracle sur la valeur du secret`); };
+  await ok('nav', `${site.url}/coffre`);
+  await ok('fill', '#mdp', 'secret:JETON');
+  await ok('fill', '#jeton', 'secret:JETON');
+  // Champ marqué : seule sa forme masquée est comparée.
+  await ko('expect', 'value', '#mdp', '--regex', '^Jx7', '--timeout', '0');
+  await ko('expect', 'value', '#mdp', '~', 'Jx7', '--timeout', '0');
+  await ko('expect', 'value', '#mdp', JETON, '--timeout', '0');
+  await ko('expect', 'value', '#jeton', '--regex', '^J', '--timeout', '0');
+  await ok('expect', 'value', '#mdp', 'secret:JETON', '--timeout', '0');
+  await ok('expect', 'value', '#jeton', 'secret:JETON', '--timeout', '0');
+  // Texte recopié par la page (« Saisi : … ») : comparé masqué.
+  await ko('expect', 'text', 'Saisi : Jx7', '--timeout', '0');
+  await ko('expect', 'text', '--regex', 'Saisi : J', '--timeout', '0');
+  await ko('expect', 'text', '--regex', 'Saisi : J', '--scope', '#echo', '--timeout', '0');
+  await ok('expect', 'no-text', 'Jx7', '--timeout', '0');
+  await ok('expect', 'text', 'Saisi : secret:JETON', '--timeout', '0');
+  await ko('wait', '--text', 'Saisi : Jx7', '--timeout', '1');
+  await ok('wait', '--text', 'Saisi : secret:JETON', '--timeout', '1');
+  await ko('wait', '--sel', 'text:Saisi : Jx7', '--timeout', '1');
+  // URL et titre après l'envoi du formulaire (la valeur y est recopiée).
+  await ok('click', 'text:Envoyer');
+  await ok('wait', '--text', 'Jeton reçu');
+  await ko('expect', 'url', '~', 'jeton=Jx7', '--timeout', '0');
+  await ko('expect', 'url', '--regex', 'jeton=J', '--timeout', '0');
+  await ko('expect', 'title', '--regex', '^Reçu J', '--timeout', '0');
+  await ok('expect', 'title', '~', 'secret:JETON', '--timeout', '0');
+  for (const [what, s] of outs) assertNoLeak(what, s);
 });
 
 test('secret hors de ses domaines : refusé avant toute saisie, sans recopier la valeur', async () => {
