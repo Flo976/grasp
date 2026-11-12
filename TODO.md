@@ -117,6 +117,13 @@ Accès distant
       sur une session créée par la CLI).
 
 Lecture et recette
+- [x] **Lecture progressive** (branche `feat/lecture-progressive`) : `snap --outline` (repères, tableaux et titres
+      avec le volume de chaque repère), `snap --interactive` (actionnables, conteneurs et titres de contexte),
+      `find <texte|/regex/> [--role] [--max]` (lignes trouvées, options de listes fermées comprises, conteneur
+      joint) ; refs identiques au snapshot complet ; CLI, `GET /snap?mode=|find=`, run, MCP (`snap mode`, `find`).
+      Mesuré sur `/portail` : complet 24 153 octets, outline 1 050, interactive 11 362, find 147.
+- [ ] Lecture progressive : mesurer les gains sur des pages réelles ; volume des `banner`/`contentinfo` sans nom
+      (non émis par le snapshot) ; `--role` par familles (`textbox` + `searchbox`) ?
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
 - [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`
       ignorée : l'étape en cours va à son terme) ; pas d'outils dédiés `expect` ni `state` (accessibles par `run`).

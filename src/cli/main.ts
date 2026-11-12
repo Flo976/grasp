@@ -16,7 +16,7 @@ import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
+import { parseArgs, buildRequest, consoleBody, findQuery, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -478,6 +478,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': case 'type': await action(); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
+    case 'find': out((await c.call('GET', `/snap${findQuery(a)}`)).text()); return 0;
     case 'text': {
       const t = (await c.call('GET', `/text${readQuery(a)}`)).text();
       if (t !== '') out(t);
@@ -623,7 +624,7 @@ const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessib
 
 Serveur      serve [--tcp [--port N] [--listen IP]] | stop | status | doctor | daemon install|uninstall|status
 MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
-               outils nav snap text click fill type select check press hover wait console screenshot run profile ;
+               outils nav snap find text click fill type select check press hover wait console screenshot run profile ;
                session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
 Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
                --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer
@@ -637,6 +638,12 @@ Profils      profiles [--json]                       liste (* = profil de la ses
 Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N]   budget 12000 octets par défaut (config snapMax)
                --name-max N : noms coupés à N caractères (défaut 80, textes 100), coupure toujours marquée « … » ;
                0 = noms entiers (titres longs) ; les refs n'en dépendent pas ; aussi sur une ligne de run
+               --outline : repères et titres seulement (volume de chaque repère : lignes, actionnables), pour s'orienter
+               --interactive : éléments actionnables et champs, avec leurs conteneurs et titres ; texte brut omis
+               refs identiques au snapshot complet ; dernière ligne « … lecture partielle (--mode) : N lignes sur M »
+             find <texte|/regex/> [--role r[,r2]] [--max N (30)] [--scope <sél>]   lignes du snapshot qui correspondent
+               (nom entier, valeur, texte ; sans casse ni accents ; options des listes fermées comprises), avec leur
+               conteneur « (dans eXX:row "…") » ; --role text = texte brut ; refs identiques au snapshot complet
              text [--max N] [--scope <ref|css|frame=…>] [--markdown]   4000 caractères par défaut (config textMax)
                --markdown : contenu visible en Markdown (titres, listes, liens absolus, images, tableaux, code),
                même budget, même zone, même ligne de troncature ; aussi sur une ligne de run

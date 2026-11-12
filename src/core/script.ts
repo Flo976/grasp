@@ -10,7 +10,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'role', 'proxy', 'http-auth', 'origin', 'ignore', 'listen']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -134,7 +134,7 @@ export function readQuery(a: Args): string {
   // --name-max : longueur des noms rendus par snap (0 = entiers). text rend le texte entier : refusé, jamais ignoré.
   const nm = value(a, 'name-max');
   if (nm !== undefined) {
-    if (a.cmd !== 'snap') throw new ScriptError(`--name-max ne s'applique qu'à snap (${a.cmd} ne tronque aucun nom ; --max borne la sortie)`);
+    if (a.cmd !== 'snap' && a.cmd !== 'find') throw new ScriptError(`--name-max ne s'applique qu'à snap (${a.cmd} ne tronque aucun nom ; --max borne la sortie)`);
     if (!/^\d+$/.test(nm)) throw new ScriptError('--name-max attend un entier positif ou nul (0 = noms entiers)');
     q.set('nameMax', nm);
   }
@@ -145,7 +145,36 @@ export function readQuery(a: Args): string {
     if (md !== true) throw new ScriptError("--markdown ne prend pas de valeur (grasp text --markdown)");
     q.set('markdown', '1');
   }
+  // --outline / --interactive : lecture partielle de snap (mêmes refs) ; ailleurs refusé, jamais ignoré.
+  const modes = (['outline', 'interactive'] as const).filter((m) => a.flags.has(m));
+  if (modes.length > 0) {
+    if (a.cmd !== 'snap') throw new ScriptError(`--${modes[0]} ne s'applique qu'à snap`);
+    if (modes.length > 1) throw new ScriptError('--outline et --interactive sont exclusifs (snap --outline pour s\'orienter, puis snap --interactive --scope <ref>)');
+    if (a.flags.get(modes[0]!) !== true) throw new ScriptError(`--${modes[0]} ne prend pas de valeur`);
+    q.set('mode', modes[0]!);
+  }
   return q.size > 0 ? `?${q}` : '';
+}
+
+/**
+ * `find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>] [--name-max N]` → GET /snap?find=… : lignes du
+ * snapshot qui correspondent, refs identiques au snapshot complet. Ici --max compte des lignes (→ `limit`).
+ */
+export function findQuery(a: Args): string {
+  if (a.pos.length !== 1) throw new ScriptError(`usage : grasp find <texte|/regex/> [--role r] [--max N] [--scope <sél>]${a.pos.length > 1 ? ' — un seul motif (citez-le : find "Ajouter au panier")' : ''}`);
+  const q = new URLSearchParams({ find: a.pos[0]! });
+  const role = value(a, 'role');
+  if (role !== undefined) q.set('role', role);
+  const max = value(a, 'max');
+  if (max !== undefined) q.set('limit', max);
+  const scope = value(a, 'scope');
+  if (scope !== undefined) q.set('scope', scope);
+  const nm = value(a, 'name-max');
+  if (nm !== undefined) {
+    if (!/^\d+$/.test(nm)) throw new ScriptError('--name-max attend un entier positif ou nul (0 = noms entiers)');
+    q.set('nameMax', nm);
+  }
+  return `?${q}`;
 }
 
 const SHOT_FORMATS: Record<string, string> = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp' };
@@ -193,7 +222,7 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'find', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
@@ -201,7 +230,7 @@ const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', '
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
-  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
+  snap: ['max', 'scope', 'name-max', 'outline', 'interactive'], find: ['role', 'max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
@@ -239,6 +268,7 @@ export function buildRequest(a: Args): StepRequest {
   switch (cmd) {
     case 'nav': { const [url] = need(a, 1, 'nav <url>'); return { cmd, method: 'POST', path: '/navigate', body: actionBody(a, { url }) }; }
     case 'snap': return { cmd, method: 'GET', path: `/snap${readQuery(a)}` };
+    case 'find': return { cmd, method: 'GET', path: `/snap${findQuery(a)}` };
     case 'text': return { cmd, method: 'GET', path: `/text${readQuery(a)}` };
     case 'click': { const [target] = need(a, 1, 'click <sélecteur>'); return { cmd, method: 'POST', path: '/click', body: actionBody(a, { target }) }; }
     case 'fill': { const [target, v] = need(a, 2, 'fill <sélecteur> <valeur>'); return { cmd, method: 'POST', path: '/fill', body: actionBody(a, { target, value: v }) }; }

@@ -97,7 +97,7 @@ test('mcp : protocole (initialize, ping, tools/list, erreurs JSON-RPC), serveur 
     assert.deepEqual((await mcp.request('ping')).result, {});
 
     const tools = (await mcp.request('tools/list')).result.tools as Array<{ name: string; inputSchema: any }>;
-    assert.deepEqual(tools.map((x) => x.name), ['nav', 'snap', 'text', 'click', 'fill', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'screenshot', 'run', 'profile']);
+    assert.deepEqual(tools.map((x) => x.name), ['nav', 'snap', 'find', 'text', 'click', 'fill', 'type', 'select', 'check', 'press', 'hover', 'wait', 'console', 'screenshot', 'run', 'profile']);
     for (const x of tools) assert.equal(x.inputSchema.type, 'object');
     assert.deepEqual(tools.find((x) => x.name === 'fill')!.inputSchema.required, ['target', 'value']);
     assert.ok(tools.find((x) => x.name === 'click')!.inputSchema.properties.snapDiff);
@@ -150,6 +150,13 @@ test('mcp : formulaire de bout en bout (snap, fill par ref, select, check, click
     const snap = (await mcp.call('snap')).text;
     assert.match(snap, /heading\[1\] "Inscription"/);
     const nom = refOf(snap, /textbox "Nom"/);
+    // Lecture progressive : mêmes refs que le snapshot complet.
+    assert.match((await mcp.call('snap', { mode: 'outline' })).text, /heading\[1\] "Inscription"[\s\S]*… lecture partielle \(--outline\)/);
+    assert.ok((await mcp.call('snap', { mode: 'interactive' })).text.includes(`${nom}:textbox "Nom"`));
+    const found = await mcp.call('find', { pattern: 'madagascar', role: 'option' });
+    assert.match(found.text, /find « madagascar » --role option : 1 correspondance\ne[0-9a-z]+:option "Madagascar" \(dans e[0-9a-z]+:combobox "Pays"\)/);
+    assert.match((await mcp.call('find', { pattern: '/(/' })).text, /^ERROR: .*expression régulière invalide/);
+    assert.equal((await mcp.call('snap', { mode: 'tout' })).isError, true);
 
     assert.equal((await mcp.call('fill', { target: nom, value: 'Ada Lovelace' })).text, 'OK');
     assert.equal((await mcp.call('fill', { target: '#email', value: 'ada@example.org' })).text, 'OK');

@@ -8,7 +8,7 @@ import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, 
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
-import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot } from './snapshot.js';
+import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot, type SnapMode, type FindSpec } from './snapshot.js';
 import { parseKey } from './keys.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
@@ -1526,7 +1526,7 @@ export class PageController {
    * Snapshot d'accessibilité. `maxBytes` : budget en octets (défaut `snapMax`). `scope` (ref, CSS, text:) :
    * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
    */
-  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<Snapshot> {
+  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined } = {}): Promise<Snapshot> {
     if (opts.nameMax !== undefined && (!Number.isInteger(opts.nameMax) || opts.nameMax < 0)) throw badRequest('name-max : entier positif ou nul attendu (0 = noms entiers)');
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
@@ -1547,7 +1547,7 @@ export class PageController {
     // Racine sans nom (moteurs CDP autres que Chrome, ex. Obscura ; ou page sans titre) : document.title relu.
     const rootName = root !== undefined && root.role?.value === 'RootWebArea' && typeof root.name?.value === 'string' ? root.name.value : '';
     const title = rootName !== '' ? rootName : (await this.location()).title;
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
+    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}), ...(opts.mode !== undefined ? { mode: opts.mode } : {}), ...(opts.find !== undefined ? { find: opts.find } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
@@ -1557,8 +1557,10 @@ export class PageController {
    * Texte de `snap`. Zone frame=… : arbre ARIA du cadre par le moteur Playwright (même d'une autre origine),
    * sans refs (elles ne désignent que le document principal) ; on agit dans le cadre avec frame=… >> css|text:.
    */
-  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined } = {}): Promise<string> {
+  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined } = {}): Promise<string> {
     if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
+    // Lecture partielle et find reposent sur les refs, que l'arbre ARIA d'un cadre n'a pas : refusé, jamais ignoré.
+    if (opts.find !== undefined || opts.mode !== undefined) throw badRequest(`${opts.find !== undefined ? 'find' : `snap --${opts.mode}`} ne s'applique pas à une zone frame=… (arbre ARIA sans refs) : snap --scope '${opts.scope.trim()}'`);
     const scope = opts.scope.trim();
     const aria = await this.pwUse(async (page) => {
       const { loc } = await this.pwLocator(page, scope, undefined, 'body');

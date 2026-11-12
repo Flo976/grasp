@@ -5,6 +5,7 @@ import { isLevel, type ConsoleLevel } from '../core/console.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
+import { compileFind, FIND_LIMIT_MAX, SNAP_MODES, type FindPattern, type FindSpec, type SnapMode } from './snapshot.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -16,6 +17,30 @@ function shotOptions(q: URLSearchParams): ShotOptions {
     el: el !== null && el !== '' ? el : undefined, format: format !== null && format !== '' ? format : undefined,
     quality: optInt(q.get('quality'), 'quality'), maxWidth: optInt(q.get('maxWidth'), 'maxWidth'),
   };
+}
+
+/**
+ * Lecture partielle de GET /snap : `mode=outline|interactive`, ou `find=<texte|/regex/>` avec `role=r[,r2]` et
+ * `limit=N`. Toute combinaison sans effet (role sans find, find avec mode) est refusée, jamais ignorée.
+ */
+export function snapReadOptions(q: URLSearchParams): { mode?: SnapMode; find?: FindSpec } {
+  const mode = q.get('mode');
+  const find = q.get('find');
+  const role = q.get('role');
+  const limit = q.get('limit');
+  if (mode !== null && !(SNAP_MODES as readonly string[]).includes(mode)) throw new GraspError(400, `mode de snap inconnu « ${mode} » (${SNAP_MODES.join(', ')})`);
+  if (find === null) {
+    if (role !== null || limit !== null) throw new GraspError(400, `« ${role !== null ? 'role' : 'limit'} » ne s'applique qu'avec find`);
+    return mode !== null ? { mode: mode as SnapMode } : {};
+  }
+  if (mode !== null) throw new GraspError(400, `find et --${mode} sont exclusifs (find rend déjà seulement les lignes trouvées)`);
+  let pattern: FindPattern;
+  try { pattern = compileFind(find); } catch (e) { throw new GraspError(400, (e as Error).message); }
+  const roles = role !== null ? role.split(',').map((r) => r.trim()).filter((r) => r !== '') : undefined;
+  if (roles !== undefined && roles.length === 0) throw new GraspError(400, '« role » : au moins un rôle attendu (button, link, textbox, heading, text…)');
+  const n = optInt(limit, 'max');
+  if (n !== undefined && n > FIND_LIMIT_MAX) throw new GraspError(400, `find --max : ${FIND_LIMIT_MAX} au plus`);
+  return { find: { pattern, ...(roles !== undefined ? { roles } : {}), ...(n !== undefined ? { limit: n } : {}) } };
 }
 
 function level(v: unknown): ConsoleLevel | undefined {
@@ -45,7 +70,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /session-options': return sendJson(res, 200, sessionOptions());
         case 'GET /location': return sendJson(res, 200, { ...(await page.location()), lastBlocked: page.lastBlocked() });
         case 'POST /navigate': return sendJson(res, 200, await page.nav(str(body, 'url'), opts));
-        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max') }));
+        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max'), ...snapReadOptions(q) }));
         case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max'), scope, { markdown: optFlag(q.get('markdown'), 'markdown') === true }));
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));
         case 'POST /expect': return sendJson(res, 200, await page.expect(expectSpecOf(body), { shotOnError: opts.shotOnError }));

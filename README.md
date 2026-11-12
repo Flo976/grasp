@@ -76,6 +76,9 @@ limite la lecture à une zone.
 
 - 🌳 **Snapshot d'accessibilité** compact, avec des refs qui restent valides quand la page bouge
   ([détails](#snapshot)).
+- 🔭 **Lecture progressive** : `snap --outline` (repères et titres), `snap --interactive` (éléments
+  actionnables), `find <texte|/regex/>` (lignes trouvées seulement), mêmes refs que le snapshot complet ; sur la
+  page de test `/portail`, 1 050 octets pour s'orienter au lieu de 24 153 ([détails](#lecture-progressive)).
 - 🔁 **Diffs après action** : `+` apparu, `-` disparu, `~` modifié, calculés sur un DOM stable.
 - ⏱️ **Attente intelligente** : DOM et réseau calmes, redirections et challenges anti-bot suivis
   ([détails](#attente-de-stabilité)).
@@ -442,6 +445,85 @@ appel), coupée en fin de ligne avec la même dernière ligne `… tronqué : N 
 avec --max N / --scope <ref|css>` ; `--scope <ref|css>` restreint le diff à une zone (si la zone a disparu
 après l'action, le diff le dit au lieu d'échouer : l'action, elle, a eu lieu).
 
+### Lecture progressive
+
+Un snapshot complet coûte cher sur une grosse page, et le budget de 12 000 octets le coupe souvent avant ce que
+l'agent cherche. Trois lectures partielles, qui parcourent **tout l'arbre** comme le snapshot complet : les refs
+sont **identiques** (une ref lue dans une lecture partielle s'utilise telle quelle, et les refs non affichées
+restent résolubles) ; seules les lignes rendues changent. Le budget (`--max`, `snapMax`), `--scope` et `--name-max`
+s'appliquent pareil, et la dernière ligne dit toujours ce qui a été omis.
+
+```
+grasp snap --outline                      # s'orienter : repères et titres
+page "Portail vélo" http://127.0.0.1:8080/portail
+eh4be:heading[1] "Portail vélo"
+expwc:navigation "Menu principal" — 60 lignes, 60 actionnables
+eilfw:search "Recherche" — 2 lignes, 2 actionnables
+eyel8:complementary "Filtres" — 9 lignes, 8 actionnables
+ eehcw:heading[2] "Filtres"
+exo60:main — 543 lignes, 140 actionnables
+ el8kg:heading[2] "Catalogue"
+ eof8f:heading[3] "Vélos modèle 0"
+ …
+ … +40 titres de niveau 3 (find --role heading pour les lister)
+ eq18r:heading[2] "Mes commandes"
+ etaru:table "Commandes" — 244 lignes, 40 actionnables
+ etp1e:heading[2] "Livraison"
+ e3gps:form "Livraison" — 5 lignes, 4 actionnables
+eqcsy:heading[2] "Plan du site"
+… lecture partielle (--outline) : 21 lignes sur 700 — snap --scope <ref> pour une zone, snap pour tout
+
+grasp snap --interactive --scope e3gps    # puis les actionnables d'une zone
+grasp find madagascar                     # ou chercher directement
+page "Portail vélo" http://127.0.0.1:8080/portail
+find « madagascar » : 1 correspondance
+esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
+```
+
+- **`snap --outline`** (`?mode=outline`) : repères (`navigation`, `main`, `search`, `complementary`, `form`,
+  `region`, `dialog`, `banner` et `contentinfo` nommés…), tableaux et titres, plus les régions `alert` et les
+  lignes `alerte` (une erreur affichée oriente aussi). Chaque repère ou tableau porte le **volume** de son contenu
+  dans le snapshot complet (`— 543 lignes, 140 actionnables`), pour choisir la zone à lire ensuite. Au-delà de 8
+  titres de même niveau sous un même parent (fiches d'un catalogue), les suivants sont comptés sur une ligne.
+- **`snap --interactive`** (`?mode=interactive`) : éléments actionnables et champs (rôles de `INTERACTIVE` :
+  bouton, lien, champ, case, liste, option, onglet…), avec leur valeur, leurs états, `[invalide: …]` et les
+  options d'une liste, les régions `alert` et lignes `alerte` ; pour les situer, leurs **conteneurs** (repères,
+  `group`, `radiogroup`, `row`, `article`, `listitem`, `table`, `menu`, `toolbar`, `tablist`, `dialog`…) et les
+  **titres** sous lesquels ils apparaissent dans le même repère. Le texte brut est omis, et un titre qui répète le
+  nom de son conteneur (fiche nommée par son titre) aussi.
+- **`find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>] [--name-max N]`** (`?find=&role=&limit=`) :
+  les lignes dont le **nom entier** (pas la version coupée à 80 caractères), le nom brut, la valeur, le libellé de
+  contexte, le message d'erreur ou le texte correspond. Texte : sans casse ni accents (`ecrire` trouve « Écrire un
+  avis ») ; `/expr/drapeaux` : expression régulière (`i`, `m`, `s`, `u` ; `g` et `y` refusés), appliquée aux
+  2 000 premiers caractères. Les **options d'une liste fermée**, qui n'ont pas de ligne à elles dans le snapshot
+  (`options : "France" [x] | …`), sont trouvées avec leur ref. Chaque ligne est suivie de son conteneur
+  (`(dans eztsx:row "Commande 1012")`) : deux boutons « Annuler » se distinguent sans relire la page. `--role` filtre
+  par rôle exact (`text` = texte brut, `alerte` = alerte hors arbre). 30 lignes par défaut, 500 au plus ; au-delà :
+  `… 37 autres correspondances — --max N pour en voir plus, --role / --scope pour affiner`. Aucune correspondance :
+  `find « … » : aucune correspondance`, code 0 (ce n'est pas une erreur).
+- **Refusé, jamais ignoré** (400) : `--outline` avec `--interactive`, `find` avec un mode, `role`/`limit` sans
+  `find`, motif vide, expression invalide ; une zone `frame=…` (arbre ARIA de Playwright, sans refs).
+- Partout : CLI, `GET /snap`, ligne de `grasp run` (`snap --outline`, `find "Valider" --role button`), outils MCP
+  `snap` (`mode`) et `find`.
+
+**Mesure** (`test/integration/lecture-progressive.test.ts`, Chrome réel, page `/portail` du site de test : menu de
+60 liens, 8 filtres, 48 fiches produit avec description et prix, tableau de 40 commandes, formulaire avec une liste
+de 120 pays ; pied de page de 80 liens non nommé, donc compté dans aucun repère) :
+
+| Lecture | Octets | Lignes | Part du complet |
+|---|---:|---:|---:|
+| `snap --max 10000000` (complet) | 24 153 | 701 | 100 % |
+| `snap` (budget 12 000 par défaut) | 11 862 | — | coupé avant le tableau et le formulaire |
+| `snap --outline` | 1 050 | 23 | 4,3 % |
+| `snap --interactive` | 11 362 | 392 | 47 % (tient dans le budget par défaut) |
+| `find madagascar` | 147 | 3 | 0,6 % (option hors du snapshot par défaut) |
+| `find '/Commande 101\d/' --role row` | 675 | 12 | 2,8 % |
+
+Le gain de `--interactive` dépend de la part de texte de la page : ici surtout des liens et des boutons, il ne
+retire que la moitié ; `--outline` et `find` ne dépendent que de la structure et de ce qui est cherché. Ces chiffres
+valent pour cette page ; ils n'ont pas été mesurés sur des sites réels. Parcours conseillé sur une page inconnue :
+`snap --outline`, puis `snap --interactive --scope <ref du repère>` ou `find`.
+
 ### Erreurs de formulaire
 
 Un message d'erreur doit être vu de l'agent, sinon un « Enregistrer » sans effet passe pour un échec
@@ -538,6 +620,8 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 |---|---|
 | `nav <url>` | Navigue (soumis à l'allowlist). |
 | `snap [--max octets] [--scope <ref\|css\|frame=…>] [--name-max N]` | Snapshot d'accessibilité (12 000 octets par défaut ; noms coupés à 80 caractères avec `…`, `--name-max 0` = entiers). `--scope 'frame=#editeur'` : arbre ARIA **dans** l'iframe (moteur Playwright, sans refs). |
+| `snap --outline` / `snap --interactive` | Lecture partielle, mêmes refs : repères et titres (avec leur volume) / éléments actionnables et leur contexte. Voir [Lecture progressive](#lecture-progressive). |
+| `find <texte\|/regex/> [--role r] [--max N] [--scope …]` | Lignes du snapshot qui correspondent (options de listes fermées comprises), avec leur conteneur ; 30 au plus par défaut. |
 | `text [--max N] [--scope <ref\|css\|frame=…>] [--markdown]` | `innerText` de la page ou de la zone (4000 caractères par défaut, coupure annoncée) ; `--markdown` : le même contenu visible en Markdown (voir [Sortie Markdown](#sortie-markdown)). Zone = iframe : texte du cadre s'il est de même origine, sinon **409** qui le dit (URL du cadre, et `--scope 'frame=…'`) ; `--scope 'frame=#editeur [>> sél]'` lit dans le cadre, même d'une autre origine (moteur Playwright) ; zone sans texte : rien sur stdout, `note: aucun texte visible dans la zone …` sur stderr. |
 | `wait [--text T \| --sel S \| --idle] [--timeout ms]` | Attend un texte, un élément ou un DOM stable. Voir [Attente](#attente-de-stabilité). |
 | `expect <assertion> …` | Vérifie la page (texte, URL, titre, élément, valeur, console, formulaire) ; échec = code 1 avec l'attendu et le constaté. Voir [Recette](#recette--expect-et-rapport-de-run). |
@@ -684,7 +768,7 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 ```
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
-  **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
+  **même syntaxe que la CLI** : `nav snap find text click fill select check press wait expect eval console screenshot
   cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
@@ -834,7 +918,8 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | Outil | Arguments | Équivalent CLI |
 |---|---|---|
 | `nav` | `url`, options d'action | `nav` |
-| `snap` | `max`, `scope`, `nameMax` | `snap --max --scope --name-max` |
+| `snap` | `max`, `scope`, `nameMax`, `mode` (`outline` \| `interactive`) | `snap --max --scope --name-max [--outline\|--interactive]` |
+| `find` | `pattern`, `role`, `max`, `scope`, `nameMax` | `find <motif> --role --max --scope --name-max` |
 | `text` | `max`, `scope`, `markdown` | `text [--markdown]` |
 | `click`, `hover` | `target`, options d'action | idem |
 | `fill`, `select` | `target`, `value`, options d'action | idem |
@@ -1255,7 +1340,8 @@ GET  /profiles                POST /profiles {name, useWhen?}
 POST /profiles/import {name, sourcePath, profileDirectory?, skipLocked?}
 DELETE /profiles/:name        (409 si une session l'utilise)
 POST /navigate {url, snapDiff?, console?, shotOnError?}
-GET  /snap?max=&scope=   GET /text?max=&scope=&markdown=1   GET /location   GET /pdf
+GET  /snap?max=&scope=&nameMax=&mode=outline|interactive   GET /snap?find=<texte|/regex/>&role=&limit=&scope=
+GET /text?max=&scope=&markdown=1   GET /location   GET /pdf
 POST /wait {text? | sel? | idle?, timeout?}
 GET  /screenshot?full=1&el=&format=&quality=&maxWidth=&refs=1&save=1
 GET  /console?level=&since=&limit=&clear=1    POST /console {level?, since?, limit?, clear?}
@@ -1632,6 +1718,10 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - `text` coupe au caractère près (en fin de ligne quand elle est proche) ; `snap --max` reste en **octets**
   (API existante), mais sa ligne de troncature compte le reste en caractères, comme les autres.
 - `select` gère les `<select>` natifs ; pour une liste ARIA, utilisez `click` sur l'option.
+- Lecture progressive : un `banner` ou `contentinfo` sans nom n'est pas émis par le snapshot (élagage), son
+  contenu remonte donc au niveau supérieur, sans volume dans `--outline` ; `find` ne trouve ni un lien sans nom
+  (rien à chercher) ni le contenu d'une iframe ; `--role` compare le rôle exact (`textbox` n'inclut pas
+  `searchbox`). Les gains d'octets ne sont mesurés que sur la page `/portail` du site de test.
 - Livraison vérifiée : l'hypothèse « écran Windows verrouillé » n'a pas été reproduite sur la machine réelle
   (Grasp ne verrouille pas la session de l'utilisateur) ; la non-livraison est simulée par
   `Input.setIgnoreInputEvents`. La sonde écoute sur `window` en capture : une page qui appelle
