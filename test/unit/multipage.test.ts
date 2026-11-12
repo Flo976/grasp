@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  absoluteUrl, auditPageOf, boundedInt, comparePages, diffLines, formatAudit, formatDiff, multisetDiff, neutral, outlineOf,
+  absoluteUrl, auditPageOf, boundedInt, comparePages, diffLines, discover, formatAudit, formatDiff, multisetDiff, neutral, outlineOf,
   parseList, pool, riskyLink, runAudit, textLines, visitPage, type AuditResult, type Call, type PageFacts, type Reply,
 } from '../../src/core/multipage.js';
 import { splitLinks } from '../../src/bridge/inventory.js';
@@ -112,6 +112,11 @@ test('auditPageOf : problèmes comptés (statut ≥ 400, navigation, console, re
 test('riskyLink : déconnexion jamais vérifiée', () => {
   for (const u of ['http://h/logout', 'http://h/compte/log-out', 'http://h/signout?x=1', 'http://h/d%C3%A9connexion', 'http://h/?action=logoff']) assert.equal(riskyLink(u), true, u);
   for (const u of ['http://h/', 'http://h/login', 'http://h/catalogue']) assert.equal(riskyLink(u), false, u);
+  // « % » isolé ou séquence invalide (Chrome les garde tels quels dans a.href) : jamais d'exception.
+  for (const u of ['http://h/promo-100%', 'http://h/a%zz', 'http://h/%E9t%E9', 'http://h/x?p=50%']) assert.equal(riskyLink(u), false, u);
+  // Ancien lien encodé en latin-1 : la déconnexion reste reconnue.
+  assert.equal(riskyLink('http://h/d%E9connexion'), true);
+  assert.equal(riskyLink('http://h/logout?r=100%'), true);
 });
 
 test('entrées : parseList, absoluteUrl, boundedInt', () => {
@@ -190,6 +195,19 @@ test('runAudit : page refusée (allowlist) = problème, jamais un faux OK ; --ma
   const out = formatAudit(r as AuditResult);
   assert.match(out, /^KO {2}--- http:\/\/ailleurs\/ \(\d+ ms\)\n {6}refusée : navigation bloquée : domaine hors allowlist$/m);
   assert.match(out, /AVERTISSEMENT : 1 page au-delà de --max non visitée/);
+});
+
+test('runAudit et discover : un lien au « % » isolé ne fait pas échouer l\'audit', async () => {
+  const H = 'http://h';
+  const pages = {
+    [`${H}/`]: { status: 200, links: [`${H}/promo-100%`, `${H}/a%zz`, `${H}/ok`] },
+    [`${H}/ok`]: { status: 200, links: [] },
+  };
+  const r = await runAudit({ urls: [`${H}/`], source: 'liste', max: 50, maxLinks: 10, checkLinks: true }, [fakeSession(pages, [])]);
+  assert.equal(r.pages.length, 1);
+  assert.deepEqual(r.links.broken.map((b) => b.url).sort(), [`${H}/a%zz`, `${H}/promo-100%`]);
+  const d = await discover(fakeSession(pages, []), `${H}/`, 50);
+  assert.deepEqual(d.urls, [`${H}/`, `${H}/promo-100%`, `${H}/a%zz`, `${H}/ok`]);
 });
 
 test('visitPage : la réponse 404 du document est rapportée par son statut, pas en double comme requête', async () => {

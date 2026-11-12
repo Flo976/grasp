@@ -98,6 +98,8 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       Fait (branche `feat/recette-multipages`) : sessions éphémères (`--concurrency`), routes `/inventory` et
       `/check-links` (monde isolé, même origine, HEAD sans suivre les redirections, déconnexion jamais demandée),
       bornes annoncées, `--json`, code 1 ; tests sur deux instances du site de test (`multipage.test.ts`).
+      Relecture : un lien au `%` isolé ou mal encodé (`/promo-100%`, `/a%zz`) levait « URI malformed » et
+      faisait échouer tout l'audit ; décodage tolérant (UTF-8, à défaut latin-1) et tests `runAudit`/`discover`.
 - [x] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples). Fait :
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).

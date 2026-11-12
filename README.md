@@ -904,7 +904,9 @@ note: sitemap http://127.0.0.1:45039/sitemap.xml : 5 entrées
   plus (`--max-links N`, 5000 au plus ; au-delà, annoncés comme non vérifiés) ; `--no-links` pour s'en passer.
   Un lien qui ressemble à une **déconnexion** (`logout`, `log-out`, `signout`, `déconnexion`, `disconnect`,
   `logoff`) n'est jamais demandé — un HEAD suffit à déconnecter sur bien des frameworks — ni visité quand il
-  sert de graine. `--ignore <regex>` écarte aussi des liens et des lignes console.
+  sert de graine. Le chemin est décodé avant ce test sans jamais échouer : un `%` isolé (`/promo-100%`), une
+  séquence invalide (`/a%zz`) ou un ancien encodage latin-1 (`/d%E9connexion`, reconnu) ne font plus échouer
+  l'audit entier (testé). `--ignore <regex>` écarte aussi des liens et des lignes console.
 - **Bornes** : 5 entrées par rubrique et par page, 30 liens cassés ; `--json` : `{ok, source, ms, pages: [{url,
   finalUrl?, title?, status, error?, blocked?, console, forms, problems, ms}], notVisited, links: {checked, broken:
   [{url, status?, error?, from}], unchecked, skipped, disabled?}, notes}`.

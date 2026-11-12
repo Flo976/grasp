@@ -474,7 +474,20 @@ export function auditPageOf(f: PageFacts, ignore?: RegExp): AuditPage {
 export function riskyLink(url: string): boolean {
   let u: URL;
   try { u = new URL(url); } catch { return false; }
-  return /log-?out|log-?off|sign-?out|d[ée]connexion|disconnect/i.test(decodeURIComponent(`${u.pathname}${u.search}`));
+  return /log-?out|log-?off|sign-?out|d[ée]connexion|disconnect/i.test(lenientDecode(`${u.pathname}${u.search}`));
+}
+
+/**
+ * Décodage qui ne lève jamais : Chrome garde tels quels dans a.href un « % » isolé
+ * (/promo-100%), une séquence invalide (/a%zz) ou un ancien encodage latin-1 (%E9).
+ * Chaque suite de %XX est décodée en UTF-8, à défaut octet par octet (latin-1) ;
+ * le reste est laissé brut.
+ */
+function lenientDecode(s: string): string {
+  try { return decodeURIComponent(s); } catch { /* décodage tolérant ci-dessous */ }
+  return s.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    try { return decodeURIComponent(run); } catch { return run.replace(/%([0-9a-f]{2})/gi, (_m, h: string) => String.fromCharCode(parseInt(h, 16))); }
+  });
 }
 
 /** Rapport de `grasp audit` : une ligne par page, le détail borné des problèmes, puis les liens cassés. */
