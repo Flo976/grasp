@@ -18,7 +18,14 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       défaut actuel `127.0.0.1` / `localhost` (tests locaux, tunnels).
 - [ ] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
       Seulement si on vise du volume.
-- [ ] **Image Docker** : Chrome + Grasp, distroless, non-root.
+- [x] **Image Docker** : Chrome + Grasp, non-root (branche `feat/image-docker`). `Dockerfile` multi-étapes,
+      Chromium Debian, sandbox conservée via `docker/seccomp-chrome.json` (ou `--cap-add=SYS_ADMIN`), XDG
+      dans le volume `/data`, accès depuis l'hôte par `docker exec`, socket monté ou `serve --tcp --listen`
+      (opt-in, `GRASP_URL` côté client). `doctor` et `examples/e2e.sh` validés dans le conteneur.
+      Pas distroless : Chromium tire ses dépendances par `apt`, `examples/e2e.sh` veut bash, et `setpriv`
+      vient d'util-linux. Image : 1,32 Go (dont 719 Mo pour Chromium et ses dépendances).
+  - [ ] Réduire l'image (distroless ou `chrome-headless-shell`) : gain à mesurer, et `headless=false` y renoncerait.
+  - [ ] Recette de l'image en CI (build + `doctor` + `e2e.sh`), aujourd'hui faite à la main.
 - [ ] **Évaluer Obscura comme moteur léger** derrière Grasp (il parle CDP et implémente
       `Accessibility.getFullAXTree`) : mesurer la couverture CDP réellement utilisée par le bridge.
 

@@ -1,0 +1,9 @@
+# Contexte de build en liste blanche : rien d'autre n'entre dans l'image
+# (ni node_modules ni dist de l'hôte, ni .git, ni profils, tokens ou captures).
+**
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/**
+!test/**
+!examples/**

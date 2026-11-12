@@ -827,11 +827,16 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
 
 - **Socket Unix par défaut** : `$XDG_RUNTIME_DIR/grasp.sock`, mode `0600`. Les permissions du
   système de fichiers sont la frontière ; le token s'y ajoute. TCP seulement avec
-  `serve --tcp` ou `transport=tcp`, toujours sur `127.0.0.1`.
+  `serve --tcp` ou `transport=tcp`, sur `127.0.0.1`. Seule exception, en opt-in explicite sur la ligne
+  de commande (jamais par la config) : `serve --tcp --listen <IP>` (cas du conteneur, voir
+  [Docker](#docker)). Hors boucle locale, le token est la seule barrière et le trafic n'est pas chiffré :
+  avertissement au démarrage, et `grasp security` affiche `transport : tcp 0.0.0.0:7777 — EXPOSÉ hors
+  boucle locale (--listen) : token seul, sans TLS`.
 - **Permissions vérifiées au démarrage** : fichiers `0600`, répertoires `0700`, propriétaire =
   utilisateur courant. Sinon **refus de démarrer**, avec la commande `chmod` à lancer.
 - **`--no-sandbox`** : jamais en repli silencieux. En root, refus sauf `GRASP_ALLOW_NO_SANDBOX=1`
-  (avertissement à chaque démarrage). Préférez un utilisateur non-root ou `--cap-add=SYS_ADMIN`.
+  (avertissement à chaque démarrage). Préférez un utilisateur non-root ; en conteneur, il faut en plus
+  autoriser les espaces de noms au sandbox (profil seccomp fourni ou `--cap-add=SYS_ADMIN`, voir [Docker](#docker)).
 
 ## Cycle de vie des processus
 
@@ -887,8 +892,83 @@ repli.
 
 - `/dev/shm` < 256 Mo (64 Mo par défaut sous Docker) → `--disable-dev-shm-usage` ajouté, et la
   remédiation `--shm-size=1g` est loguée.
-- Lancez en utilisateur non-root (ou `--cap-add=SYS_ADMIN`) ; `grasp serve` au premier plan,
-  sous `docker run --init`.
+- Lancez en utilisateur non-root, `grasp serve` au premier plan, avec un PID 1 qui récolte les
+  zombies (`tini` dans l'image fournie, sinon `docker run --init`). Non-root ne suffit pas sous Docker :
+  voir ci-dessous.
+
+### Docker
+
+[`Dockerfile`](Dockerfile) multi-étapes : compilation (`tsc`, devDependencies) puis image d'exécution
+`node:22-bookworm-slim` + Chromium de Debian + `util-linux` (`setpriv`) + `tini`, Grasp compilé avec ses
+seules dépendances de production. Utilisateur `grasp` (UID/GID 1000, réglables au build), XDG sous le
+volume `/data`, socket dans `/run/grasp`.
+
+```bash
+docker build -t grasp .
+docker run -d --name grasp --shm-size=1g \
+  --security-opt seccomp=docker/seccomp-chrome.json \
+  -v grasp-data:/data grasp                      # CMD : grasp serve (socket Unix dans le conteneur)
+docker exec grasp grasp doctor
+docker exec grasp bash examples/e2e.sh           # scénario de bout en bout, dans le conteneur
+```
+
+Mesuré (Docker 29.8, WSL2, Chromium 156) : image de **1,32 Go** (`docker image inspect` : 1 316 Mo), dont
+719 Mo pour la couche `apt` (Chromium et ses dépendances) ; Grasp et `ws` pèsent ~1,3 Mo. `doctor` : tout
+`ok` (sauf `systemd`, absent, `warn`), démarrage de Chrome en ~300 ms ; `examples/e2e.sh` : `SCÉNARIO VALIDÉ`.
+
+**Sandbox Chrome : conservée, et c'est elle qui impose une option.** Avec le profil seccomp par défaut de
+Docker, un utilisateur non-root ne suffit pas : Chromium s'arrête au démarrage (`No usable sandbox!`, les
+espaces de noms utilisateur sont refusés ; le sandbox setuid `chromium-sandbox` échoue de même, essayé :
+`Failed to move to new namespace`). Grasp ne passe pas `--no-sandbox` à votre place ; `doctor` et
+`session create` le disent (`sandbox indisponible … --security-opt seccomp=… ou --cap-add=SYS_ADMIN`).
+Deux remèdes, vérifiés :
+
+| Option | Ce qu'elle ouvre |
+|---|---|
+| `--security-opt seccomp=docker/seccomp-chrome.json` (**recommandé**) | Le profil par défaut de Docker plus une seule règle : `clone` et `unshare` sans condition. Généré par [`docker/seccomp-chrome.mjs`](docker/seccomp-chrome.mjs) depuis le [profil de Moby](https://github.com/moby/profiles/blob/main/seccomp/default.json) (Apache-2.0). |
+| `--cap-add=SYS_ADMIN` | Beaucoup plus large (`mount`, `setns`, `bpf`…, toutes les opérations réservées à `CAP_SYS_ADMIN`). |
+
+Vérifié pendant une session : le renderer tourne dans ses propres espaces de noms utilisateur et PID
+(`/proc/<pid>/ns/user` ≠ celui du PID 1). `--security-opt seccomp=unconfined` marcherait aussi, mais retire
+tout filtre : à éviter.
+
+**Utiliser le control plane depuis l'hôte.** Il n'écoute que sur un socket Unix ou sur `127.0.0.1` **du
+conteneur**, que `docker run -p` ne peut pas atteindre. Trois voies, essayées toutes les trois :
+
+1. **`docker exec`** (aucune exposition) : `docker exec -e GRASP_SESSION=$S grasp grasp snap`. Le plus simple
+   pour un agent qui a accès à `docker`.
+2. **Socket Unix monté** (Linux, même UID des deux côtés) : le socket et le token sont des fichiers `0600`,
+   et Grasp refuse de démarrer si leur propriétaire n'est pas l'utilisateur courant. Image construite avec
+   `--build-arg UID=$(id -u) --build-arg GID=$(id -g)`, puis :
+   ```bash
+   mkdir -m 700 -p ~/grasp-docker/{run,config,state}
+   docker run -d --name grasp --shm-size=1g --security-opt seccomp=docker/seccomp-chrome.json \
+     -v grasp-data:/data -v ~/grasp-docker/run:/run/grasp -v ~/grasp-docker/config:/data/config grasp
+   XDG_RUNTIME_DIR=~/grasp-docker/run XDG_CONFIG_HOME=~/grasp-docker/config \
+     XDG_STATE_HOME=~/grasp-docker/state grasp status
+   ```
+   Le `XDG_STATE_HOME` de l'hôte doit être distinct de celui d'un Grasp local (sinon son `endpoint.json`
+   prime). Essayé sous Docker Engine Linux (WSL2) seulement ; sous Docker Desktop (macOS, Windows), le
+   partage d'un socket Unix par un montage n'est pas garanti : préférez la voie 3.
+3. **TCP explicite** : `serve --tcp --port 7777 --listen 0.0.0.0`, port publié **sur la boucle locale de
+   l'hôte**, client désigné par `GRASP_URL` :
+   ```bash
+   docker run -d --name grasp --shm-size=1g --security-opt seccomp=docker/seccomp-chrome.json \
+     -p 127.0.0.1:7777:7777 -v grasp-data:/data grasp serve --tcp --port 7777 --listen 0.0.0.0
+   mkdir -m 700 -p ~/grasp-docker/config/grasp
+   docker exec grasp cat /data/config/grasp/token > ~/grasp-docker/config/grasp/token
+   chmod 600 ~/grasp-docker/config/grasp/token
+   GRASP_URL=http://127.0.0.1:7777 XDG_CONFIG_HOME=~/grasp-docker/config grasp status
+   ```
+   `--listen` n'existe que sur la ligne de commande, n'accepte qu'une IP littérale et exige `--tcp` ; le
+   token reste exigé (401 sans lui, vérifié), et `grasp security` affiche l'exposition. Sans TLS : ne publiez
+   jamais ce port au-delà de `127.0.0.1` (ou derrière un tunnel SSH).
+
+`docker stop` envoie `SIGTERM` à `tini`, qui le relaie : sessions fermées, Chrome arrêté, sortie 0
+(mesuré : < 1 s avec une session ouverte). `grasp stop` depuis l'hôte ne s'applique pas (le PID est dans le
+conteneur). Le `127.0.0.1` du navigateur est celui du conteneur : un site servi sur la boucle locale de
+l'hôte n'y répond pas (vérifié : `ERR_CONNECTION_REFUSED`). Le joindre demande une configuration réseau
+Docker (non essayée ici), et son nom d'hôte doit figurer dans l'allowlist.
 
 ## Configuration
 
