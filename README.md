@@ -791,7 +791,7 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `wait` | `text` \| `sel` \| `idle`, `timeout` | idem |
 | `console` | `level`, `since`, `limit` (50), `clear` | idem |
 | `screenshot` | `full`, `el`, `format`, `quality`, `maxWidth`, `refs`, `image` | `screenshot` sans `-o` |
-| `run` | `script`, `continue` | `grasp run` |
+| `run` | `script`, `continue`, `report` | `grasp run [--report\|--no-report]` ; lignes `expect` et [rapport de recette](#recette--expect-et-rapport-de-run) joint d'office |
 | `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
 
 Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright`).

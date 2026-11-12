@@ -236,6 +236,15 @@ test('mcp : run (script grasp run), session imposée réutilisée et jamais ferm
       const invalid = await mcp.call('run', { script: 'click e3 --snapdiff' });
       assert.equal(invalid.isError, true);
       assert.match(invalid.text, /option --snapdiff inconnue/);
+      // Recette : expect dans run, rapport joint d'office ; un expect qui échoue → isError avec « attendu … ; constaté ».
+      const ok = await mcp.call('run', { script: `nav ${site.url}/\nexpect text "Inscription"\nexpect no-form-errors` });
+      assert.equal(ok.isError, false, ok.text);
+      assert.match(ok.text, /== recette : OK/);
+      const ko = await mcp.call('run', { script: `nav ${site.url}/\nexpect text "Texte absent" --timeout 0` });
+      assert.equal(ko.isError, true);
+      assert.match(ko.text, /attendu texte « Texte absent »/);
+      assert.match(ko.text, /== recette : ÉCHEC/);
+      assert.doesNotMatch((await mcp.call('run', { script: `expect url ~ ${site.url}`, report: false })).text, /== recette/);
 
       assert.match((await mcp.call('profile')).text, /aucun profil/);
       await srv.api('POST', '/profiles', { name: 'travail' });

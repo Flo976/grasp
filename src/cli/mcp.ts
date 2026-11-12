@@ -5,7 +5,7 @@ import type { GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { buildRequest, ScriptError, type Args, type StepRequest } from '../core/script.js';
-import type { RunResult } from '../control/run.js';
+import { formatReport, type RunResult } from '../control/run.js';
 
 /**
  * `grasp mcp` : serveur MCP (Model Context Protocol) sur stdio, JSON-RPC 2.0, un message JSON par ligne.
@@ -306,11 +306,11 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'run',
-    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, snap, text, click, fill, select, check, press, hover, type, wait, eval, console, screenshot, cookies, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true.',
-    props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.') },
+    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
+    props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.'), report: B('Rapport de recette (étapes, erreurs console, requêtes en échec, formulaire, page finale) : d\'office avec un expect.') },
     required: ['script'],
     async run(c, a) {
-      const r = (await c.call('POST', '/run', { script: a.script, ...(a.continue === true ? { continue: true } : {}) }, 60 * 60_000)).json() as RunResult;
+      const r = (await c.call('POST', '/run', { script: a.script, ...(a.continue === true ? { continue: true } : {}), ...(typeof a.report === 'boolean' ? { report: a.report } : {}) }, 60 * 60_000)).json() as RunResult;
       const lines: string[] = [];
       for (const st of r.steps) {
         lines.push(`[${st.n}] ${st.text} → ${st.ok ? 'OK' : `ERROR: ${st.error ?? 'échec'}`}`);
@@ -320,6 +320,7 @@ const TOOLS: Tool[] = [
       const failed = r.steps.filter((st) => !st.ok).length;
       const notRun = r.total - r.executed;
       lines.push(`${r.total} commande(s), ${r.steps.length - failed} OK${failed > 0 ? `, ${failed} en échec` : ''}${notRun > 0 ? `, ${notRun} non exécutée(s)` : ''}`);
+      if (r.report !== undefined) lines.push(formatReport(r.report));
       return { content: [{ type: 'text', text: lines.join('\n') }], ...(r.ok ? {} : { isError: true }) };
     },
   },
