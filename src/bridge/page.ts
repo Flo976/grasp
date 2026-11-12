@@ -4,7 +4,7 @@ import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, url
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
-import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
+import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, urlBase, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
 import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
@@ -616,6 +616,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Code FIXE de lecture d'un stockage Web : JSON de [{name, value}] dans l'ordre des clés. */
 const READ_STORAGE_FN = (area: 'localStorage' | 'sessionStorage') =>
   `(() => { const s = ${area}, out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push({ name: k, value: s.getItem(k) }); } return JSON.stringify(out); })()`;
+/** `grasp storage get` : au-delà, la valeur est tronquée (et la troncature annoncée). */
+export const STORAGE_GET_MAX = 4000;
 /** Code FIXE d'écriture ; les données n'y entrent que sérialisées en JSON. */
 const WRITE_STORAGE_FN = (area: 'localStorage' | 'sessionStorage', items: StateItem[]) =>
   `((items) => { for (const it of items) ${area}.setItem(it.name, it.value); return ${area}.length; })(${JSON.stringify(items)})`;
@@ -923,7 +925,7 @@ export class PageController {
     const now = Date.now();
     if (this.net.has(requestId)) return;
     let key = `${method} ${url}`;
-    try { const u = new URL(url); key = `${method} ${u.origin}${u.pathname}`; } catch { /* URL opaque */ }
+    try { const u = new URL(url); key = `${method} ${urlBase(u)}`; } catch { /* URL opaque */ }
     let ts = this.netStarts.get(key);
     if (ts === undefined) ts = [];
     ts.push(now);
@@ -3131,6 +3133,31 @@ export class PageController {
       }
     }
     return { ok: true, cookies, origins, localStorageKeys: keys, sessionStorage: session, skipped };
+  }
+
+  /**
+   * `grasp storage get|set|rm local|session <clé> [valeur]` : stockage Web de l'ORIGINE AFFICHÉE seulement (http(s),
+   * dans l'allowlist), soumis à allowCookies comme l'export/import d'état (mêmes données : jetons de session).
+   * Code FIXE dans le monde isolé (même stockage que la page, invisible pour ses scripts) : la clé et la valeur n'y
+   * entrent que sérialisées en JSON — aucune évaluation arbitraire, d'où l'indépendance vis-à-vis d'allowEval.
+   * get : valeur bornée à STORAGE_GET_MAX caractères, troncature annoncée.
+   */
+  async storage(op: string, area: string, key: string, value?: string): Promise<{ ok: true; op: 'get' | 'set' | 'rm'; origin: string; area: 'local' | 'session'; key: string; value?: string | null; truncated?: number; existed?: boolean }> {
+    this.stateAllowed();
+    if (op !== 'get' && op !== 'set' && op !== 'rm') throw badRequest(`opération inconnue « ${op} » (get, set, rm)`);
+    if (area !== 'local' && area !== 'session') throw badRequest(`stockage inconnu « ${area} » (local ou session)`);
+    if (key === '' || key.length > 1000) throw badRequest('clé attendue (1 à 1000 caractères)');
+    if (op === 'set' && value === undefined) throw badRequest('storage set : valeur attendue');
+    const origin = normalizeOrigin((await this.location()).url);
+    if (origin === null) throw conflict('la page affichée n\'a pas d\'origine http(s) (about:blank ?) : naviguez d\'abord vers le site, puis posez la valeur (le stockage est celui de l\'origine affichée)');
+    if (!checkUrl(this.policy.allowedDomains, origin).allowed) throw forbidden(`origine hors allowlist : ${origin}`);
+    const s = area === 'local' ? 'localStorage' : 'sessionStorage';
+    const args = JSON.stringify({ op, key, value: value ?? null });
+    const r = await this.evalIsolated<{ value: string | null; existed: boolean }>(`((a) => { const s = ${s}; const old = s.getItem(a.key); if (a.op === 'set') s.setItem(a.key, a.value); else if (a.op === 'rm') s.removeItem(a.key); return { value: old, existed: old !== null }; })(${args})`);
+    const base = { ok: true as const, op: op as 'get' | 'set' | 'rm', origin, area: area as 'local' | 'session', key };
+    if (op !== 'get') return { ...base, existed: r.existed };
+    if (r.value !== null && r.value.length > STORAGE_GET_MAX) return { ...base, value: r.value.slice(0, STORAGE_GET_MAX), truncated: r.value.length };
+    return { ...base, value: r.value };
   }
 
   async cookies(): Promise<unknown[]> {

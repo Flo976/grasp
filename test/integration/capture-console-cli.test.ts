@@ -108,7 +108,7 @@ test('CLI console : une ligne par entrée, seq courant sur stderr, --since/--lev
     const since = await runCli(t.env, ['console', '--since', String(seq)]);
     assert.match(since.stdout, /^#\d+ warn  console répété .*×5\n$/);
     const errs = (await runCli(t.env, ['console', '--level', 'error'])).stdout.trim().split('\n');
-    assert.ok(errs.every((l) => / error |navigation →/.test(l)), errs.join('\n'));
+    assert.ok(errs.length > 0 && errs.every((l) => / error /.test(l)), errs.join('\n')); // jamais de repère de navigation en --level error
     assert.equal((await runCli(t.env, ['console', '--limit', '2'])).stdout.trim().split('\n').length, 2);
     const js = JSON.parse((await runCli(t.env, ['console', '--json', '--limit', '1'])).stdout);
     assert.equal(js.entries.length, 1);

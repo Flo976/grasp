@@ -5,7 +5,7 @@ import { connect, isIP } from 'node:net';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
-import { bridgeSocketPath, checkSocketPaths, type GraspPaths } from '../core/paths.js';
+import { bridgeSocketPath, checkSocketFallbackDir, checkSocketPaths, fallbackSocketBase, type GraspPaths } from '../core/paths.js';
 import { checkPermissions, ensurePrivateDir } from '../core/perms.js';
 import { loadConfigFile, resolveConfig, limitsOf, type ResolvedConfig } from '../core/config.js';
 import { checkUrl, effectivePolicy, type EffectivePolicy } from '../core/policy.js';
@@ -127,7 +127,7 @@ export function checkListen(listen: string | undefined, transport: 'unix' | 'tcp
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect', '/storage']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -192,6 +192,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   const { paths } = o;
   const log = o.log ?? ((m: string) => process.stderr.write(`${new Date().toISOString()} grasp: ${m}\n`));
 
+  // 0. Chemin de socket trop long : repli sous /tmp/grasp-<uid>/<hash>, vérifié (propriétaire, 0700, pas de lien).
+  if (paths.socketFallback !== undefined) {
+    checkSocketFallbackDir(paths.socketFallback.dir, fallbackSocketBase(), true);
+    log(`chemin de socket trop long (${Buffer.byteLength(paths.socketFallback.original)} octets > 107) : sockets dans ${paths.socketFallback.dir} (0700)`);
+  }
   // 1. Permissions AVANT toute création : on refuse, on ne corrige pas en silence.
   checkPermissions(permissionTargets(paths));
   for (const d of [paths.configDir, paths.stateDir, paths.logDir, paths.capturesDir, paths.dataDir, paths.profilesDir, paths.tmpProfilesDir, paths.runDir, paths.bridgesDir]) ensurePrivateDir(d);
@@ -652,6 +657,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       } catch { /* texte brut */ }
       throw new GraspError(r.status, msg, extra);
     }
+    // screenshot -o dans run : l'image revient au client (base64), qui l'écrit lui-même sous --out-dir.
+    if (rq.saveAs !== undefined && !isJson) {
+      const h = (k: string) => String(r.headers[k] ?? '');
+      return { saveAs: rq.saveAs, format: h('x-grasp-format'), width: Number(h('x-grasp-width')), height: Number(h('x-grasp-height')), bytes: r.body.length, ...(h('x-grasp-truncated') === '1' ? { truncated: true } : {}), data: r.body.toString('base64') };
+    }
     return isJson ? r.json() : r.text();
   }
 
@@ -742,7 +752,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
         const body = await readJson(req);
-        const steps = compileScript(str(body, 'script'));
+        const steps = compileScript(str(body, 'script'), { files: optBool(body, 'files') === true });
         const s = pickSession(req, url);
         // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
         // lesquelles ont été exécutées — l'appelant, lui, ne verra jamais la réponse.

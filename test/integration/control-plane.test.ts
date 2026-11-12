@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync, chmodSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, statSync, chmodSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
@@ -214,19 +214,35 @@ test('control plane : SIGKILL du serveur → les bridges et Chrome meurent avec 
   } finally { t.cleanup(); }
 });
 
-test('control plane : XDG_RUNTIME_DIR trop long → refus explicite au démarrage, pas « listen EADDRINUSE »', async () => {
+test('control plane : XDG_RUNTIME_DIR trop long → repli /tmp/grasp-<uid>/<hash> (0700), client et serveur d\'accord, bridges compris', async () => {
   const t = makeTestEnv();
+  const site = await startTestSite();
+  const long = join(t.root, 'r'.repeat(110));
+  const env: NodeJS.ProcessEnv = { ...t.env, XDG_RUNTIME_DIR: long };
+  const paths = resolvePaths(env, env.HOME);
+  assert.ok(paths.socketFallback !== undefined);
+  const srv = await startServer(env);
   try {
-    const long = join(t.root, 'r'.repeat(110));
-    const r = await runCli({ ...t.env, XDG_RUNTIME_DIR: long }, ['serve']);
-    assert.notEqual(r.code, 0);
-    assert.match(r.stderr, /^ERROR: serve: .*107 octets/m);
-    assert.match(r.stderr, /XDG_RUNTIME_DIR/);
-    assert.doesNotMatch(r.stderr, /EADDRINUSE/);
-    // Socket du control plane assez court, mais ceux des bridges non : refus aussi, avant toute session.
-    const mid = join(t.root, 'm'.repeat(Math.max(1, 85 - t.root.length)));
-    const r2 = await runCli({ ...t.env, XDG_RUNTIME_DIR: mid }, ['serve']);
-    assert.notEqual(r2.code, 0, r2.stderr);
-    assert.match(r2.stderr, /bridge.*107 octets|107 octets.*bridge/s);
-  } finally { t.cleanup(); }
+    assert.match(srv.stderr(), /chemin de socket trop long .*sockets dans \/tmp\/grasp-\d+\/[0-9a-f]{12}/);
+    assert.doesNotMatch(srv.stderr(), /EADDRINUSE/);
+    assert.equal(statSync(paths.socketFallback.dir).mode & 0o777, 0o700);
+    assert.equal(statSync(paths.socketPath).mode & 0o777, 0o600);
+    // Le client (même calcul) joint le serveur, et une session (socket de bridge sous le repli) fonctionne.
+    const sess = await runCli(env, ['session', 'create']);
+    assert.equal(sess.code, 0, sess.stderr);
+    const nav = await runCli(env, ['nav', `${site.url}/`]);
+    assert.equal(nav.code, 0, nav.stderr);
+    // Répertoire de repli rendu trop ouvert : le client refuse d'y envoyer le token.
+    chmodSync(paths.socketFallback.dir, 0o755);
+    const st = await runCli(env, ['snap']);
+    assert.notEqual(st.code, 0);
+    assert.match(st.stderr, /repli des sockets refusé.*0755/);
+    chmodSync(paths.socketFallback.dir, 0o700);
+  } finally {
+    await runCli(env, ['stop']);
+    await waitExit(srv.proc);
+    await site.close();
+    rmSync(paths.socketFallback.dir, { recursive: true, force: true });
+    t.cleanup();
+  }
 });

@@ -76,11 +76,12 @@ export class ConsoleBuffer {
     const dropped = Math.max(0, Math.min(oldest, this.last + 1) - firstWanted);
     const max = q.level !== undefined ? RANK[q.level] : RANK.debug;
     // Fusion AVANT le filtre de niveau : ×N ne regroupe que des entrées réellement consécutives dans le
-    // tampon (rien de masqué par --level entre elles). Les repères de navigation restent quel que soit le niveau.
-    const merged = mergeRuns(this.items.filter((e) => e.seq > since)).filter((e) => e.source === 'navigation' || RANK[e.level] <= max);
+    // tampon (rien de masqué par --level entre elles). Les repères de navigation sont de niveau info : ils
+    // suivent le filtre comme le reste (présents sans --level et en info/debug, absents en warn et error).
+    const merged = mergeRuns(this.items.filter((e) => e.seq > since)).filter((e) => RANK[e.level] <= max);
     if (q.limit === undefined) return { entries: merged, seq: this.last, dropped, omitted: 0 };
     // --limit porte sur les lignes du niveau demandé, et `omitted` ne compte qu'elles : les repères de
-    // navigation (gardés quel que soit le niveau) n'y entrent pas — une SPA qui enchaîne les replaceState
+    // navigation (quand le niveau les inclut) n'y entrent pas — une SPA qui enchaîne les replaceState
     // ne doit ni évincer les erreurs, ni gonfler « N ligne(s) plus ancienne(s) ». Des lignes écartées : les
     // repères antérieurs à la première ligne gardée le sont aussi.
     const lines = merged.filter((e) => e.source !== 'navigation');
@@ -200,6 +201,19 @@ export function levelOfLog(level: string): ConsoleLevel {
 
 const SENSITIVE_PARAM = /token|key|secret|pass|auth|session|sig|jwt|credential|code/i;
 
+/**
+ * Schéma, hôte et chemin d'une URL, sans requête ni fragment. Pas `origin + pathname` : l'origine d'une URL
+ * opaque (about:blank, data:, file:) vaut « null », d'où « nullblank ».
+ */
+export function urlBase(u: URL): string {
+  const c = new URL(u.href);
+  c.username = '';
+  c.password = '';
+  c.search = '';
+  c.hash = '';
+  return c.href;
+}
+
 /** URL affichable : identifiants retirés, valeurs de paramètres sensibles masquées, longueur bornée. */
 export function redactUrl(raw: string, max = 150): string {
   if (raw.startsWith('data:')) {
@@ -211,7 +225,7 @@ export function redactUrl(raw: string, max = 150): string {
   try { u = new URL(raw); } catch { return raw.length > max ? `${raw.slice(0, max)}…` : raw; }
   u.username = '';
   u.password = '';
-  let s = `${u.origin}${u.pathname}`;
+  let s = urlBase(u);
   if (u.search !== '') {
     const parts: string[] = [];
     for (const [k, v] of u.searchParams) parts.push(`${encodeURIComponent(k)}=${SENSITIVE_PARAM.test(k) ? '***' : encodeURIComponent(v)}`);

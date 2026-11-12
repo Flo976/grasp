@@ -17,15 +17,18 @@ test('tampon circulaire : seq croissant, capacité bornée, les plus anciennes t
   assert.equal(b.query({ since: 6 }).dropped, 0);
 });
 
-test('filtre --level : le niveau demandé et les plus graves ; les repères de navigation restent', () => {
+test('filtre --level : le niveau demandé et les plus graves ; les repères de navigation (info) suivent le filtre', () => {
   const b = new ConsoleBuffer();
   push(b, 'debug', 'd');
   push(b, 'info', 'i');
   b.push({ level: 'info', source: 'navigation', text: 'http://x/' });
   push(b, 'warn', 'w');
   push(b, 'error', 'e');
-  assert.deepEqual(b.query({ level: 'warn' }).entries.map((e) => e.text), ['http://x/', 'w', 'e']);
-  assert.deepEqual(b.query({ level: 'error' }).entries.map((e) => e.text), ['http://x/', 'e']);
+  // Régression (essai réel) : --level error remontait aussi les repères de navigation.
+  assert.deepEqual(b.query({ level: 'warn' }).entries.map((e) => e.text), ['w', 'e']);
+  assert.deepEqual(b.query({ level: 'error' }).entries.map((e) => e.text), ['e']);
+  assert.deepEqual(b.query({ level: 'info' }).entries.map((e) => e.text), ['i', 'http://x/', 'w', 'e']);
+  assert.equal(b.query({}).entries.length, 5, 'sans --level : tout, repères compris');
   assert.equal(b.query({ level: 'debug' }).entries.length, 5);
   assert.throws(() => b.query({ level: 'fatal' as never }), /niveau/);
 });
@@ -52,13 +55,14 @@ test('--limit et omitted : seules les lignes du niveau demandé comptent, jamais
   push(b, 'info', 'i');
   b.push({ level: 'info', source: 'navigation', text: 'http://y/' });
   push(b, 'error', 'B');
-  const r = b.query({ level: 'error', limit: 50 });
+  const r = b.query({ level: 'info', limit: 50 });
   assert.equal(r.omitted, 0);
-  assert.equal(r.entries.length, 64, 'rien d\'écarté : tous les repères restent');
-  assert.deepEqual(r.entries.filter((e) => e.source !== 'navigation').map((e) => e.text), ['A', 'B']);
-  const r1 = b.query({ level: 'error', limit: 1 });
-  assert.equal(r1.omitted, 1);
+  assert.equal(r.entries.length, 65, 'rien d\'écarté : tous les repères restent');
+  assert.deepEqual(r.entries.filter((e) => e.source !== 'navigation').map((e) => e.text), ['A', 'i', 'B']);
+  const r1 = b.query({ level: 'info', limit: 1 });
+  assert.equal(r1.omitted, 2);
   assert.deepEqual(r1.entries.map((e) => e.text), ['B'], 'au plus --limit lignes, repères antérieurs écartés');
+  assert.deepEqual(b.query({ level: 'error', limit: 50 }).entries.map((e) => e.text), ['A', 'B'], 'error : aucun repère');
   assert.equal(b.query({ level: 'debug', limit: 1 }).omitted, 2, 'info et A écartées');
   assert.equal(b.query({ level: 'error' }).omitted, 0);
 });
@@ -103,6 +107,12 @@ test('formatArgs : chaînes de format, primitives, aperçus compacts d\'objets, 
 });
 
 test('redactUrl : identifiants, valeurs de paramètres sensibles masquées, URL tronquée', () => {
+  // Régression (essai réel) : l'origine d'une URL opaque vaut « null » — jamais « nullblank ».
+  assert.equal(redactUrl('about:blank'), 'about:blank');
+  assert.equal(redactUrl('about:blank#x'), 'about:blank');
+  assert.equal(redactUrl('file:///tmp/a.html?token=t'), 'file:///tmp/a.html?token=***');
+  assert.equal(redactUrl('http://h.test'), 'http://h.test/');
+  assert.equal(redactUrl('http://h.test:8080/a/b#frag'), 'http://h.test:8080/a/b');
   assert.equal(redactUrl('http://user:motdepasse@h.test/p?token=abc123&page=2&api_key=K&Session=S'), 'http://h.test/p?token=***&page=2&api_key=***&Session=***');
   const long = redactUrl(`http://h.test/${'a'.repeat(400)}`);
   assert.ok(long.length <= 160, `longueur ${long.length}`);

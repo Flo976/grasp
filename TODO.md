@@ -145,13 +145,20 @@ Image Docker
 
 - [ ] **Viewport** : `grasp viewport 360x800 [--mobile] [--dpr N]` ou option de session
       (`Emulation.setDeviceMetricsOverride`) ; la fenêtre est fixée à 780 px, impossible de tester un défaut mobile.
-- [ ] **Socket trop long** : repli automatique (`/run/user/$UID` ou nom court haché) quand le chemin du socket
-      Unix dépasse la limite (GRASP_HOME dans un tmp profond), au lieu d'échouer.
-- [ ] **`screenshot -o <fichier>` dans `grasp run`** : aujourd'hui refusé ; utile pour des captures nommées
-      dans un rapport de recette.
-- [ ] **`console --level error`** remonte aussi les événements de navigation : ne garder que les erreurs.
-- [ ] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé).
-- [ ] **Poser une session factice sans `allowEval`** : `grasp state import` le permet déjà (documenter ce cas
-      d'usage dans la section Recette) ; envisager `grasp storage set local <clé> <valeur>`.
+- [x] **Socket trop long** : repli automatique sur `/tmp/grasp-<uid>/<hash>/` (0700, propriétaire et absence de lien
+      vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
+- [x] **`screenshot -o <fichier>` dans `grasp run`** : chemin relatif sans `..`, image renvoyée au client et
+      écrite par la CLI sous `--out-dir` (0600, liens qui sortent refusés) ; 20 par run ; refusé via HTTP/MCP.
+- [x] **`grasp run --out-dir` vérifié avant le run** : répertoire et chemins de `screenshot -o` contrôlés par la
+      CLI avant l'envoi (aucune étape exécutée sinon) ; un échec d'écriture tardif marque l'étape KO sans jeter
+      le résultat du run.
+- [x] **`console --level error`** remonte aussi les événements de navigation : les repères (niveau info) suivent
+      désormais le filtre ; `--level error|warn` ne les rend plus.
+- [x] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé) : `urlBase` (schéma,
+      hôte, chemin) remplace `origin + pathname` dans `redactUrl` et la clé de fusion réseau.
+- [x] **Poser une session factice sans `allowEval`** : cas d'usage `grasp state import` documenté dans la section
+      Recette (fichier minimal, testé) ; `grasp storage get|set|rm local|session <clé> [valeur|-]` sur l'origine
+      affichée, code fixe dans le monde isolé, soumis à `allowCookies` (mêmes données que l'export d'état), aussi
+      dans `grasp run`.
 - [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
       (`aria-describedby` absent), etc. Utile en recette.

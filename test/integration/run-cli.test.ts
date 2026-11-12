@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { makeTestEnv, type TestEnv } from '../helpers/env.js';
@@ -117,7 +117,7 @@ test('run : erreurs de syntaxe détectées avant toute exécution (guillemet non
     ['nav http://127.0.0.1/\nfill text:Nom "Ada\n', /ligne 2 : guillemet non fermé/],
     ['snap\nfrobnicate x\n', /ligne 2 : commande inconnue « frobnicate »/],
     ['serve\n', /ligne 1 : « serve » n'est pas disponible dans run/],
-    ['screenshot -o /tmp/x.png\n', /ligne 1 : screenshot -o n'est pas disponible dans run/],
+    ['screenshot -o /tmp/x.png\n', /ligne 1 : screenshot -o \/tmp\/x\.png : chemin relatif attendu/],
     ['fill text:Nom\n', /ligne 1 : usage : grasp fill/],
     ['# rien\n\n', /aucune commande/],
     ['snap\nclick e1 --session autre\n', /ligne 2 : --session n'a pas de sens sur une ligne de run/],
@@ -139,6 +139,54 @@ screenshot --el h1
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, /\[3\] console --level error --limit 3 → OK\n(#\d+ error .*\n){1,3}/);
   assert.match(r.stdout, /\[4\] screenshot --el h1 → OK\n\/.*\.png\n/);
+});
+
+test('run : screenshot -o <fichier relatif> écrit par la CLI sous --out-dir (0600), jamais le base64 en sortie ; refusé hors CLI', async () => {
+  const outDir = join(t.root, 'rapport');
+  const r = await runCli(env, ['run', '--out-dir', outDir], `nav ${site.url}/
+screenshot -o captures/accueil.png
+screenshot --el h1 -o titre.jpg
+`);
+  assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+  const png = join(outDir, 'captures', 'accueil.png');
+  const jpg = join(outDir, 'titre.jpg');
+  assert.match(r.stdout, new RegExp(`\\[2\\] screenshot -o captures/accueil\\.png → OK\\n${png.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`));
+  assert.deepEqual([...readFileSync(png).subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], 'PNG');
+  assert.deepEqual([...readFileSync(jpg).subarray(0, 2)], [0xff, 0xd8], 'JPEG déduit de l\'extension');
+  assert.equal(statSync(png).mode & 0o777, 0o600);
+  // --json : chemin écrit, jamais l'image en base64.
+  const j = await runCli(env, ['run', '--json', '--out-dir', outDir], 'screenshot -o captures/accueil.png\n');
+  assert.equal(j.code, 0, j.stderr);
+  const res = JSON.parse(j.stdout) as { steps: Array<{ output?: string; result?: Record<string, unknown> }> };
+  assert.equal(res.steps[0]!.result!.path, png);
+  assert.equal(res.steps[0]!.result!.data, undefined);
+  assert.ok(j.stdout.length < 2000, `sortie bornée : ${j.stdout.length} octets`);
+  // API HTTP (ou MCP) sans « files » : refus explicite, le serveur n'écrit jamais où le script le demande.
+  const api = await srv.api('POST', '/run', { script: 'screenshot -o x.png' }, { 'x-grasp-session': env.GRASP_SESSION! });
+  assert.equal(api.status, 400);
+  assert.match(api.json().error, /screenshot -o n'est disponible que depuis la CLI/);
+});
+
+test('run : --out-dir ou chemin de screenshot -o inutilisable → refus AVANT le run, aucune étape exécutée (pas de clic après une étape KO)', async () => {
+  assert.equal((await runCli(env, ['nav', `${site.url}/sonde`])).code, 0);
+  const fichier = join(t.root, 'pasunrep');
+  writeFileSync(fichier, 'x');
+  const script = `screenshot -o a.png\nclick '#compter'\n`;
+  // --out-dir sous un fichier : avant correction, le run s'exécutait (clic compris) puis la CLI jetait le résultat.
+  const r = await runCli(env, ['run', '--out-dir', join(fichier, 'sub')], script);
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '', 'rien exécuté');
+  assert.match(r.stderr, /^ERROR: run: --out-dir .*pasunrep\/sub : .*aucune commande exécutée/m);
+  // Chemin de capture qui passe sous un fichier : même refus avant le run, ligne citée.
+  const outDir = join(t.root, 'sortie-ko');
+  mkdirSync(outDir);
+  writeFileSync(join(outDir, 'f'), 'x');
+  const r2 = await runCli(env, ['run', '--out-dir', outDir], `screenshot -o f/a.png\nclick '#compter'\n`);
+  assert.equal(r2.code, 1);
+  assert.equal(r2.stdout, '', 'rien exécuté');
+  assert.match(r2.stderr, /ligne 1 : screenshot -o f\/a\.png : .*aucune commande exécutée/);
+  const txt = await runCli(env, ['text']);
+  assert.match(txt.stdout, /Compte : 0/, 'le clic de la 2e ligne n\'est jamais parti');
 });
 
 test('run : client déconnecté (Ctrl-C, délai de l\'agent) → les étapes restantes ne sont PAS exécutées, et le journal dit où le run s\'est arrêté', async () => {

@@ -548,11 +548,12 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `press <touche> [sél]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, `Control+a`… |
 | `hover <sél>` | Survol (pointeur déplacé au centre de l'élément) : menus au survol, infobulles. Livraison vérifiée. |
 | `type <sél> <texte> [--delay ms]` | Frappe touche par touche, **ajoutée** à la position du curseur (autocomplétions qui réagissent à chaque touche) ; `--delay` de 0 à 1000 ms entre deux touches. `fill` reste le bon choix pour remplacer une valeur. |
-| `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
+| `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). Dans `grasp run`, `-o <relatif>` est écrit par la CLI sous `--out-dir`. |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
+| `storage get\|rm local\|session <clé>`, `storage set local\|session <clé> <valeur\|->` | Stockage Web de l'origine affichée, sans `eval`. Exige `allowCookies`. Voir [Session factice](#session-factice-sans-alloweval). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -685,12 +686,12 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
   **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
-  cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  cookies storage upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
 - Le script est **analysé en entier avant d'exécuter** : guillemet non fermé, commande inconnue ou hors run
-  (`serve`, `pdf`, `screenshot -o` : le fichier serait écrit par le serveur…), option inconnue de la commande
+  (`serve`, `pdf`…), option inconnue de la commande
   (`click e3 --snapdiff`) ou option **globale** sur une ligne (`--session`, `--json`, `--profile`, `--continue`,
   `--port` : elles changeraient le sens de la ligne sans effet réel — `click e3 --session autre` agirait sur la
   session du run) → `ERROR: run: ligne N : …`, rien n'est exécuté : une option n'est jamais ignorée en silence.
@@ -705,6 +706,21 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   diff, console, chemin d'une capture, valeur d'eval), avec les mêmes limites de taille qu'en commande isolée ;
   notes numérotées (`[6] note: sélectionné : Madagascar`) et bilan (`7 commandes, 7 OK (…)`) sur stderr.
   `--json` : `{ok, total, executed, steps: [{n, line, text, cmd, ok, output?, detail?, status?, error?, result, screenshot?, ms}], report?}`.
+- **Captures nommées** : `screenshot -o captures/etape1.png` (format déduit de l'extension, comme en commande
+  isolée). Le chemin doit être **relatif**, sans `..` (vérifié à l'analyse du script) ; l'image revient au client
+  dans la réponse du run et c'est **la CLI** qui l'écrit, sous `--out-dir <répertoire>` (défaut : répertoire
+  courant), en 0600 et atomiquement. Un sous-répertoire en lien symbolique qui sortirait du répertoire de sortie
+  est refusé (rien n'est créé dehors) ; un lien à la place du fichier est remplacé, sa cible jamais écrite ;
+  réécrire un fichier du répertoire est permis (relancer une recette), deux lignes vers le même fichier sont
+  refusées. 20 captures nommées au plus par run (chaque image transite en base64 dans la réponse) ; la sortie,
+  `--json` comprise, ne contient que le chemin écrit. Via l'API HTTP ou MCP (qui n'écrivent pas de fichier côté
+  client), une ligne `screenshot -o` est refusée : le serveur n'écrit jamais là où un script le demande.
+  **Vérifié avant l'envoi** : la CLI crée `--out-dir` et contrôle chaque chemin (ancêtre existant qui est un
+  répertoire inscriptible, liens qui sortent, cible qui serait un répertoire) **sans rien écrire** ; au moindre
+  problème, `ERROR: run: ligne 3 : screenshot -o … : … — aucune commande exécutée`, code 1, aucune étape partie.
+  Reste l'échec tardif (répertoire supprimé ou disque plein pendant le run) : l'étape de capture passe en
+  `ERROR: capture non écrite : …` et le run en échec, mais les étapes suivantes **ont déjà été exécutées**
+  (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
@@ -800,6 +816,61 @@ page finale : http://127.0.0.1:45955/boutique « Boutique »
 - Le verdict ne dépend que des étapes : une erreur console rapportée ne fait pas échouer le run ; pour qu'elle
   le fasse, `expect no-console-errors`. Exemple complet : `examples/recette.sh` (une recette qui passe, puis la
   même qui échoue sur une 500).
+
+#### Session factice sans `allowEval`
+
+Une application qui garde sa session dans le stockage Web (jeton, profil, préférences) se teste connectée sans
+passer par son formulaire et **sans activer `eval`** : `allowCookies` suffit (désactivé par défaut ; il couvre
+déjà l'export et l'import de l'[état](#état--export-et-import), mêmes données). Deux voies, toutes deux testées
+(`test/integration/storage.test.ts`), le résultat se vérifiant par le contenu de la page :
+
+1. **`grasp state import`, avant toute navigation** — le fichier ne contient que ce qu'on pose (ni `cookies`
+   ni `exportedAt` ne sont obligatoires) :
+
+   ```json
+   {
+     "format": "grasp-state", "version": 1,
+     "origins": [{ "origin": "http://127.0.0.1:8080",
+                   "localStorage": [{ "name": "auth", "value": "{\"jeton\":\"factice\",\"role\":\"admin\"}" }] }],
+     "sessionStorage": { "origin": "http://127.0.0.1:8080", "items": [{ "name": "panier", "value": "3" }] }
+   }
+   ```
+
+   ```bash
+   grasp config set allowCookies true && grasp stop && grasp serve   # une fois
+   grasp state import session-factice.json     # localStorage écrit par un onglet d'arrière-plan, sans requête au site
+   grasp nav http://127.0.0.1:8080/compte      # sessionStorage appliqué au premier document de l'origine
+   grasp expect text "Connecté"
+   ```
+
+   L'origine doit être dans l'allowlist (sinon écartée et signalée). Le fichier peut contenir un vrai jeton :
+   0600, comme un export.
+
+2. **`grasp storage`, page déjà ouverte sur l'origine** — utile au milieu d'un `grasp run` :
+
+   ```
+   grasp storage set local|session <clé> <valeur|->     # - : valeur lue sur stdin (hors de ps et de l'historique)
+   grasp storage get local|session <clé>               # valeur sur stdout ; clé absente → code 1
+   grasp storage rm  local|session <clé>
+   ```
+
+   ```bash
+   grasp run <<'FIN'
+   nav http://127.0.0.1:8080/connexion
+   storage set local auth '{"jeton":"factice","role":"admin"}'
+   nav http://127.0.0.1:8080/compte
+   expect text "Connecté"
+   FIN
+   ```
+
+   Porte sur l'**origine affichée** seulement (http(s), dans l'allowlist ; sur `about:blank` : refus 409 qui dit
+   de naviguer d'abord). Code **fixe** de Grasp exécuté dans le monde isolé (même stockage que la page, invisible
+   pour ses scripts) ; clé et valeur n'y entrent que sérialisées en JSON — rien n'est évalué, d'où l'indépendance
+   vis-à-vis d'`allowEval`. Clé de 1 à 1000 caractères ; `get` rend 4000 caractères au plus et annonce la
+   troncature. **Choix de la clé de politique** : `allowCookies` plutôt qu'une clé dédiée, parce que ce sont
+   exactement les données (jetons de session) qu'`allowCookies` expose déjà par `state export`/`import` ; une
+   quatrième clé n'ajouterait aucune protection et une incohérence possible. L'API HTTP : `POST /storage`
+   `{op, area, key, value?}` ; pas d'outil MCP dédié (la ligne passe par l'outil `run`).
 
 ## Serveur MCP
 
@@ -1021,8 +1092,10 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
 
 - Une ligne par entrée : `#seq niveau source texte (fichier:ligne)`, doublons consécutifs **dans le
   tampon** fusionnés `×N` (la fusion précède le filtre `--level` : deux erreurs séparées par une info ne sont
-  pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error (les repères
-  de navigation restent). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
+  pas fusionnées), texte affiché tronqué à 300 caractères (2000 stockés). `--level warn` = warn et error ; les repères
+  de navigation sont de niveau `info` et suivent le filtre comme le reste : présents sans `--level` et en
+  `info`/`debug`, absents en `warn` et `error` (`--level error` ne rend que des erreurs). Une URL opaque
+  s'affiche telle quelle (`navigation → about:blank`). `--limit` : les N dernières lignes, **50 par défaut** au CLI ; les lignes
   écartées et les entrées perdues par le tampon sont signalées sur stderr. `--clear` vide le tampon
   après lecture (le `seq` continue). Un `--since` **supérieur au seq courant** (curseur d'un tampon recréé :
   bascule de profil, bridge relancé) → 409 « reprenez avec --since 0 », jamais un résultat vide silencieux ;
@@ -1455,11 +1528,18 @@ session sur une page simple, beaucoup plus sur une application lourde. Le test d
 | Captures (sans `-o`) | `${XDG_STATE_HOME:-~/.local/state}/grasp/captures/` (0700, fichiers 0600, 50 gardées) |
 | États exportés (sans fichier) | `${XDG_STATE_HOME:-~/.local/state}/grasp/etats/` (0700, fichiers 0600, jamais purgés : à supprimer après usage) |
 | Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/<id>/` ; snap : `~/snap/chromium/common/grasp-profiles/` ; chrome.exe : `%LOCALAPPDATA%\grasp\profiles\` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
-| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` |
+| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` ; chemin trop long : `/tmp/grasp-<uid>/<hash>/` (ci-dessous) |
 
-Un socket Unix est limité à 107 octets. Si `XDG_RUNTIME_DIR` est trop long pour le socket du control
-plane **ou** pour ceux des bridges, `grasp serve` refuse de démarrer en le disant (au lieu d'un
-`listen EADDRINUSE` trompeur à la première session) : prenez un `XDG_RUNTIME_DIR` plus court.
+Un socket Unix est limité à 107 octets. Si le chemin normal (`XDG_RUNTIME_DIR`, ou `XDG_STATE_HOME` à défaut)
+est trop long pour le socket du control plane **ou** pour ceux des bridges (Grasp lancé dans un répertoire
+temporaire profond), les sockets passent **ensemble** dans un répertoire de repli court :
+`/tmp/grasp-<uid>/<12 hex>/` (`grasp.sock`, `bridges/<id>.sock`), où `<12 hex>` est un condensé SHA-256 du chemin
+d'origine — deux installations distinctes n'ont pas le même socket, et le client fait le même calcul que le
+serveur (le chemin réel est aussi dans `endpoint.json`). `/tmp` étant partagé, chaque niveau doit être un vrai
+répertoire (pas un lien), appartenir à l'utilisateur et être en 0700 : `grasp serve` crée ce qui manque en 0700
+et **refuse** sinon (jamais de chmod silencieux) ; le client CLI et `grasp mcp` vérifient la même chose avant
+d'envoyer le token. Le repli est annoncé au démarrage et par `grasp doctor`. `$TMPDIR` n'est pas utilisé (il peut
+être lui-même profond).
 
 ## Découverte du navigateur
 
@@ -1582,7 +1662,7 @@ sans la présenter comme appliquée.
 | `windowsProfilesDir` | `%LOCALAPPDATA%\grasp\profiles` | Racine des profils de chrome.exe ([Mode Windows](#mode-windows-chromeexe-depuis-wsl2)) |
 | **Politique (gelée, appliquée par le garde)** | | |
 | `allowedDomains` | `127.0.0.1`, `localhost`, `[::1]` | Allowlist de navigation ; `[]` = tout bloqué, `*.x` = sous-domaines, `*` = tout |
-| `allowEval`, `allowDownload`, `allowUpload`, `allowCookies` | `false` | `eval`, téléchargements, upload, cookies (et [export/import de l'état](#état--export-et-import)) |
+| `allowEval`, `allowDownload`, `allowUpload`, `allowCookies` | `false` | `eval`, téléchargements, upload, cookies (et [export/import de l'état](#état--export-et-import), `storage`) |
 | `allowConsole` | `true` | Lecture de la [console](#console-du-navigateur) |
 | `allowPrivateNetwork` | `false` | Lève la [protection SSRF](#protection-ssrf) |
 | `blockTrackers` | `true` | [Blocage des traqueurs](#blocage-des-traqueurs) |
