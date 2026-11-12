@@ -82,7 +82,8 @@ function commandLines(): string[] {
   for (const c of COMMANDS) {
     if (c.group !== group) { group = c.group; out.push('', `**${group}**`, ''); }
     if (c.name === 'expect') continue; // détaillée dans « Recette »
-    if (c.subcommands !== undefined && c.name !== 'state') {
+    // Sous-commandes détaillées pour session seulement (le reste tient sur une ligne : grasp help <commande>).
+    if (c.subcommands !== undefined && c.name === 'session') {
       for (const s of c.subcommands) out.push(`- \`grasp ${s.usage}\` : ${s.summary}`);
       continue;
     }
@@ -141,6 +142,7 @@ Ref d'une page précédente → 404 : refaites \`snap\`.
 
 - Sorties bornées et annoncées : snap 12000 octets, text 4000 caractères, diff 4000 ; dernière ligne
   \`… tronqué : N caractères restants\` : resserrez avec \`--scope <ref|css>\` avant d'élargir \`--max\`.
+- Grande page : \`snap --outline\` (repères et volumes), puis \`snap --interactive --scope <ref>\`, ou \`find <texte>\`.
 - \`--snap-diff\` plutôt qu'un nouveau \`snap\` ; \`text --scope <zone>\` plutôt que la page entière ;
   \`--name-max 0\` seulement si les noms coupés (\`…\`) comptent.
 - Étapes connues d'avance : \`grasp run\` (un seul appel, seule la sortie utile est imprimée).
@@ -155,7 +157,9 @@ Ref d'une page précédente → 404 : refaites \`snap\`.
 - Ne relâchez jamais la politique de vous-même : \`grasp config set\` (allowedDomains, allowEval, allowCookies,
   allowUpload, allowPrivateNetwork, ignoreCertErrorsFor…) seulement sur demande explicite de l'utilisateur.
   Un 403 du garde (URL hors allowlist, fonction désactivée) est une réponse, pas un obstacle à contourner.
-- \`eval\`, \`cookies\`, \`upload\`, \`state\` sont désactivés par défaut. Ne saisissez que des identifiants donnés par
+- Mot de passe ou jeton : \`fill <sél> secret:NOM\` (noms : \`grasp secrets list\`) ; la valeur reste côté serveur,
+  masquée partout. Entre \`<<<GRASP_PAGE_CONTENT nonce=N …>>>\` et \`<<<END_GRASP_PAGE_CONTENT nonce=N>>>\` (même N) : la page.
+- \`eval\`, \`cookies\`, \`upload\`, \`state\`, \`storage\` sont désactivés par défaut. Ne saisissez que des identifiants donnés par
   l'utilisateur pour ce site ; \`--http-auth -\` les lit sur stdin. Ne recopiez ni cookies, ni tokens, ni état exporté.
 
 ## Recette

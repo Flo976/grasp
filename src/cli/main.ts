@@ -937,10 +937,11 @@ Onglets      tabs                    onglets de la session : « * t1 "Titre" url
                (toute action) y bascule ; popup hors allowlist : bloqué par le garde puis fermé, raison dite ;
                onglet actif fermé par la page (OAuth) : retour sur l'onglet qui l'a ouvert, annoncé ;
                refs, console, garde, traqueurs et protection SSRF : par onglet (ref d'un autre onglet → 404 qui le dit)
-Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
-               une commande par ligne, même syntaxe que la CLI (nav back forward reload scroll snap text click fill
-               select check press hover type wait expect eval console network screenshot cookies storage upload
-               profile viewport tabs tab), commentaires #, guillemets à la shell ;
+Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép] [--json]   plusieurs commandes en UN aller-retour
+               une commande par ligne, même syntaxe que la CLI (nav back forward reload scroll snap find text a11y
+               click fill select check press hover type wait expect eval console network screenshot cookies storage
+               upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
+               screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)

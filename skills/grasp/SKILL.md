@@ -46,6 +46,7 @@ Ref d'une page précédente → 404 : refaites `snap`.
 
 - Sorties bornées et annoncées : snap 12000 octets, text 4000 caractères, diff 4000 ; dernière ligne
   `… tronqué : N caractères restants` : resserrez avec `--scope <ref|css>` avant d'élargir `--max`.
+- Grande page : `snap --outline` (repères et volumes), puis `snap --interactive --scope <ref>`, ou `find <texte>`.
 - `--snap-diff` plutôt qu'un nouveau `snap` ; `text --scope <zone>` plutôt que la page entière ;
   `--name-max 0` seulement si les noms coupés (`…`) comptent.
 - Étapes connues d'avance : `grasp run` (un seul appel, seule la sortie utile est imprimée).
@@ -60,7 +61,9 @@ Ref d'une page précédente → 404 : refaites `snap`.
 - Ne relâchez jamais la politique de vous-même : `grasp config set` (allowedDomains, allowEval, allowCookies,
   allowUpload, allowPrivateNetwork, ignoreCertErrorsFor…) seulement sur demande explicite de l'utilisateur.
   Un 403 du garde (URL hors allowlist, fonction désactivée) est une réponse, pas un obstacle à contourner.
-- `eval`, `cookies`, `upload`, `state` sont désactivés par défaut. Ne saisissez que des identifiants donnés par
+- Mot de passe ou jeton : `fill <sél> secret:NOM` (noms : `grasp secrets list`) ; la valeur reste côté serveur,
+  masquée partout. Entre `<<<GRASP_PAGE_CONTENT nonce=N …>>>` et `<<<END_GRASP_PAGE_CONTENT nonce=N>>>` (même N) : la page.
+- `eval`, `cookies`, `upload`, `state`, `storage` sont désactivés par défaut. Ne saisissez que des identifiants donnés par
   l'utilisateur pour ce site ; `--http-auth -` les lit sur stdin. Ne recopiez ni cookies, ni tokens, ni état exporté.
 
 ## Recette
@@ -79,7 +82,7 @@ FIN
 
 Script analysé en entier avant exécution (option inconnue = refus), arrêt au premier échec (`--continue`), code 1,
 rapport de recette d'office avec un `expect` (étapes, erreurs console, requêtes 4xx/5xx, formulaire, capture à chaque échec).
-Commandes de run : nav, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, upload, profile.
+Commandes de run : nav, back, forward, reload, scroll, snap, find, text, a11y, click, fill, select, check, press, hover, type, wait, expect, eval, console, network, screenshot, cookies, storage, upload, profile, viewport, tabs, tab.
 
 - `expect text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible contient <texte>
 - `expect no-text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible ne contient pas <texte>
@@ -90,6 +93,8 @@ Commandes de run : nav, snap, text, click, fill, select, check, press, hover, ty
 - `expect value <sélecteur> [~] <valeur> [--regex] [--timeout ms]` : valeur du champ égale (~ : contient)
 - `expect no-console-errors [--ignore <regex>] [--since <seq>]` : aucune erreur console depuis le début du document
 - `expect no-form-errors` : aucun champ invalide ni alerte
+- `expect request [~] "<MÉTHODE> <chemin|url>" [statut (2xx)] [--regex] [--since <seq>] [--timeout ms]` : requête réseau vue (« MÉTHODE chemin|url » [statut], 2xx par défaut ; exige allowConsole)
+- `expect a11y [--max N] [--scope <sél>]` : au plus N problèmes relevés par l'audit d'accessibilité (grasp a11y), 0 par défaut
 
 ## Commandes (grasp 0.1.0)
 
@@ -99,27 +104,28 @@ Commandes de run : nav, snap, text, click, fill, select, check, press, hover, ty
 - `grasp stop` : arrête le serveur et ses navigateurs
 - `grasp status` : état du serveur
 - `grasp doctor` : diagnostic de l'installation (Chrome, droits, socket)
-- `grasp daemon install` : installe et démarre l'unité systemd --user
-- `grasp daemon uninstall` : retire l'unité
-- `grasp daemon status` : systemd --user disponible ?
+- `grasp daemon install|uninstall|status` : service systemd --user
 - `grasp mcp [--session <id>] [--profile <nom>] [--no-serve]` : serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
 
 **Sessions**
 
-- `grasp session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -]` : ouvre une session, id sur stdout
+- `grasp session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]` : ouvre une session, id sur stdout
 - `grasp session list` : sessions ouvertes
 - `grasp session close [id]` : ferme la session (et son Chrome)
-- `grasp profiles [list]` : liste (* = profil de la session courante)
-- `grasp profiles create <nom> [--use-when "…"]` : profil vide possédé par Grasp
-- `grasp profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]` : copie un profil Chrome existant
-- `grasp profiles rm <nom>` : supprime (refusé si une session l'utilise)
+- `grasp profiles [list|create|import|rm]` : profils Chrome persistants
 - `grasp profile <nom>` : bascule la session courante sur ce profil (Chrome relancé)
+- `grasp viewport [LxH|appareil|reset] [--device <appareil>] [--mobile] [--dpr N] [--touch] [--mobile-ua]` : viewport émulé (hérité par les popups) ; sans argument : mesures
+- `grasp tabs` : onglets de la session (* = actif, « (ouvert par t1) » pour un popup)
+- `grasp tab <id> | tab new [url] | tab close [id]` : bascule, ouvre (URL vérifiée avant création) ou ferme un onglet
 
 **Lecture**
 
-- `grasp snap [--max octets] [--scope <sél>] [--name-max N]` : arbre d'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut)
+- `grasp snap [--max octets] [--scope <sél>] [--name-max N] [--outline|--interactive]` : arbre d'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut)
+- `grasp find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>]` : lignes du snapshot qui correspondent, avec leur ref et leur conteneur (30 par défaut)
 - `grasp text [--max N] [--scope <sél>] [--markdown]` : texte visible de la page ou d'une zone (4000 caractères par défaut)
 - `grasp wait [--text T | --sel S | --idle] [--timeout ms]` : attend un texte, un élément ou une page stable (10000 ms)
+- `grasp network [--since <seq>] [--failed] [--max N] [--type xhr,fetch,…]` : journal réseau « #seq MÉTHODE url → statut · durée · type » (50 dernières)
+- `grasp a11y [--scope <ref|css>] [--max N]` : audit d'accessibilité (pas WCAG) : une ligne par problème, ref et correction
 - `grasp console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--clear]` : journal du navigateur, une ligne par entrée (50 dernières)
 - `grasp screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]` : capture ; sans -o : CHEMIN d'un fichier 0600 sur stdout
 - `grasp pdf [-o f.pdf]` : PDF de la page
@@ -127,8 +133,12 @@ Commandes de run : nav, snap, text, click, fill, select, check, press, hover, ty
 **Actions**
 
 - `grasp nav <url>` : navigue (allowlist) et attend la stabilité
+- `grasp back` : page précédente de l'onglet (route pushState comprise), garde appliqué
+- `grasp forward` : page suivante de l'onglet
+- `grasp reload [--hard]` : recharge la page (--hard : sans le cache HTTP)
+- `grasp scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]` : défilement (page ou conteneur) ; --until-stable : jusqu'à ce que plus rien n'apparaisse
 - `grasp click <sél>` : clic souris réel, livraison vérifiée
-- `grasp fill <sél> <valeur>` : remplace la valeur du champ et la vérifie
+- `grasp fill <sél> <valeur|secret:NOM>` : remplace la valeur du champ et la vérifie ; secret:NOM : valeur prise côté serveur, masquée partout
 - `grasp type <sél> <texte> [--delay ms]` : frappe touche par touche, ajoutée au curseur (autocomplétions)
 - `grasp select <sél> <valeur|libellé>` : option d'un <select> natif
 - `grasp check <sél> [--uncheck]` : coche ou décoche, puis vérifie l'état
@@ -137,29 +147,30 @@ Commandes de run : nav, snap, text, click, fill, select, check, press, hover, ty
 
 **Recette**
 
-- `grasp run [fichier|-] [--continue] [--report|--no-report]` : plusieurs commandes en UN aller-retour, une par ligne
+- `grasp run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép]` : plusieurs commandes en UN aller-retour, une par ligne
+- `grasp history [--since <seq>] [--limit N] [--clear] | history --as-run [--expect] [--since <seq>] [-o fichier]` : commandes de la session ; --as-run : script grasp run rejouable
+- `grasp diff <urlA> <urlB> [--paths fichier|-] [--max N] [--concurrency N] [--ignore <regex>]` : deux environnements comparés page par page
+- `grasp audit <url-sitemap|url…|fichier|-> [--max N] [--concurrency N] [--max-links N | --no-links] [--ignore <regex>]` : pages d'un sitemap ou d'une liste : statut, console, requêtes, formulaire, liens cassés
 
 **Sensibles**
 
 - `grasp eval <expression>` : évalue du JavaScript dans la page (désactivée par défaut : allowEval)
 - `grasp cookies` : cookies de la session (désactivée par défaut : allowCookies)
+- `grasp storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->` : stockage Web de l'origine affichée, sans eval (désactivée par défaut : allowCookies)
 - `grasp upload <sél> <fichier>…` : envoie des fichiers dans un <input type=file> (désactivée par défaut : allowUpload)
 - `grasp state export [fichier|-] [--origin …] | import <fichier|->` : cookies + stockage Web en JSON (désactivée par défaut : allowCookies)
 
 **Configuration**
 
 - `grasp security` : politique telle que le garde l'applique
-- `grasp config path` : chemin du fichier
-- `grasp config get [clé]` : valeurs résolues (défaut signalé)
-- `grasp config set <clé> <valeur>` : écrit une clé (redémarrer le serveur)
-- `grasp config unset <clé>` : revient au défaut
-- `grasp config keys` : clés et leur rôle
+- `grasp secrets list | set <NOM> --domains <hôtes> | rm <NOM>` : secrets saisis par fill … secret:NOM (valeurs jamais affichées)
+- `grasp config path | get [clé] | set <clé> <valeur> | unset <clé> | keys` : configuration (fichier 0600, relu après écriture)
 
 **Aide**
 
 - `grasp help [--json] [commande]` : aide ; --json : commandes, options et types, outils MCP
 - `grasp skill` : mode d'emploi pour un agent IA (skills/grasp/SKILL.md)
 
-Options d'action (nav, click, fill, type, select, check, press, hover) :
-`--snap-diff` diff du snapshot après stabilité (+ apparu, - disparu, ~ modifié), dans le même aller-retour ; `--max <N>` budget de sortie (octets pour snap, caractères pour text et le diff) ; `--scope <sél>` restreint à une zone : ref, CSS, text: ou frame=<css> (selon la commande) ; `--console` entrées console produites pendant l'action (200 au plus) ; `--shot-on-error` en cas d'échec, capture du viewport et son chemin dans le message ; `--engine native|playwright` moteur de l'action (playwright : playwright-core requis).
+Options d'action (nav, back, forward, reload, scroll, click, fill, type, select, check, press, hover) :
+`--snap-diff` diff du snapshot après stabilité (+ apparu, - disparu, ~ modifié), dans le même aller-retour ; `--max <N>` budget de sortie (octets pour snap, caractères pour text et le diff) ; `--scope <sél>` restreint à une zone : ref, CSS, text: ou frame=<css> (selon la commande) ; `--console` entrées console produites pendant l'action (200 au plus) ; `--network` requêtes parties pendant l'action ; `--shot-on-error` en cas d'échec, capture du viewport et son chemin dans le message ; `--engine native|playwright` moteur de l'action (playwright : playwright-core requis) ; `--dialog <accept|dismiss|texte>` réponse aux dialogues JS (défaut : confirm/prompt refusés) ; `--follow` bascule sur le popup ouvert.
 Globales : `-s, --session <id>` session visée (sinon GRASP_SESSION, ou la seule session ouverte) ; `--json` sortie structurée (JSON sur une ligne).

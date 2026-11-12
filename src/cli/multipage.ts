@@ -15,7 +15,9 @@ import {
 /** Appel d'une route ; `session` : en-tête x-grasp-session (undefined : routes hors session). */
 export type SessionCall = (session: string | undefined, method: string, path: string, body?: unknown, timeoutMs?: number) => Promise<HttpResult>;
 
-const FLAGS = new Set([...VALUE_FLAGS, 'paths', 'concurrency', 'max-links']);
+/** Options à valeur propres à diff/audit (lues par leur propre analyse, hors VALUE_FLAGS). */
+export const MULTIPAGE_VALUE_FLAGS = ['paths', 'concurrency', 'max-links'] as const;
+const FLAGS = new Set([...VALUE_FLAGS, ...MULTIPAGE_VALUE_FLAGS]);
 const COMMON = ['max', 'concurrency', 'ignore', 'json', 'session', 'profile', 'proxy', 'http-auth'];
 const ALLOWED: Record<'diff' | 'audit', Set<string>> = {
   diff: new Set([...COMMON, 'paths']),

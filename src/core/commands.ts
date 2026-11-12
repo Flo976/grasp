@@ -69,6 +69,34 @@ export const OPTIONS: Record<string, OptionSpec> = {
   'port': { type: 'integer', arg: 'N', description: 'port TCP' },
   'listen': { type: 'string', arg: 'IP', description: 'adresse d\'écoute hors 127.0.0.1 (conteneur ; token exigé)' },
   'no-serve': { type: 'boolean', description: 'ne pas démarrer le serveur s\'il est absent' },
+  // Vague 2 : lecture progressive, réseau, dialogues, onglets, historique, viewport, secrets, multi-pages.
+  'outline': { type: 'boolean', description: 'snap partiel : repères, tableaux et titres, avec le volume de chaque repère' },
+  'interactive': { type: 'boolean', description: 'snap partiel : éléments actionnables et champs, avec leurs conteneurs' },
+  'role': { type: 'string', arg: 'r[,r2]', description: 'rôles retenus par find (button, link, textbox, option, text…)' },
+  'network': { type: 'boolean', description: 'requêtes parties pendant l\'action' },
+  'dialog': { type: 'string', arg: 'accept|dismiss|texte', description: 'réponse aux dialogues JS (défaut : confirm/prompt refusés)' },
+  'follow': { type: 'boolean', description: 'bascule sur le popup ouvert' },
+  'hard': { type: 'boolean', description: 'recharger sans le cache HTTP' },
+  'by': { type: 'integer', arg: 'px', description: 'défilement relatif en px (négatif : vers le haut)' },
+  'to': { type: 'enum', values: ['top', 'bottom'], description: 'défilement jusqu\'au bord' },
+  'until-stable': { type: 'boolean', description: 'défile pas à pas tant que du contenu apparaît (défilement infini)' },
+  'max-steps': { type: 'integer', arg: 'N', description: 'pas au plus avec --until-stable (10 par défaut, 50 au plus)' },
+  'failed': { type: 'boolean', description: 'seulement les requêtes en échec (≥ 400, net::ERR, bloquées)' },
+  'type': { type: 'string', arg: 'xhr,fetch,…', description: 'types de requêtes retenus (document, xhr, fetch, script, image…)' },
+  'viewport': { type: 'string', arg: 'LxH|appareil', description: 'viewport émulé dès la création de la session' },
+  'device': { type: 'string', arg: 'appareil', description: 'appareil de base (iphone-se, pixel-7…) ; les autres options priment' },
+  'dpr': { type: 'string', arg: 'N', description: 'devicePixelRatio émulé' },
+  'mobile': { type: 'boolean', description: 'mode mobile de Chrome (<meta viewport>, barres superposées)' },
+  'touch': { type: 'boolean', description: 'écran tactile émulé (maxTouchPoints, pointer: coarse)' },
+  'mobile-ua': { type: 'boolean', description: 'user agent Android (opt-in)' },
+  'as-run': { type: 'boolean', description: 'script grasp run rejouable (refs traduites, lectures et échecs omis)' },
+  'expect': { type: 'boolean', description: 'avec --as-run : expect url, title et text de l\'état final' },
+  'domains': { type: 'string', arg: 'hôte[,*.domaine…]', description: 'domaines où le secret peut être saisi' },
+  'out-dir': { type: 'string', arg: 'répertoire', description: 'où écrire les captures screenshot -o d\'un run (défaut : répertoire courant)' },
+  'paths': { type: 'string', arg: 'fichier|-', description: 'chemins à comparer, un par ligne (# commente)' },
+  'concurrency': { type: 'integer', arg: 'N', description: 'sessions en parallèle (2 par défaut, 8 au plus)' },
+  'max-links': { type: 'integer', arg: 'N', description: 'liens internes vérifiés au plus (200 par défaut)' },
+  'no-links': { type: 'boolean', description: 'ne vérifie pas les liens internes' },
 };
 
 /** Options valables pour toute commande qui parle au serveur. */
@@ -92,7 +120,11 @@ export interface CommandSpec {
   subcommands?: ReadonlyArray<{ name: string; usage: string; summary: string; options?: readonly string[] }>;
 }
 
-const ACTION = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'] as const;
+const ACTION = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine', 'dialog', 'follow'] as const;
+/** back, forward, reload, scroll : options d'action sans --engine ni --follow. */
+const NAV = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'dialog'] as const;
+const VIEWPORT = ['device', 'dpr', 'mobile', 'touch', 'mobile-ua'] as const;
+const MULTI = ['max', 'concurrency', 'ignore', 'profile', 'proxy', 'http-auth'] as const;
 
 const EXPECT_SUMMARY: Record<ExpectKind, string> = {
   'text': 'le texte visible contient <texte>',
@@ -124,7 +156,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   // Sessions et profils
   { name: 'session', group: 'Sessions', usage: 'session create|list|close', summary: 'sessions (une session = un Chrome)', options: [],
     subcommands: [
-      { name: 'create', usage: 'session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -]', summary: 'ouvre une session, id sur stdout', options: ['profile', 'proxy', 'http-auth'] },
+      { name: 'create', usage: 'session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]', summary: 'ouvre une session, id sur stdout', options: ['profile', 'proxy', 'http-auth', 'viewport', ...VIEWPORT] },
       { name: 'list', usage: 'session list', summary: 'sessions ouvertes' },
       { name: 'close', usage: 'session close [id]', summary: 'ferme la session (et son Chrome)' },
     ] },
@@ -136,29 +168,53 @@ export const COMMANDS: readonly CommandSpec[] = [
       { name: 'rm', usage: 'profiles rm <nom>', summary: 'supprime (refusé si une session l\'utilise)' },
     ] },
   { name: 'profile', group: 'Sessions', usage: 'profile <nom>', summary: 'bascule la session courante sur ce profil (Chrome relancé)', options: [], run: true, mcp: 'profile' },
+  { name: 'viewport', group: 'Sessions', usage: 'viewport [LxH|appareil|reset] [--device <appareil>] [--mobile] [--dpr N] [--touch] [--mobile-ua]', summary: 'viewport émulé (hérité par les popups) ; sans argument : mesures', options: [...VIEWPORT], run: true, mcp: 'viewport' },
+  { name: 'tabs', group: 'Sessions', usage: 'tabs', summary: 'onglets de la session (* = actif, « (ouvert par t1) » pour un popup)', options: [], run: true, mcp: 'tabs' },
+  { name: 'tab', group: 'Sessions', usage: 'tab <id> | tab new [url] | tab close [id]', summary: 'bascule, ouvre (URL vérifiée avant création) ou ferme un onglet', options: [], run: true, mcp: 'tab',
+    subcommands: [
+      { name: '<id>', usage: 'tab t2', summary: 'fait de t2 l\'onglet actif' },
+      { name: 'new', usage: 'tab new [url]', summary: 'nouvel onglet (refusé hors allowlist, rien n\'est créé)' },
+      { name: 'close', usage: 'tab close [id]', summary: 'ferme l\'onglet (défaut : l\'actif ; jamais le dernier)' },
+    ] },
   // Lecture
-  { name: 'snap', group: 'Lecture', usage: 'snap [--max octets] [--scope <sél>] [--name-max N]', summary: 'arbre d\'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut)', options: ['max', 'scope', 'name-max'], run: true, mcp: 'snap' },
+  { name: 'snap', group: 'Lecture', usage: 'snap [--max octets] [--scope <sél>] [--name-max N] [--outline|--interactive]', summary: 'arbre d\'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut)', options: ['max', 'scope', 'name-max', 'outline', 'interactive'], run: true, mcp: 'snap' },
+  { name: 'find', group: 'Lecture', usage: 'find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>]', summary: 'lignes du snapshot qui correspondent, avec leur ref et leur conteneur (30 par défaut)', options: ['role', 'max', 'scope', 'name-max'], run: true, mcp: 'find' },
   { name: 'text', group: 'Lecture', usage: 'text [--max N] [--scope <sél>] [--markdown]', summary: 'texte visible de la page ou d\'une zone (4000 caractères par défaut)', options: ['max', 'scope', 'markdown'], run: true, mcp: 'text' },
   { name: 'wait', group: 'Lecture', usage: 'wait [--text T | --sel S | --idle] [--timeout ms]', summary: 'attend un texte, un élément ou une page stable (10000 ms)', options: ['text', 'sel', 'idle', 'timeout'], run: true, mcp: 'wait' },
+  { name: 'network', group: 'Lecture', usage: 'network [--since <seq>] [--failed] [--max N] [--type xhr,fetch,…]', summary: 'journal réseau « #seq MÉTHODE url → statut · durée · type » (50 dernières)', options: ['since', 'failed', 'max', 'type'], run: true, mcp: 'network' },
+  { name: 'a11y', group: 'Lecture', usage: 'a11y [--scope <ref|css>] [--max N]', summary: 'audit d\'accessibilité (pas WCAG) : une ligne par problème, ref et correction', options: ['scope', 'max'], run: true, mcp: 'a11y' },
   { name: 'console', group: 'Lecture', usage: 'console [--level error|warn|info|debug] [--since <seq>] [--limit N] [--clear]', summary: 'journal du navigateur, une ligne par entrée (50 dernières)', options: ['level', 'since', 'limit', 'clear'], run: true, mcp: 'console' },
   { name: 'screenshot', group: 'Lecture', usage: 'screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]', summary: 'capture ; sans -o : CHEMIN d\'un fichier 0600 sur stdout', options: ['full', 'refs', 'el', 'quality', 'max-width', 'format'], cliOptions: ['output'], run: true, mcp: 'screenshot' },
   { name: 'pdf', group: 'Lecture', usage: 'pdf [-o f.pdf]', summary: 'PDF de la page', options: [], cliOptions: ['output'] },
   // Actions
   { name: 'nav', group: 'Actions', usage: 'nav <url>', summary: 'navigue (allowlist) et attend la stabilité', options: ACTION, run: true, mcp: 'nav' },
+  { name: 'back', group: 'Actions', usage: 'back', summary: 'page précédente de l\'onglet (route pushState comprise), garde appliqué', options: NAV, run: true, mcp: 'back' },
+  { name: 'forward', group: 'Actions', usage: 'forward', summary: 'page suivante de l\'onglet', options: NAV, run: true, mcp: 'forward' },
+  { name: 'reload', group: 'Actions', usage: 'reload [--hard]', summary: 'recharge la page (--hard : sans le cache HTTP)', options: [...NAV, 'hard'], run: true, mcp: 'reload' },
+  { name: 'scroll', group: 'Actions', usage: 'scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]]', summary: 'défilement (page ou conteneur) ; --until-stable : jusqu\'à ce que plus rien n\'apparaisse', options: [...NAV, 'by', 'to', 'until-stable', 'max-steps'], run: true, mcp: 'scroll' },
   { name: 'click', group: 'Actions', usage: 'click <sél>', summary: 'clic souris réel, livraison vérifiée', options: ACTION, run: true, mcp: 'click' },
-  { name: 'fill', group: 'Actions', usage: 'fill <sél> <valeur>', summary: 'remplace la valeur du champ et la vérifie', options: ACTION, run: true, mcp: 'fill' },
+  { name: 'fill', group: 'Actions', usage: 'fill <sél> <valeur|secret:NOM>', summary: 'remplace la valeur du champ et la vérifie ; secret:NOM : valeur prise côté serveur, masquée partout', options: ACTION, run: true, mcp: 'fill' },
   { name: 'type', group: 'Actions', usage: 'type <sél> <texte> [--delay ms]', summary: 'frappe touche par touche, ajoutée au curseur (autocomplétions)', options: [...ACTION, 'delay'], run: true, mcp: 'type' },
   { name: 'select', group: 'Actions', usage: 'select <sél> <valeur|libellé>', summary: 'option d\'un <select> natif', options: ACTION, run: true, mcp: 'select' },
   { name: 'check', group: 'Actions', usage: 'check <sél> [--uncheck]', summary: 'coche ou décoche, puis vérifie l\'état', options: [...ACTION, 'uncheck'], run: true, mcp: 'check' },
   { name: 'press', group: 'Actions', usage: 'press <touche> [sél]', summary: 'touche (Enter, Tab, Escape, ArrowDown, Control+a…)', options: ACTION, run: true, mcp: 'press' },
   { name: 'hover', group: 'Actions', usage: 'hover <sél>', summary: 'survol (menus, infobulles)', options: ACTION, run: true, mcp: 'hover' },
   // Recette et scripts
-  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'], run: true,
+  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'], run: true,
     subcommands: EXPECT_KINDS.map((k) => ({ name: k, usage: EXPECT_USAGE[k], summary: EXPECT_SUMMARY[k], options: [...EXPECT_FLAGS[k], 'shot-on-error'] })) },
-  { name: 'run', group: 'Recette', usage: 'run [fichier|-] [--continue] [--report|--no-report]', summary: 'plusieurs commandes en UN aller-retour, une par ligne', options: ['continue', 'report', 'no-report'], mcp: 'run' },
+  { name: 'run', group: 'Recette', usage: 'run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép]', summary: 'plusieurs commandes en UN aller-retour, une par ligne', options: ['continue', 'report', 'no-report', 'out-dir'], mcp: 'run' },
+  { name: 'history', group: 'Recette', usage: 'history [--since <seq>] [--limit N] [--clear] | history --as-run [--expect] [--since <seq>] [-o fichier]', summary: 'commandes de la session ; --as-run : script grasp run rejouable', options: ['since', 'limit', 'clear', 'as-run', 'expect'], cliOptions: ['output'], mcp: 'history' },
+  { name: 'diff', group: 'Recette', usage: 'diff <urlA> <urlB> [--paths fichier|-] [--max N] [--concurrency N] [--ignore <regex>]', summary: 'deux environnements comparés page par page', options: [...MULTI, 'paths'] },
+  { name: 'audit', group: 'Recette', usage: 'audit <url-sitemap|url…|fichier|-> [--max N] [--concurrency N] [--max-links N | --no-links] [--ignore <regex>]', summary: 'pages d\'un sitemap ou d\'une liste : statut, console, requêtes, formulaire, liens cassés', options: [...MULTI, 'max-links', 'no-links'] },
   // Sensibles (désactivées par défaut)
   { name: 'eval', group: 'Sensibles', usage: 'eval <expression>', summary: 'évalue du JavaScript dans la page', options: [], run: true, disabledByDefault: 'allowEval' },
   { name: 'cookies', group: 'Sensibles', usage: 'cookies', summary: 'cookies de la session', options: [], run: true, disabledByDefault: 'allowCookies' },
+  { name: 'storage', group: 'Sensibles', usage: 'storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->', summary: 'stockage Web de l\'origine affichée, sans eval', options: [], run: true, disabledByDefault: 'allowCookies',
+    subcommands: [
+      { name: 'get', usage: 'storage get local|session <clé>', summary: 'valeur sur stdout (clé absente : code 1)' },
+      { name: 'set', usage: 'storage set local|session <clé> <valeur|->', summary: 'écrit (- : valeur lue sur stdin)' },
+      { name: 'rm', usage: 'storage rm local|session <clé>', summary: 'supprime la clé' },
+    ] },
   { name: 'upload', group: 'Sensibles', usage: 'upload <sél> <fichier>…', summary: 'envoie des fichiers dans un <input type=file>', options: ['engine'], run: true, disabledByDefault: 'allowUpload' },
   { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON', options: [], disabledByDefault: 'allowCookies',
     subcommands: [
@@ -167,6 +223,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     ] },
   // Configuration
   { name: 'security', group: 'Configuration', usage: 'security', summary: 'politique telle que le garde l\'applique', options: [] },
+  { name: 'secrets', group: 'Configuration', usage: 'secrets list | set <NOM> --domains <hôtes> | rm <NOM>', summary: 'secrets saisis par fill … secret:NOM (valeurs jamais affichées)', options: [], mcp: 'secrets',
+    subcommands: [
+      { name: 'list', usage: 'secrets list', summary: 'noms et domaines, jamais les valeurs' },
+      { name: 'set', usage: 'secrets set <NOM> --domains hôte[,*.domaine]', summary: 'valeur lue sur stdin, jamais en argument', options: ['domains'] },
+      { name: 'rm', usage: 'secrets rm <NOM>', summary: 'supprime le secret' },
+    ] },
   { name: 'config', group: 'Configuration', usage: 'config path | get [clé] | set <clé> <valeur> | unset <clé> | keys', summary: 'configuration (fichier 0600, relu après écriture)', options: [],
     subcommands: [
       { name: 'path', usage: 'config path', summary: 'chemin du fichier' },

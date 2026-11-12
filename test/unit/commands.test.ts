@@ -10,6 +10,7 @@ import { EXPECT_KINDS } from '../../src/core/expect.js';
 import { RUN_COMMANDS, RUN_FLAGS, VALUE_FLAGS, checkRunFlags, type Args } from '../../src/core/script.js';
 import { toolList } from '../../src/cli/mcp.js';
 import { helpJson, pkgVersion, skillText } from '../../src/cli/help.js';
+import { MULTIPAGE_VALUE_FLAGS } from '../../src/cli/multipage.js';
 
 /**
  * Le catalogue (src/core/commands.ts) alimente `grasp help --json` et `grasp skill` ; ces tests le confrontent
@@ -40,7 +41,8 @@ function referencedOptions(): Set<string> {
 
 test('catalogue : options à valeur = VALUE_FLAGS du parseur, aucune option orpheline ni inconnue', () => {
   const valued = Object.entries(OPTIONS).filter(([, o]) => o.type !== 'boolean').map(([k]) => k).sort();
-  assert.deepEqual(valued, [...VALUE_FLAGS].sort(), 'une option à valeur du parseur doit être décrite (type ≠ boolean) dans src/core/commands.ts, et réciproquement');
+  // diff/audit lisent en plus leurs propres options à valeur (src/cli/multipage.ts).
+  assert.deepEqual(valued, [...VALUE_FLAGS, ...MULTIPAGE_VALUE_FLAGS].sort(), 'une option à valeur du parseur doit être décrite (type ≠ boolean) dans src/core/commands.ts, et réciproquement');
   const ref = referencedOptions();
   for (const o of ref) assert.ok(OPTIONS[o] !== undefined, `option --${o} citée par une commande mais absente de OPTIONS`);
   for (const o of Object.keys(OPTIONS)) assert.ok(ref.has(o), `option --${o} décrite mais acceptée par aucune commande du catalogue`);
@@ -163,7 +165,8 @@ test('grasp skill : mode d\'emploi complet, borné, identique à skills/grasp/SK
   }
   for (const c of COMMANDS) if (c.name !== 'expect') assert.ok(r.stdout.includes(`\`grasp ${c.name}`), `commande ${c.name} absente du mode d'emploi`);
   for (const k of EXPECT_KINDS) assert.ok(r.stdout.includes(`\`expect ${k}`), `assertion ${k} absente`);
-  assert.ok(Buffer.byteLength(r.stdout) < 12_000, `mode d'emploi trop long (${Buffer.byteLength(r.stdout)} octets) : il est chargé dans le contexte de l'agent`);
+  // 12 000 octets pour 33 commandes à l'origine ; 14 000 depuis la vague 2 (47 commandes, secrets, frontières).
+  assert.ok(Buffer.byteLength(r.stdout) < 14_000, `mode d'emploi trop long (${Buffer.byteLength(r.stdout)} octets) : il est chargé dans le contexte de l'agent`);
   let file: string;
   try { file = readFileSync(SKILL_MD, 'utf8'); } catch { file = ''; }
   assert.equal(file, r.stdout, 'skills/grasp/SKILL.md diverge de `grasp skill` : régénérez-le (npm run build && node dist/src/cli/main.js skill > skills/grasp/SKILL.md)');
