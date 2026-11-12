@@ -8,6 +8,7 @@
  * pas traduite, et une saisie au type de champ inconnu est masquée.
  */
 
+import { stripBoundaries } from '../core/boundaries.js';
 import { commandOf, finalExpects, HistoryLog, sanitize, targetOf, wantsTarget, type HistoryEntry, type TargetInfo } from '../core/history.js';
 
 export type BridgeCall = (method: 'GET' | 'POST', path: string, body?: Record<string, unknown>) => Promise<{ status: number; json: () => unknown; text: () => string }>;
@@ -87,7 +88,9 @@ export function stripTarget(result: unknown): unknown {
 
 /** Message d'une réponse d'erreur du bridge (JSON `{error}` ou texte). */
 export function errorOf(text: string): string {
-  try { const j = JSON.parse(text) as { error?: unknown }; if (typeof j.error === 'string') return j.error; } catch { /* texte */ }
+  // Erreur encadrée par le bridge (frontières de contenu) : marqueurs de CETTE réponse retirés — la liste de
+  // l'historique est encadrée à nouveau, d'un nonce frais, quand elle est lue.
+  try { const j = JSON.parse(text) as { error?: unknown }; if (typeof j.error === 'string') return stripBoundaries(j.error).text.replace(/\n+/g, ' ').trim(); } catch { /* texte */ }
   return text;
 }
 

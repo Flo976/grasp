@@ -17,8 +17,8 @@ import { multipageCmd } from './multipage.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
-import { BOUNDARY_RULE, type BoundaryTag } from '../core/boundaries.js';
-import { formatNet, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
+import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.js';
+import { formatNetEntries, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
 import { formatReport, type RunResult } from '../control/run.js';
 import { checkRunOut, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
@@ -101,20 +101,20 @@ function renderAction(r: HttpResult, a: Args): void {
     hint(`console : ${j.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${j.console.seq}`);
   }
   if (j.network !== undefined) {
-    if (j.network.entries.length > 0) out(j.network.entries.map(formatNet).join('\n'));
+    if (j.network.entries.length > 0) out(formatNetEntries(j.network.entries, j.network.boundary));
     for (const w of networkLosses(j.network, true)) hint(w);
     hint(`réseau : ${j.network.entries.length === 0 ? 'aucune requête, ' : ''}seq réseau courant ${j.network.seq}`);
   }
 }
 
-interface ActionNetwork { entries: NetEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+interface ActionNetwork { entries: NetEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number }
 
 /** grasp network : requêtes de l'onglet (méthode, URL masquée, statut, durée, type), 50 dernières par défaut. */
 async function networkCmd(c: Client, a: Args): Promise<void> {
-  const r = (await c.call('POST', '/network', networkBody(a))).json() as NetResult;
+  const r = (await c.call('POST', '/network', networkBody(a))).json() as NetResult & { boundary?: BoundaryTag };
   if (a.flags.has('json')) { out(JSON.stringify(r)); return; }
   for (const w of networkLosses({ omitted: r.omitted, dropped: r.dropped }, false)) hint(w);
-  if (r.entries.length > 0) out(r.entries.map(formatNet).join('\n'));
+  if (r.entries.length > 0) out(formatNetEntries(r.entries, r.boundary));
   hint(`seq réseau courant : ${r.seq} — suite : grasp network --since ${r.seq}`);
 }
 
@@ -362,11 +362,12 @@ async function tabsCmd(c: Client, a: Args): Promise<void> {
   const rq = buildRequest(a);
   const r = await c.call(rq.method, rq.path, rq.body, rq.timeoutMs);
   if (a.flags.has('json')) { out(r.text()); return; }
-  const j = r.json() as { tabs?: TabInfo[]; closed?: string; active?: TabInfo; detail?: string } & Partial<TabInfo>;
+  const j = r.json() as { tabs?: TabInfo[]; closed?: string; active?: TabInfo; detail?: string; boundary?: BoundaryTag } & Partial<TabInfo>;
   if (j.detail) hint(`note: ${j.detail}`);
-  if (Array.isArray(j.tabs)) { out(formatTabs(j.tabs)); return; }
-  if (typeof j.closed === 'string') { out('OK'); hint(`onglet ${j.closed} fermé ; onglet actif : ${formatTab(j.active!).trim()}`); return; }
-  out(formatTab(j as TabInfo).trim());
+  // Titres et URL des onglets : contenu des pages (encadré si les frontières de contenu sont actives).
+  if (Array.isArray(j.tabs)) { out(wrapTagged(formatTabs(j.tabs), j.boundary, 'onglets')); return; }
+  if (typeof j.closed === 'string') { out('OK'); hint(`onglet ${j.closed} fermé ; onglet actif : ${wrapTagged(formatTab(j.active!).trim(), j.boundary, 'onglets')}`); return; }
+  out(wrapTagged(formatTab(j as TabInfo).trim(), j.boundary, 'onglets'));
 }
 
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
@@ -715,12 +716,13 @@ async function main(argv: string[]): Promise<number> {
       const pos = a.pos[0] === 'set' && a.pos[3] === '-' ? [...a.pos.slice(0, 3), readFileSync(0, 'utf8').replace(/\r?\n$/, '')] : a.pos;
       let rq;
       try { rq = buildRequest({ ...a, pos }); } catch (e) { throw new CliError((e as Error).message); }
-      const j = (await c.call(rq.method, rq.path, rq.body)).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean };
+      const j = (await c.call(rq.method, rq.path, rq.body)).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; boundary?: BoundaryTag };
       if (json) { out(JSON.stringify(j)); return j.op === 'get' && j.value === null ? 1 : 0; }
       const where = `${j.area}Storage de ${j.origin}`;
       if (j.op === 'get') {
         if (j.value === null || j.value === undefined) throw new CliError(`clé « ${j.key} » absente du ${where}`);
-        out(j.value);
+        // Valeur écrite par la page (stockage Web) : encadrée si les frontières de contenu sont actives.
+        out(wrapTagged(j.value, j.boundary, 'stockage'));
         if (j.truncated !== undefined) hint(`AVERTISSEMENT : valeur tronquée à ${j.value.length} caractères sur ${j.truncated}`);
         return 0;
       }
@@ -1004,7 +1006,7 @@ main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve' && 
   // --network sur une action en échec : les requêtes parties pendant l'action suivent l'erreur.
   const net = e instanceof CliError ? e.extra?.network as ActionNetwork | undefined : undefined;
   if (net !== undefined && Array.isArray(net.entries)) {
-    if (net.entries.length > 0) process.stderr.write(`${net.entries.map(formatNet).join('\n')}\n`);
+    if (net.entries.length > 0) process.stderr.write(`${formatNetEntries(net.entries, net.boundary)}\n`);
     for (const w of networkLosses(net, true)) process.stderr.write(`${w}\n`);
   }
   process.exit(1);

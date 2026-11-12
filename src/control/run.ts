@@ -3,7 +3,7 @@ import { formatEntries, formatEntry, type ConsoleEntry } from '../core/console.j
 import { wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { buildRequest, checkRunFlags, MAX_RUN_SHOT_FILES, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 import { renderViewport } from '../core/viewport.js';
-import { formatNet, networkLosses, type NetEntry } from '../core/network.js';
+import { formatNetEntries, networkLosses, type NetEntry } from '../core/network.js';
 import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
@@ -135,8 +135,8 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
         step.result = extra;
         if (Array.isArray(extra.console) && extra.console.length > 0) step.output = formatEntries(extra.console as ConsoleEntry[], extra.boundary as BoundaryTag | undefined);
         // --network sur une action en échec : les requêtes parties pendant l'action suivent aussi l'erreur.
-        const net = extra.network as { entries?: NetEntry[] } | undefined;
-        if (net !== undefined && Array.isArray(net.entries) && net.entries.length > 0) step.output = [step.output, net.entries.map(formatNet).join('\n')].filter((x) => x !== undefined && x !== '').join('\n');
+        const net = extra.network as { entries?: NetEntry[]; boundary?: BoundaryTag } | undefined;
+        if (net !== undefined && Array.isArray(net.entries) && net.entries.length > 0) step.output = [step.output, formatNetEntries(net.entries, net.boundary)].filter((x) => x !== undefined && x !== '').join('\n');
         if (typeof extra.screenshot === 'string') step.screenshot = extra.screenshot;
       }
       // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
@@ -237,7 +237,7 @@ export function formatReport(rep: RunReport): string {
 }
 
 interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number }; network?: NetSliceJson }
-interface NetSliceJson { entries: NetEntry[]; seq: number; since?: number; omitted?: number; dropped?: number }
+interface NetSliceJson { entries: NetEntry[]; boundary?: BoundaryTag; seq: number; since?: number; omitted?: number; dropped?: number }
 
 
 /** Pertes de console jamais tues (mêmes messages que la commande isolée). */
@@ -270,21 +270,21 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const st = j as { op?: string; area?: string; origin?: string; key?: string; value?: string | null; truncated?: number; existed?: boolean };
       if ('value' in st) {
         if (st.value === null) return { detail: `clé « ${st.key} » absente du ${st.area}Storage de ${st.origin}` };
-        return { output: st.value ?? '', ...(st.truncated !== undefined ? { detail: `AVERTISSEMENT : valeur tronquée (${st.truncated} caractères)` } : {}) };
+        return { output: wrapTagged(st.value ?? '', (j as { boundary?: BoundaryTag }).boundary, 'stockage'), ...(st.truncated !== undefined ? { detail: `AVERTISSEMENT : valeur tronquée (${st.truncated} caractères)` } : {}) };
       }
       return { detail: `${st.area}Storage de ${st.origin}${st.op === 'rm' && st.existed === false ? ` : clé « ${st.key} » déjà absente` : ''}` };
     }
     case 'network': {
-      const n = j as { entries?: NetEntry[]; seq?: number; omitted?: number; dropped?: number };
-      return { output: Array.isArray(n.entries) ? n.entries.map(formatNet).join('\n') : '', detail: [...networkLosses({ omitted: n.omitted, dropped: n.dropped }, false), `seq réseau courant : ${n.seq}`].join(' ; ') };
+      const n = j as { entries?: NetEntry[]; seq?: number; omitted?: number; dropped?: number; boundary?: BoundaryTag };
+      return { output: Array.isArray(n.entries) ? formatNetEntries(n.entries, n.boundary) : '', detail: [...networkLosses({ omitted: n.omitted, dropped: n.dropped }, false), `seq réseau courant : ${n.seq}`].join(' ; ') };
     }
     case 'wait': return {};
     case 'viewport': return { output: renderViewport(j), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
-    case 'tabs': return { output: formatTabs(Array.isArray(j.tabs) ? j.tabs as TabInfo[] : []) };
+    case 'tabs': return { output: wrapTagged(formatTabs(Array.isArray(j.tabs) ? j.tabs as TabInfo[] : []), j.boundary as BoundaryTag | undefined, 'onglets') };
     case 'tab': {
       // tab close : l'onglet fermé et le nouvel onglet actif ; tab <id> | new : la ligne de l'onglet.
-      if (typeof j.closed === 'string') return { detail: `onglet ${j.closed} fermé ; onglet actif : ${formatTab(j.active as TabInfo).trim()}` };
-      return { output: formatTab(j as unknown as TabInfo).trim(), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
+      if (typeof j.closed === 'string') return { detail: `onglet ${j.closed} fermé ; onglet actif : ${wrapTagged(formatTab(j.active as TabInfo).trim(), j.boundary as BoundaryTag | undefined, 'onglets')}` };
+      return { output: wrapTagged(formatTab(j as unknown as TabInfo).trim(), j.boundary as BoundaryTag | undefined, 'onglets'), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
     }
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {
@@ -303,7 +303,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
         notes.push(...losses(a.console), `console : ${a.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${a.console.seq}`);
       }
       if (a.network !== undefined) {
-        if (a.network.entries.length > 0) parts.push(a.network.entries.map(formatNet).join('\n'));
+        if (a.network.entries.length > 0) parts.push(formatNetEntries(a.network.entries, a.network.boundary));
         notes.push(...networkLosses(a.network, true), `réseau : ${a.network.entries.length === 0 ? 'aucune requête, ' : ''}seq réseau courant ${a.network.seq}`);
       }
       return { output: parts.join('\n'), detail: notes.join(' ; ') };

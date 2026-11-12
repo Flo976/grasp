@@ -36,6 +36,7 @@ import { describeViewport, viewportSpecOf, type ViewportSpec } from '../core/vie
 import { SecretStore } from '../core/secrets.js';
 import { redactResponse, withSecret } from './redact.js';
 import { asRunScript, formatHistory, HISTORY_DEFAULT_LIMIT, HISTORY_MAX, HistoryLog } from '../core/history.js';
+import { neutralize, neutralizeDeep, newNonce, wrapContent } from '../core/boundaries.js';
 import { beginRecord, errorOf, finalState, stripTarget, type BridgeCall, type Recording } from './history.js';
 
 export interface Session {
@@ -861,13 +862,18 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         const since = optCount(url.searchParams.get('since'), 'since') ?? 0;
         const entries = h.since(since);
         const lost = h.lostAfter(since);
+        // Frontières de contenu : l'historique cite la page (noms accessibles des cibles, erreurs, état final).
+        // La liste est encadrée d'un nonce frais ; le script, lui, doit rester rejouable : seulement neutralisé.
+        const framed = policy.contentBoundaries;
         if (optFlag(url.searchParams.get('asRun'), 'asRun') === true) {
           const expects = optFlag(url.searchParams.get('expect'), 'expect') === true ? await finalState(bridgeOf(s)) : undefined;
-          return sendJson(res, 200, { script: asRunScript(entries, { sessionId: s.id, ...(expects !== undefined ? { expects } : {}), lost }), seq: h.seq, entries: entries.length, lost });
+          const script = asRunScript(entries, { sessionId: s.id, ...(expects !== undefined ? { expects } : {}), lost });
+          return sendJson(res, 200, { script: framed ? neutralize(script).text : script, seq: h.seq, entries: entries.length, lost });
         }
         const limit = optInt(url.searchParams.get('limit'), 'limit') ?? HISTORY_DEFAULT_LIMIT;
         const shown = entries.slice(-limit);
-        return sendJson(res, 200, { entries: shown, text: formatHistory(shown), seq: h.seq, omitted: entries.length - shown.length, lost, max: HISTORY_MAX });
+        const text = formatHistory(shown);
+        return sendJson(res, 200, { entries: framed ? neutralizeDeep(shown, { count: 0 }) : shown, text: framed ? wrapContent(text, newNonce(), 'historique') : text, seq: h.seq, omitted: entries.length - shown.length, lost, max: HISTORY_MAX });
       }
       if (route === 'POST /run') {
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.

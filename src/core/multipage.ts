@@ -7,6 +7,7 @@
  */
 
 import { formatEntry, type ConsoleEntry } from './console.js';
+import { stripBoundaries } from './boundaries.js';
 
 // ---------- Relevé fourni par le bridge (src/bridge/inventory.ts) ----------
 
@@ -84,6 +85,8 @@ export interface PageFacts {
   forms?: FormFacts;
   inventory?: Inventory;
   ms: number;
+  /** Frontières de contenu actives (contentBoundaries) : marqueurs du bridge retirés, rapport à encadrer. */
+  framed?: boolean;
 }
 
 export interface VisitWants { outline?: boolean; text?: boolean; forms?: boolean }
@@ -113,14 +116,18 @@ export async function visitPage(call: Call, url: string, want: VisitWants = {}):
   let since: number | undefined;
   let off = 'console indisponible';
   try { since = Number(((await call('POST', '/console', { limit: 1 })).json() as { seq: number }).seq); } catch (e) { off = errOf(e).message; }
+  // Frontières de contenu : les marqueurs du bridge (un nonce par réponse) sont retirés de ce qui est comparé et
+  // rapporté — sinon chaque page « différerait » par ses nonces ; le rapport entier est encadré par la CLI.
+  const unwrap = (t: string) => { const u = stripBoundaries(t); if (u.framed) f.framed = true; return u.text; };
   try {
-    const n = (await call('POST', '/navigate', { url }, NAV_TIMEOUT_MS)).json() as { url: string; title: string; detail?: string };
+    const n = (await call('POST', '/navigate', { url }, NAV_TIMEOUT_MS)).json() as { url: string; title: string; detail?: string; boundary?: unknown };
+    if (n.boundary !== undefined) f.framed = true;
     f.finalUrl = n.url;
     f.title = n.title;
-    if (typeof n.detail === 'string' && n.detail !== '') f.note = n.detail;
+    if (typeof n.detail === 'string' && n.detail !== '') f.note = unwrap(n.detail);
   } catch (e) {
     const ce = errOf(e);
-    f.error = ce.message;
+    f.error = unwrap(ce.message);
     if (ce.status === 403) f.blocked = true;
   }
   if (since === undefined) f.console = { unavailable: off };
@@ -143,16 +150,16 @@ export async function visitPage(call: Call, url: string, want: VisitWants = {}):
     if (i >= 0) f.console.requests.splice(i, 1);
   }
   if (want.outline === true) {
-    try { f.outline = outlineOf((await call('GET', '/snap?max=1000000')).text()); } catch (e) { f.note = [f.note, `snapshot impossible : ${errOf(e).message}`].filter(Boolean).join(' ; '); }
+    try { f.outline = outlineOf(unwrap((await call('GET', '/snap?max=1000000')).text())); } catch (e) { f.note = [f.note, `snapshot impossible : ${unwrap(errOf(e).message)}`].filter(Boolean).join(' ; '); }
   }
   if (want.text === true) {
     let scope: 'main' | 'page' = 'main';
     let raw: string | undefined;
     try { raw = (await call('GET', `/text?scope=main&max=${DIFF_TEXT_MAX}`)).text(); } catch { scope = 'page'; }
     if (raw === undefined) {
-      try { raw = (await call('GET', `/text?max=${DIFF_TEXT_MAX}`)).text(); } catch (e) { f.note = [f.note, `texte illisible : ${errOf(e).message}`].filter(Boolean).join(' ; '); }
+      try { raw = (await call('GET', `/text?max=${DIFF_TEXT_MAX}`)).text(); } catch (e) { f.note = [f.note, `texte illisible : ${unwrap(errOf(e).message)}`].filter(Boolean).join(' ; '); }
     }
-    if (raw !== undefined) f.text = { scope, ...textLines(raw) };
+    if (raw !== undefined) f.text = { scope, ...textLines(unwrap(raw)) };
   }
   if (want.forms === true) {
     try {
@@ -160,7 +167,7 @@ export async function visitPage(call: Call, url: string, want: VisitWants = {}):
       f.forms = { items: [] };
     } catch (e) {
       const items = (errOf(e).extra?.expect as { items?: unknown } | undefined)?.items;
-      f.forms = Array.isArray(items) ? { items: items.map((i) => unref(String(i))) } : { unavailable: errOf(e).message };
+      f.forms = Array.isArray(items) ? { items: items.map((i) => unref(String(i))) } : { unavailable: unwrap(errOf(e).message) };
     }
   }
   f.ms = Date.now() - t0;
@@ -367,6 +374,8 @@ export interface DiffResult {
   /** Chemins au-delà de --max, non comparés. */
   notCompared: string[];
   concurrency: number;
+  /** Frontières de contenu actives : le rapport texte est encadré (contenu des pages). */
+  contentBoundaries?: true;
 }
 
 /** Pages détaillées dans le rapport texte ; au-delà, une ligne par page. */
@@ -448,6 +457,8 @@ export interface AuditResult {
     disabled?: boolean;
   };
   notes: string[];
+  /** Frontières de contenu actives : le rapport texte est encadré (contenu des pages). */
+  contentBoundaries?: true;
 }
 
 export function auditPageOf(f: PageFacts, ignore?: RegExp): AuditPage {
@@ -594,13 +605,15 @@ export async function runDiff(o: DiffOptions, workers: readonly Call[], signal?:
   const kept = targets.slice(0, o.max);
   const want: VisitWants = { outline: true, text: true };
   const opts: CompareOptions = { originA: originOf(o.urlA), originB: originOf(o.urlB), ignore: o.ignore };
+  let framed = false;
   const res = await pool(kept, workers, async (call, t) => {
     const a = await visitPage(call, t.a, want);
     const b = await visitPage(call, t.b, want);
+    if (a.framed === true || b.framed === true) framed = true;
     return comparePages(t.path, a, b, opts);
   }, signal);
   const pages = res.filter((p): p is PageComparison => p !== undefined);
-  return { ok: pages.length === kept.length && pages.every((p) => p.same), a: o.urlA, b: o.urlB, ms: Date.now() - t0, pages, notCompared: targets.slice(o.max).map((t) => t.path), concurrency: workers.length };
+  return { ok: pages.length === kept.length && pages.every((p) => p.same), a: o.urlA, b: o.urlB, ms: Date.now() - t0, pages, notCompared: targets.slice(o.max).map((t) => t.path), concurrency: workers.length, ...(framed ? { contentBoundaries: true as const } : {}) };
 }
 
 export interface AuditOptions { urls: string[]; source: string; max: number; maxLinks: number; checkLinks: boolean; ignore?: RegExp | undefined; notes?: string[] }
@@ -618,8 +631,10 @@ export async function runAudit(o: AuditOptions, workers: readonly Call[], signal
   const skipped: Array<{ url: string; reason: string }> = [];
   let unchecked = 0;
   let budget = o.maxLinks;
+  let framed = false;
   const res = await pool(kept, workers, async (call, url) => {
     const f = await visitPage(call, url, { forms: true });
+    if (f.framed === true) framed = true;
     const page = auditPageOf(f, o.ignore);
     if (!o.checkLinks || f.inventory === undefined || f.error !== undefined) return page;
     const here = f.finalUrl ?? url;
@@ -664,6 +679,7 @@ export async function runAudit(o: AuditOptions, workers: readonly Call[], signal
     ok, source: o.source, ms: Date.now() - t0, concurrency: workers.length, pages, notVisited: urls.length - kept.length,
     links: { checked, broken, unchecked, skipped, ...(o.checkLinks ? {} : { disabled: true }) },
     notes: o.notes === undefined ? [] : o.notes,
+    ...(framed ? { contentBoundaries: true as const } : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs, VALUE_FLAGS } from '../core/script.js';
+import { newNonce, wrapContent } from '../core/boundaries.js';
 import type { HttpResult } from '../core/http.js';
 import {
   DEFAULT_CONCURRENCY, DEFAULT_MAX_LINKS, DEFAULT_MAX_PAGES, MAX_CONCURRENCY, MAX_LINKS, MAX_PAGES,
@@ -22,6 +23,15 @@ const ALLOWED: Record<'diff' | 'audit', Set<string>> = {
 };
 export const DIFF_USAGE = 'grasp diff <urlA> <urlB> [--paths fichier|-] [--max N] [--concurrency N] [--ignore <regex>] [--json]';
 export const AUDIT_USAGE = 'grasp audit <url-sitemap|url…|fichier|-> [--max N] [--concurrency N] [--max-links N | --no-links] [--ignore <regex>] [--json]';
+
+/**
+ * Rapport assemblé ici à partir du contenu de plusieurs pages (titres, textes, console) : encadré d'un nonce tiré
+ * APRÈS toutes les lectures quand les frontières de contenu sont actives (les marqueurs du bridge ont été retirés
+ * avant la comparaison, voir visitPage). JSON : chaînes déjà neutralisées par le bridge.
+ */
+function framedReport(text: string, framed: true | undefined, source: string): string {
+  return framed === true ? wrapContent(text, newNonce(), source).replace(/\n$/, '') : text;
+}
 
 function str(flags: Map<string, string | true>, k: string): string | undefined {
   const v = flags.get(k);
@@ -112,7 +122,7 @@ export async function multipageCmd(cmd: 'diff' | 'audit', argv: string[], call: 
     if (cmd === 'diff') {
       const r = await runDiff({ ...diffIn!, max, ignore }, workers, ac.signal);
       if (ac.signal.aborted) return 130;
-      io.out(a.flags.has('json') ? JSON.stringify(r) : formatDiff(r));
+      io.out(a.flags.has('json') ? JSON.stringify(r) : framedReport(formatDiff(r), r.contentBoundaries, 'pages'));
       return r.ok ? 0 : 1;
     }
     let urls = auditIn!.seeds;
@@ -122,7 +132,7 @@ export async function multipageCmd(cmd: 'diff' | 'audit', argv: string[], call: 
     if (urls.length === 0) throw new Error(`${auditIn!.source} : aucune page à auditer${notes.length > 0 ? ` (${notes.join(' ; ')})` : ''}`);
     const r = await runAudit({ urls, source: auditIn!.source, max, maxLinks, checkLinks, ignore, notes }, workers, ac.signal);
     if (ac.signal.aborted) return 130;
-    io.out(a.flags.has('json') ? JSON.stringify(r) : formatAudit(r));
+    io.out(a.flags.has('json') ? JSON.stringify(r) : framedReport(formatAudit(r), r.contentBoundaries, 'audit'));
     return r.ok ? 0 : 1;
   } finally {
     process.off('SIGINT', onSig);

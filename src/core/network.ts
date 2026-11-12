@@ -1,6 +1,7 @@
 import { GraspError, badRequest } from './errors.js';
 import type { ExpectMatch } from './expect.js';
 import { redactUrl } from './console.js';
+import { wrapTagged, type BoundaryTag } from './boundaries.js';
 
 /**
  * Journal réseau d'un onglet (dans le bridge) : une entrée par requête vue par le domaine CDP Network — celui
@@ -183,6 +184,14 @@ export class NetworkLog {
 }
 
 const URL_SHOWN = 150;
+
+/**
+ * Lignes du journal réseau, encadrées quand les frontières de contenu sont actives (l'URL vient de la page) :
+ * `boundary` de la réponse (grasp network) ou de la tranche (`network.boundary` d'une action).
+ */
+export function formatNetEntries(entries: readonly NetEntry[], boundary?: BoundaryTag | undefined): string {
+  return wrapTagged(entries.map(formatNet).join('\n'), boundary, 'reseau');
+}
 
 /** « #seq MÉTHODE url → statut · durée · type » ; en cours : « → en cours · 812 ms · fetch ». */
 export function formatNet(e: NetEntry): string {

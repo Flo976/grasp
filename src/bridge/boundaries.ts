@@ -12,15 +12,23 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 const PASS = new Set(['/health', '/policy', '/session-options', '/screenshot', '/pdf', '/cookies', '/state/export', '/state/import', '/eval']);
 const isInternal = (path: string) => path.startsWith('/internal/') || path === '/health' || path === '/policy' || path === '/session-options';
 
-/** Réponse capturée : le bridge n'emploie que writeHead/end (sendJson, sendBuffer, sendError), headersSent et destroy. */
+/** Réponse capturée : le bridge n'emploie que writeHead/end (sendJson, sendBuffer, sendError), set/getHeader, headersSent et destroy. */
 class Captured {
   status = 200;
   headers: OutgoingHttpHeaders = {};
   body: Buffer = Buffer.alloc(0);
   headersSent = false;
   destroyed = false;
-  writeHead(status: number, headers?: OutgoingHttpHeaders): this { this.status = status; this.headers = { ...headers }; this.headersSent = true; return this; }
+  // Comme ServerResponse : les en-têtes de writeHead s'ajoutent à ceux posés par setHeader (note des onglets).
+  writeHead(status: number, headers?: OutgoingHttpHeaders): this {
+    this.status = status;
+    for (const [k, v] of Object.entries(headers ?? {})) this.headers[k.toLowerCase()] = v;
+    this.headersSent = true;
+    return this;
+  }
   setHeader(k: string, v: string | number | string[]): this { this.headers[k.toLowerCase()] = v; return this; }
+  // Lu par le masquage des secrets (redactResponse : type du corps, note x-grasp-notice) et par les onglets.
+  getHeader(k: string): string | number | string[] | undefined { return this.headers[k.toLowerCase()]; }
   end(b?: Buffer | string): this { if (b !== undefined) this.body = typeof b === 'string' ? Buffer.from(b) : b; return this; }
   destroy(): this { this.destroyed = true; return this; }
 }
@@ -42,13 +50,15 @@ export function protectResponse(path: string, query: URLSearchParams, status: nu
     return Buffer.from(wrapContent(body.toString('utf8'), nonce, src));
   }
   if (!isJson) return body;
-  return Buffer.from(JSON.stringify(protectJson(JSON.parse(body.toString('utf8')) as Record<string, unknown>, nonce, { diff: 'diff', detail: 'note' })));
+  // a11y : `text` est le rapport rendu (lignes du snapshot, noms et messages de la page).
+  const wrap: Record<string, string> = path === '/a11y' ? { diff: 'diff', detail: 'note', text: 'a11y' } : { diff: 'diff', detail: 'note' };
+  return Buffer.from(JSON.stringify(protectJson(JSON.parse(body.toString('utf8')) as Record<string, unknown>, nonce, wrap)));
 }
 
 /**
  * Toutes les chaînes neutralisées ; les champs de `wrap` encadrés (ligne de fin : leurs propres imitations).
  * `boundary` (nonce de la réponse) sert aux formateurs qui encadrent plus tard ce qu'ils assemblent : lignes de
- * console (`console.boundary` pour celle d'une action), éléments cités par une erreur (`items` d'un expect), titre.
+ * console et du journal réseau (`console.boundary`, `network.boundary` pour celles d'une action), éléments cités par une erreur (`items` d'un expect), titre.
  */
 function protectJson(raw: Record<string, unknown>, nonce: string, wrap: Record<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -58,7 +68,8 @@ function protectJson(raw: Record<string, unknown>, nonce: string, wrap: Record<s
     if (src !== undefined && typeof v === 'string') {
       const n = neutralize(v);
       out[k] = wrapContent(n.text, nonce, src, n.count);
-    } else if (k === 'console' && v !== null && typeof v === 'object' && !Array.isArray(v)) {
+    } else if ((k === 'console' || k === 'network') && v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      // Tranche console ou réseau d'une action : son étiquette, pour les formateurs qui l'encadrent ensuite.
       const c = { count: 0 };
       out[k] = { ...(neutralizeDeep(v, c) as Record<string, unknown>), boundary: { nonce, imitations: c.count } satisfies BoundaryTag };
     } else out[k] = neutralizeDeep(v, counter);
