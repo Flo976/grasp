@@ -119,7 +119,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
       if (!(EXPECT_KINDS as readonly string[]).includes(kind)) return undefined;
       const pos = [kind];
       const f: Array<[string, string | true]> = [];
-      if (kind === 'value' || kind === 'sel' || kind === 'no-sel') pos.push(t ?? '');
+      if (ELEMENT_EXPECTS.has(kind)) pos.push(t ?? '');
       if (kind === 'request') {
         // [~] "<MÉTHODE> <chemin|url>" [statut] : la cible n'est pas un élément (jamais traduite).
         if (b.match === 'contains') pos.push('~');
@@ -133,6 +133,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
         if (b.match === 'regex') f.push(['regex', true]);
       }
       for (const k of ['timeout', 'scope', 'since', 'ignore', 'max'] as const) if (str(b[k]) !== undefined) f.push([k, str(b[k])!]);
+      if (b.fully === true) f.push(['fully', true]);
       if (b.shotOnError === true) f.push(['shot-on-error', true]);
       return L('expect', pos, f, 'expect');
     }
@@ -144,6 +145,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
         if (q.get('limit') !== null) f.push(['max', q.get('limit')!]);
         if (q.get('scope') !== null) f.push(['scope', q.get('scope')!]);
         if (q.get('nameMax') !== null) f.push(['name-max', q.get('nameMax')!]);
+        if (q.get('boxes') !== null) f.push(['boxes', true]);
         return L('find', [q.get('find')!], f);
       }
       const f: Array<[string, string | true]> = [];
@@ -152,6 +154,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
       if (q.get('nameMax') !== null) f.push(['name-max', q.get('nameMax')!]);
       if (q.get('markdown') !== null) f.push(['markdown', true]);
       if (q.get('mode') !== null) f.push([q.get('mode')!, true]);
+      if (q.get('boxes') !== null) f.push(['boxes', true]);
       return L(u.pathname.slice(1), [], f);
     }
     // Historique de l'onglet et défilement.
@@ -218,12 +221,15 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
   }
 }
 
+/** Assertions dont le premier argument est un élément (ref traduite en sélecteur durable, comme pour une action). */
+const ELEMENT_EXPECTS: ReadonlySet<string> = new Set(['value', 'sel', 'no-sel', 'in-viewport', 'not-clipped']);
+
 /** Positions des arguments qui désignent un élément (traduits en sélecteur durable). */
 export function targetIndex(line: CommandLine): number | undefined {
   switch (line.cmd) {
     case 'click': case 'hover': case 'fill': case 'select': case 'check': case 'type': case 'upload': case 'scroll': return 0;
     case 'press': return line.pos.length > 1 ? 1 : undefined;
-    case 'expect': return ['value', 'sel', 'no-sel'].includes(line.pos[0] ?? '') ? 1 : undefined;
+    case 'expect': return ELEMENT_EXPECTS.has(line.pos[0] ?? '') ? 1 : undefined;
     default: return undefined;
   }
 }

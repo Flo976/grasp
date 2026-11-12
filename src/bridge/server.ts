@@ -49,6 +49,14 @@ export function snapReadOptions(q: URLSearchParams): { mode?: SnapMode; find?: F
   return { find: { pattern, ...(roles !== undefined ? { roles } : {}), ...(n !== undefined ? { limit: n } : {}) } };
 }
 
+/** `boxes=1` (snap --boxes, find --boxes) ; toute autre valeur refusée, jamais ignorée. */
+export function boxesOf(q: URLSearchParams): boolean {
+  const v = q.get('boxes');
+  if (v === null) return false;
+  if (v !== '1' && v !== 'true') throw new GraspError(400, '« boxes » : 1 attendu');
+  return true;
+}
+
 /** Secret substitué par le control plane : nom et domaines (la valeur est dans `value`). */
 function secretUseOf(v: unknown): SecretUse | undefined {
   if (v === undefined) return undefined;
@@ -104,7 +112,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'POST /forward': return sendJson(res, 200, await page.history(1, opts));
         case 'POST /reload': return sendJson(res, 200, await page.reload({ ...opts, hard: optBool(body, 'hard') }));
         case 'POST /scroll': return sendJson(res, 200, await page.scroll(optStr(body, 'target'), scrollSpecOf(body), opts));
-        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max'), ...snapReadOptions(q) }));
+        case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max'), ...snapReadOptions(q), ...(boxesOf(q) ? { boxes: true } : {}) }));
         case 'GET /text': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.text(optInt(q.get('max'), 'max'), scope, { markdown: optFlag(q.get('markdown'), 'markdown') === true }));
         case 'GET /a11y': return sendJson(res, 200, await page.a11y({ scope, max: optInt(q.get('max'), 'max') }));
         case 'POST /wait': return sendJson(res, 200, await page.wait({ text: optStr(body, 'text'), sel: optStr(body, 'sel'), idle: optBool(body, 'idle'), timeout: optInt(body.timeout, 'timeout') }));

@@ -62,6 +62,8 @@ export interface Snapshot {
   modal?: string;
   /** backendDOMNodeId de l'élément focalisé (propriété `focused` de l'arbre), s'il y en a un. */
   focused?: number;
+  /** backendDOMNodeId des lignes à ref rendues (dans le budget), dans l'ordre : nœuds à mesurer pour `--boxes`. */
+  shownIds?: number[];
 }
 
 /**
@@ -114,6 +116,11 @@ export interface SnapshotOptions {
   mode?: SnapMode;
   /** Recherche (`find`) : seules les lignes qui correspondent, avec leur conteneur de contexte. */
   find?: FindSpec;
+  /**
+   * `--boxes` : suffixe de chaque ligne à ref (backendDOMNodeId → « @x,y LxH », absent : « @aucune-boîte »), et
+   * ligne d'explication sous l'en-tête. Les refs, entrées du diff et textes n'en dépendent pas.
+   */
+  boxes?: { of: Map<number, string>; note: string };
 }
 
 export type SnapMode = 'outline' | 'interactive';
@@ -206,7 +213,12 @@ interface OutLine {
   short?: string;
   /** Nom rendu (nœud avec ref). */
   name?: string;
+  /** backendDOMNodeId du nœud (ligne à ref) : boîte de `--boxes`. */
+  bid?: number;
 }
+
+/** Ligne retenue par une vue (complète, partielle, find), avant budget. */
+interface BodyLine { depth: number; line: string; bid?: number | undefined }
 
 const listOf = <T>(xs: T[] | undefined): T[] => (xs === undefined ? [] : xs);
 const str = (v: AXValue | undefined): string => (v?.value === undefined || v.value === null ? '' : String(v.value));
@@ -459,7 +471,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     meta.set(ref, raw !== name ? { role, name, alt: raw } : { role, name });
     // Option d'une liste dans la zone : `find` doit la trouver même si elle n'a pas de ligne à elle.
     if (findParent !== undefined && opts.find !== undefined && name !== '') {
-      hiddenOptions.push({ depth: 0, line: `${ref}:${role} ${quote(name, nameMax)}${hasProp(n, 'selected', true) ? ' [x]' : ''}`, parent: findParent, kind: 'node', role, hay: raw !== name ? `${name} ${raw}` : name });
+      hiddenOptions.push({ depth: 0, line: `${ref}:${role} ${quote(name, nameMax)}${hasProp(n, 'selected', true) ? ' [x]' : ''}`, parent: findParent, kind: 'node', role, hay: raw !== name ? `${name} ${raw}` : name, ...(n.backendDOMNodeId !== undefined ? { bid: n.backendDOMNodeId } : {}) });
     }
   };
 
@@ -595,7 +607,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
           myIdx = out.length;
           const lv = node.properties?.find((p) => p.name === 'level')?.value.value;
           const hay = [shown, raw !== shown ? raw : '', val, cx.text, err ?? ''].filter((x) => x !== '').join(' ');
-          out.push({ depth, line, parent: pIdx, kind: 'node', role, ...(typeof lv === 'number' ? { level: lv } : {}), hay, name: shown, short: `${ref}:${role}${shown ? ` ${quote(shown, 40)}` : ''}` });
+          out.push({ depth, line, parent: pIdx, kind: 'node', role, ...(typeof lv === 'number' ? { level: lv } : {}), hay, name: shown, short: `${ref}:${role}${shown ? ` ${quote(shown, 40)}` : ''}`, ...(node.backendDOMNodeId !== undefined ? { bid: node.backendDOMNodeId } : {}) });
         }
         emitted = true;
       }
@@ -676,23 +688,27 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   // ne veut pas dire « absent de la page ».
   const finals = [elague, view.partial].filter((x): x is string => x !== undefined);
   const lines = [header];
-  let bytes = Buffer.byteLength(header);
+  if (opts.boxes !== undefined) lines.push(opts.boxes.note);
+  let bytes = lines.reduce((n, l) => n + Buffer.byteLength(l) + 1, -1);
+  const shownIds: number[] = [];
   // Place réservée aux lignes finales (élagage, lecture partielle, troncature) : le budget est respecté avec elles.
   const reserve = finals.reduce((n, f) => n + Buffer.byteLength(f) + 1, 0) + 160;
   let omitted = 0;
   let rest = 0;
-  for (const { depth, line } of view.body) {
-    const l = ' '.repeat(depth) + line;
+  for (const { depth, line, bid } of view.body) {
+    const box = opts.boxes !== undefined && bid !== undefined ? ` ${opts.boxes.of.get(bid) ?? '@aucune-boîte'}` : '';
+    const l = ' '.repeat(depth) + line + box;
     const b = Buffer.byteLength(l) + 1;
     if (omitted > 0 || bytes + b > maxBytes - reserve) { omitted++; rest += l.length + 1; continue; }
     lines.push(l);
     bytes += b;
+    if (bid !== undefined) shownIds.push(bid);
   }
   lines.push(...finals);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
   // Le document (RootWebArea) porte aussi `focused` quand la page a le focus : on veut l'élément.
   const focused = nodes.filter((n) => !n.ignored && n.backendDOMNodeId !== undefined && str(n.role) !== 'RootWebArea' && hasProp(n, 'focused', true)).pop()?.backendDOMNodeId;
-  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}), ...(focused !== undefined ? { focused } : {}) };
+  return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, shownIds, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}), ...(focused !== undefined ? { focused } : {}) };
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : one}`;
@@ -705,12 +721,12 @@ function ancestors(out: OutLine[], i: number): number[] {
 }
 
 /** Lignes retenues, ré-indentées : la profondeur est le nombre d'ancêtres retenus. */
-function keptLines(out: OutLine[], kept: boolean[], render: (i: number) => string): Array<{ depth: number; line: string }> {
+function keptLines(out: OutLine[], kept: boolean[], render: (i: number) => string): BodyLine[] {
   const depthOf: number[] = [];
-  const body: Array<{ depth: number; line: string }> = [];
+  const body: BodyLine[] = [];
   out.forEach((o, i) => {
     depthOf[i] = o.parent < 0 ? 0 : depthOf[o.parent]! + (kept[o.parent] === true ? 1 : 0);
-    if (kept[i] === true) body.push({ depth: depthOf[i]!, line: render(i) });
+    if (kept[i] === true) body.push({ depth: depthOf[i]!, line: render(i), bid: o.bid });
   });
   return body;
 }
@@ -731,7 +747,7 @@ const isAction = (o: OutLine) => isNode(o, INTERACTIVE) || (o.kind === 'node' &&
  * d'une liste), leurs conteneurs (repères, groupes, lignes de tableau, dialogues…) et les titres sous lesquels
  * ils apparaissent dans le même repère ; le texte brut est omis.
  */
-function modeView(out: OutLine[], mode: SnapMode): { body: Array<{ depth: number; line: string }>; partial: string } {
+function modeView(out: OutLine[], mode: SnapMode): { body: BodyLine[]; partial: string } {
   const kept = out.map(() => false);
   let render = (i: number) => out[i]!.line;
   if (mode === 'outline') {
@@ -809,7 +825,7 @@ function modeView(out: OutLine[], mode: SnapMode): { body: Array<{ depth: number
  * options de listes fermées comprises, dans l'ordre du document. Chacune est suivie du conteneur ou de l'élément
  * qui la situe (`(dans e4k2:row "Ada Lovelace")`), sans indentation. Au plus `limit` lignes ; le reste compté.
  */
-function findView(out: OutLine[], hidden: OutLine[], spec: FindSpec): { body: Array<{ depth: number; line: string }>; partial?: string } {
+function findView(out: OutLine[], hidden: OutLine[], spec: FindSpec): { body: BodyLine[]; partial?: string } {
   const roles = spec.roles?.map((r) => r.toLowerCase());
   const limit = spec.limit ?? FIND_LIMIT;
   // Options sans ligne rangées juste après leur liste : l'ordre du document est gardé.
@@ -827,14 +843,14 @@ function findView(out: OutLine[], hidden: OutLine[], spec: FindSpec): { body: Ar
     }
     return '';
   };
-  const hits: Array<{ depth: number; line: string }> = [];
+  const hits: BodyLine[] = [];
   let count = 0;
   for (const o of ordered) {
     if (o.hay === undefined || o.role === undefined) continue;
     if (roles !== undefined && !roles.includes(o.role.toLowerCase())) continue;
     if (!spec.pattern.test(o.hay)) continue;
     count++;
-    if (hits.length < limit) hits.push({ depth: 0, line: `${o.line}${context(o)}` });
+    if (hits.length < limit) hits.push({ depth: 0, line: `${o.line}${context(o)}`, bid: o.bid });
   }
   const head = `find ${spec.pattern.label}${roles !== undefined ? ` --role ${roles.join(',')}` : ''} : ${count === 0 ? 'aucune correspondance' : plural(count, 'correspondance', 'correspondances')}`;
   const more = count - hits.length;

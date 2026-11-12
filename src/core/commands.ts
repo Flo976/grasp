@@ -73,6 +73,8 @@ export const OPTIONS: Record<string, OptionSpec> = {
   // Vague 2 : lecture progressive, réseau, dialogues, onglets, historique, viewport, secrets, multi-pages.
   'outline': { type: 'boolean', description: 'snap partiel : repères, tableaux et titres, avec le volume de chaque repère' },
   'interactive': { type: 'boolean', description: 'snap partiel : éléments actionnables et champs, avec leurs conteneurs' },
+  'boxes': { type: 'boolean', description: 'boîte de chaque ligne à ref : @x,y LxH (px CSS, coin haut-gauche dans le document ; élément fixe : dans le viewport, suivi de « fixe »)' },
+  'fully': { type: 'boolean', description: 'expect in-viewport : aussi verticalement, sans défiler (position courante)' },
   'role': { type: 'string', arg: 'r[,r2]', description: 'rôles retenus par find (button, link, textbox, option, text…)' },
   'network': { type: 'boolean', description: 'requêtes parties pendant l\'action' },
   'dialog': { type: 'string', arg: 'accept|dismiss|texte', description: 'réponse aux dialogues JS (défaut : confirm/prompt refusés)' },
@@ -139,6 +141,9 @@ const EXPECT_SUMMARY: Record<ExpectKind, string> = {
   'no-form-errors': 'aucun champ invalide ni alerte',
   'request': 'requête réseau vue (« MÉTHODE chemin|url » [statut], 2xx par défaut ; exige allowConsole)',
   'a11y': 'au plus N problèmes relevés par l\'audit d\'accessibilité (grasp a11y), 0 par défaut',
+  'in-viewport': 'l\'élément tient dans la largeur du viewport (--fully : aussi en hauteur, sans défiler)',
+  'not-clipped': 'l\'élément n\'est rogné ni par un ancêtre overflow hidden/clip ni par le bord du viewport',
+  'no-horizontal-overflow': 'la page ne défile pas horizontalement ; sinon les éléments qui dépassent',
 };
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -178,8 +183,8 @@ export const COMMANDS: readonly CommandSpec[] = [
       { name: 'close', usage: 'tab close [id]', summary: 'ferme l\'onglet (défaut : l\'actif ; jamais le dernier)' },
     ] },
   // Lecture
-  { name: 'snap', group: 'Lecture', usage: 'snap [--max octets] [--scope <sél>] [--name-max N] [--outline|--interactive]', summary: 'arbre d\'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut)', options: ['max', 'scope', 'name-max', 'outline', 'interactive'], run: true, mcp: 'snap' },
-  { name: 'find', group: 'Lecture', usage: 'find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>]', summary: 'lignes du snapshot qui correspondent, avec leur ref et leur conteneur (30 par défaut)', options: ['role', 'max', 'scope', 'name-max'], run: true, mcp: 'find' },
+  { name: 'snap', group: 'Lecture', usage: 'snap [--max octets] [--scope <sél>] [--name-max N] [--outline|--interactive] [--boxes]', summary: 'arbre d\'accessibilité, une ligne par nœud « ref:rôle "nom" [états] » (12000 octets par défaut) ; --boxes : position et taille', options: ['max', 'scope', 'name-max', 'outline', 'interactive', 'boxes'], run: true, mcp: 'snap' },
+  { name: 'find', group: 'Lecture', usage: 'find <texte|/regex/> [--role r[,r2]] [--max N] [--scope <sél>] [--boxes]', summary: 'lignes du snapshot qui correspondent, avec leur ref et leur conteneur (30 par défaut) ; --boxes : position et taille', options: ['role', 'max', 'scope', 'name-max', 'boxes'], run: true, mcp: 'find' },
   { name: 'text', group: 'Lecture', usage: 'text [--max N] [--scope <sél>] [--markdown]', summary: 'texte visible de la page ou d\'une zone (4000 caractères par défaut)', options: ['max', 'scope', 'markdown'], run: true, mcp: 'text' },
   { name: 'wait', group: 'Lecture', usage: 'wait [--text T | --sel S | --idle] [--timeout ms]', summary: 'attend un texte, un élément ou une page stable (10000 ms)', options: ['text', 'sel', 'idle', 'timeout'], run: true, mcp: 'wait' },
   { name: 'network', group: 'Lecture', usage: 'network [--since <seq>] [--failed] [--max N] [--type xhr,fetch,…]', summary: 'journal réseau « #seq MÉTHODE url → statut · durée · type » (50 dernières)', options: ['since', 'failed', 'max', 'type'], run: true, mcp: 'network' },
@@ -201,7 +206,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'press', group: 'Actions', usage: 'press <touche> [sél]', summary: 'touche (Enter, Tab, Escape, ArrowDown, Control+a…)', options: ACTION, run: true, mcp: 'press' },
   { name: 'hover', group: 'Actions', usage: 'hover <sél>', summary: 'survol (menus, infobulles)', options: ACTION, run: true, mcp: 'hover' },
   // Recette et scripts
-  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'], run: true,
+  { name: 'expect', group: 'Recette', usage: 'expect <assertion> …', summary: 'vérifie la page ; échec = code 1, « attendu … ; constaté : … »', options: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'fully', 'shot-on-error'], run: true,
     subcommands: EXPECT_KINDS.map((k) => ({ name: k, usage: EXPECT_USAGE[k], summary: EXPECT_SUMMARY[k], options: [...EXPECT_FLAGS[k], 'shot-on-error'] })) },
   { name: 'run', group: 'Recette', usage: 'run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép]', summary: 'plusieurs commandes en UN aller-retour, une par ligne', options: ['continue', 'report', 'no-report', 'out-dir'], mcp: 'run' },
   { name: 'history', group: 'Recette', usage: 'history [--since <seq>] [--limit N] [--clear] | history --as-run [--expect] [--since <seq>] [-o fichier]', summary: 'commandes de la session ; --as-run : script grasp run rejouable', options: ['since', 'limit', 'clear', 'as-run', 'expect'], cliOptions: ['output'], mcp: 'history' },

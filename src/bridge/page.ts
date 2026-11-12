@@ -13,6 +13,7 @@ import { saveCapture } from '../core/captures.js';
 import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot, type SnapMode, type FindSpec } from './snapshot.js';
 import { parseKey } from './keys.js';
+import { BOXES_FN, GEOM_FN, OVERFLOW_FN, boxLabel, judgeHorizontalOverflow, judgeInViewport, judgeNotClipped, type ElementGeometry, type PageOverflow } from './geometry.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { TrackerList } from './trackers.js';
@@ -633,6 +634,8 @@ const VALUE_FN = `function () {
 }`;
 /** Texte lu par expect text / no-text (au-delà, la fin de la page n'est pas examinée). */
 const EXPECT_TEXT_MAX = 2_000_000;
+/** Nœuds mesurés au plus par `--boxes` (au-delà : « @aucune-boîte » ; le budget de snap en rend bien moins). */
+const BOXES_MAX = 2000;
 
 const CLICK_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
 const HOVER_EVENTS = ['pointerover', 'pointermove', 'mouseover', 'mousemove'];
@@ -2028,7 +2031,7 @@ export class PageController {
    * Snapshot d'accessibilité. `maxBytes` : budget en octets (défaut `snapMax`). `scope` (ref, CSS, text:) :
    * seules les lignes du sous-arbre de cet élément, avec les mêmes refs que le snapshot complet.
    */
-  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined } = {}): Promise<Snapshot> {
+  async snapshot(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined; boxes?: boolean | undefined } = {}): Promise<Snapshot> {
     if (opts.nameMax !== undefined && (!Number.isInteger(opts.nameMax) || opts.nameMax < 0)) throw badRequest('name-max : entier positif ou nul attendu (0 = noms entiers)');
     const scope = opts.scope !== undefined && opts.scope.trim() !== '' ? opts.scope.trim() : undefined;
     const scopeBackendId = scope !== undefined ? await this.resolve(scope) : undefined;
@@ -2050,18 +2053,51 @@ export class PageController {
     // Racine sans nom (moteurs CDP autres que Chrome, ex. Obscura ; ou page sans titre) : document.title relu.
     const rootName = root !== undefined && root.role?.value === 'RootWebArea' && typeof root.name?.value === 'string' ? root.name.value : '';
     const title = rootName !== '' ? rootName : (await this.location()).title;
-    const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}), ...(opts.mode !== undefined ? { mode: opts.mode } : {}), ...(opts.find !== undefined ? { find: opts.find } : {}) });
+    const build = (boxes?: { of: Map<number, string>; note: string }) => buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}), ...(opts.mode !== undefined ? { mode: opts.mode } : {}), ...(opts.find !== undefined ? { find: opts.find } : {}), ...(boxes !== undefined ? { boxes } : {}) });
+    let snap = build();
+    // --boxes : nœuds des lignes rendues mesurés en un appel, puis rendu avec leur boîte (lignes plus longues :
+    // le budget en garde au plus autant, toutes mesurées).
+    if (opts.boxes === true) snap = build(await this.measureBoxes(snap.shownIds !== undefined ? snap.shownIds : []));
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
     return snap;
   }
 
   /**
+   * Boîtes (`--boxes`) de nœuds du snapshot, en un appel dans le monde isolé : chaque nœud résolu, puis une
+   * fonction fixe reçoit tous les objets. Coordonnées du document, px CSS arrondis. Nœud qui ne se résout plus
+   * (page en mouvement) : « @aucune-boîte » ; échec global : ligne d'explication qui le dit, jamais d'erreur.
+   */
+  private async measureBoxes(ids: number[]): Promise<{ of: Map<number, string>; note: string }> {
+    const uniq = [...new Set(ids)].slice(0, BOXES_MAX);
+    const of = new Map<number, string>();
+    const group = 'grasp-boites';
+    let size = '';
+    try {
+      const ctx = await this.isolatedContext();
+      const objs = await Promise.all(uniq.map((backendNodeId) => this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId, executionContextId: ctx, objectGroup: group }).then((r) => r.object.objectId, () => undefined)));
+      const first = objs.find((o) => o !== undefined);
+      if (first !== undefined) {
+        const r = await this.s<{ result: { value?: Array<number[] | null> }; exceptionDetails?: unknown }>('Runtime.callFunctionOn', { objectId: first, functionDeclaration: BOXES_FN, arguments: objs.map((objectId) => (objectId !== undefined ? { objectId } : { value: null })), returnByValue: true, objectGroup: group });
+        const got = r.result.value;
+        if (r.exceptionDetails === undefined && Array.isArray(got)) got.forEach((b, i) => { of.set(uniq[i]!, boxLabel(b)); });
+      }
+      const vp = await this.evalIsolated<{ w: number; h: number }>('(() => { const se = document.scrollingElement || document.documentElement; return { w: se.clientWidth, h: se.clientHeight }; })()');
+      size = ` ; viewport ${vp.w}x${vp.h}`;
+    } catch {
+      this.isoCtx = undefined;
+      return { of, note: 'boîtes : mesure impossible (page en cours de changement) — relancez' };
+    } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined); }
+    return { of, note: `boîtes : @x,y LxH en px CSS, coin haut-gauche dans le document (défilement compris)${size}` };
+  }
+
+  /**
    * Texte de `snap`. Zone frame=… : arbre ARIA du cadre par le moteur Playwright (même d'une autre origine),
    * sans refs (elles ne désignent que le document principal) ; on agit dans le cadre avec frame=… >> css|text:.
    */
-  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined } = {}): Promise<string> {
+  async snapText(opts: { maxBytes?: number | undefined; scope?: string | undefined; nameMax?: number | undefined; mode?: SnapMode | undefined; find?: FindSpec | undefined; boxes?: boolean | undefined } = {}): Promise<string> {
     if (opts.scope === undefined || parseFrameTarget(opts.scope) === null) return (await this.snapshot(opts)).text;
+    if (opts.boxes === true) throw badRequest(`--boxes ne s'applique pas à une zone frame=… (arbre ARIA sans refs)`);
     // Lecture partielle et find reposent sur les refs, que l'arbre ARIA d'un cadre n'a pas : refusé, jamais ignoré.
     if (opts.find !== undefined || opts.mode !== undefined) throw badRequest(`${opts.find !== undefined ? 'find' : `snap --${opts.mode}`} ne s'applique pas à une zone frame=… (arbre ARIA sans refs) : snap --scope '${opts.scope.trim()}'`);
     const scope = opts.scope.trim();
@@ -2554,8 +2590,9 @@ export class PageController {
     const timeout = spec.timeout ?? EXPECT_DEFAULT_MS;
     const end = t0 + timeout;
     let observed = '';
+    let items: string[] | undefined;
     for (;;) {
-      let r: { ok: boolean; observed: string };
+      let r: { ok: boolean; observed: string; items?: string[] };
       try { r = await this.observe(spec); } catch (e) {
         // Erreur du script (sélecteur invalide, ambigu, interdit) : immédiate. Page en transition : on relit.
         if (e instanceof GraspError && [400, 403, 409].includes(e.status)) throw e;
@@ -2563,15 +2600,16 @@ export class PageController {
       }
       if (r.ok) return { ok: true, kind: spec.kind, waited: Date.now() - t0 };
       observed = r.observed;
+      items = r.items;
       const left = end - Date.now();
       if (left <= 0) break;
       await sleep(Math.min(100, left));
     }
-    throw fail(`${observed}${timeout > 0 ? ` (après ${timeout} ms)` : ''}`);
+    throw fail(`${observed}${timeout > 0 ? ` (après ${timeout} ms)` : ''}`, items);
   }
 
   /** Une lecture de l'assertion : tenue ou non, et ce qui a été constaté (borné, une ligne). */
-  private async observe(spec: ExpectSpec): Promise<{ ok: boolean; observed: string }> {
+  private async observe(spec: ExpectSpec): Promise<{ ok: boolean; observed: string; items?: string[] }> {
     const short = (v: string) => `« ${v.length > 300 ? `${v.slice(0, 300)}…` : v} »`;
     switch (spec.kind) {
       case 'text': case 'no-text': {
@@ -2607,6 +2645,19 @@ export class PageController {
         return { ok: matchValue(v, spec), observed: short(v) };
       }
       case 'request': return this.observeRequest(spec);
+      case 'in-viewport': case 'not-clipped': {
+        let id: number;
+        try { id = await this.resolve(spec.target!); } catch (e) {
+          if (e instanceof GraspError && e.status === 404) return { ok: false, observed: e.message };
+          throw e;
+        }
+        const g = await this.callIsolated<ElementGeometry>(id, GEOM_FN);
+        return spec.kind === 'in-viewport' ? judgeInViewport(g, spec.fully === true) : judgeNotClipped(g);
+      }
+      case 'no-horizontal-overflow': {
+        const r = judgeHorizontalOverflow(await this.evalIsolated<PageOverflow>(OVERFLOW_FN));
+        return { ok: r.ok, observed: r.observed, ...(r.items.length > 0 ? { items: r.items } : {}) };
+      }
       default: throw badRequest(`assertion ${spec.kind} non relue`);
     }
   }

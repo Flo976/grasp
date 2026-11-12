@@ -212,6 +212,8 @@ const ACTION_PROPS: Record<string, Prop> = {
 };
 const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, network: ACTION_PROPS.network!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
 
+const BOXES_PROP = B('Ajoute à chaque ligne à ref sa boîte « @x,y LxH » (px CSS, coin haut-gauche dans le document ; élément fixe : dans le viewport, suivi de « fixe ») : vérifier une mise en page (élément trop large pour le viewport) sans eval. Assertions de recette : outil run avec `expect in-viewport|not-clipped <sél>`, `expect no-horizontal-overflow`.');
+
 /** Nom d'argument MCP (camelCase) → option de la CLI. */
 const FLAG: Record<string, string> = {
   snapDiff: 'snap-diff', shotOnError: 'shot-on-error', nameMax: 'name-max', maxWidth: 'max-width',
@@ -286,6 +288,7 @@ const TOOLS: Tool[] = [
     props: {
       max: I('Budget en octets.', 1), scope: S('Zone : ref, CSS ou text: (refs identiques à celles du snapshot complet) ; frame=<css> pour l\'arbre ARIA d\'une iframe (sans refs).'), nameMax: I('Longueur maximale des noms (défaut 80) ; 0 = noms entiers.'),
       mode: S('Lecture partielle, mêmes refs : outline = repères et titres seulement (avec le volume de chaque repère), pour s\'orienter avant un snap ciblé (scope) ; interactive = éléments actionnables et champs avec leurs conteneurs et titres.', { enum: ['outline', 'interactive'] }),
+      boxes: BOXES_PROP,
     },
     async run(c, a) {
       const { mode, ...rest } = a;
@@ -298,6 +301,7 @@ const TOOLS: Tool[] = [
     props: {
       pattern: S('Texte cherché, ou /expression régulière/drapeaux (i, m, s, u).'), role: S('Rôle(s) retenu(s), séparés par des virgules (button, link, textbox, option, heading, text = texte brut…).'),
       max: I('Nombre maximal de lignes (défaut 30, 500 au plus).', 1), scope: S('Zone : ref, CSS ou text:.'), nameMax: I('Longueur maximale des noms (défaut 80) ; 0 = noms entiers.'),
+      boxes: BOXES_PROP,
     },
     required: ['pattern'],
     async run(c, a) { return text((await send(c, buildRequest(toArgs('find', a, ['pattern'])))).text()); },
@@ -443,7 +447,7 @@ const TOOLS: Tool[] = [
   {
     name: 'run',
     // Liste tirée de RUN_COMMANDS : une commande ajoutée à run est annoncée à l'agent MCP sans retouche ici.
-    description: `Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (${RUN_COMMANDS.join(', ')}), commentaires #, guillemets à la shell. Viewport émulé : \`viewport 360x800 [--mobile] [--touch] [--dpr N]\`, \`viewport iphone-se\`, \`viewport reset\`. Stockage Web sans eval (allowCookies) : \`storage set local <clé> <valeur> [--origin <url>]\` — --origin pose la valeur avant le premier chargement de l'origine (sur about:blank).` + ' Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
+    description: `Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (${RUN_COMMANDS.join(', ')}), commentaires #, guillemets à la shell. Viewport émulé : \`viewport 360x800 [--mobile] [--touch] [--dpr N]\`, \`viewport iphone-se\`, \`viewport reset\`. Stockage Web sans eval (allowCookies) : \`storage set local <clé> <valeur> [--origin <url>]\` — --origin pose la valeur avant le premier chargement de l'origine (sur about:blank).` + ' Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors|request|a11y …`, mise en page mobile sans eval : `expect in-viewport <sél> [--fully]`, `expect not-clipped <sél>`, `expect no-horizontal-overflow` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
     props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.'), report: B('Rapport de recette (étapes, erreurs console, requêtes en échec, formulaire, page finale) : d\'office avec un expect.') },
     required: ['script'],
     async run(c, a) {

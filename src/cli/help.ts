@@ -147,6 +147,8 @@ Ref d'une page précédente → 404 : refaites \`snap\`.
   \`--name-max 0\` seulement si les noms coupés (\`…\`) comptent.
 - Étapes connues d'avance : \`grasp run\` (un seul appel, seule la sortie utile est imprimée).
 - \`screenshot\` renvoie un **chemin**, pas l'image : lisez-la seulement si l'apparence compte (\`--max-width 800\`, \`--el <sél>\`).
+- Mise en page mobile sans eval ni capture : \`viewport 360x800 --mobile\`, puis \`expect no-horizontal-overflow\`,
+  \`expect not-clipped <sél>\` (image alt="" comprise, par CSS), \`expect in-viewport <sél>\` ; \`find <texte> --boxes\` donne les positions.
 - \`console --level error\` puis \`--since <seq>\` (seq courant sur stderr) pour ne relire que la suite. \`--level error\`
   inclut les **requêtes en échec** (source \`network\` : 4xx/5xx, \`net::ERR_…\`, CORS ; source \`grasp\` : bloquées
   par le garde) ; \`expect no-console-errors\` les compte aussi (\`--ignore 'favicon'\` pour en écarter une).
