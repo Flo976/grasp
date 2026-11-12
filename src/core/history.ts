@@ -6,6 +6,7 @@
  */
 
 import { EXPECT_KINDS } from './expect.js';
+import { secretRef } from './secrets.js';
 
 /** Entrées retenues par session (les plus anciennes sont oubliées, et c'est annoncé) : un script de run en accepte autant. */
 export const HISTORY_MAX = 500;
@@ -62,7 +63,7 @@ export interface HistoryEntry {
   unreplayable?: string;
 }
 
-const READS = new Set(['snap', 'text', 'console', 'screenshot', 'cookies', 'pdf', 'state export', 'location']);
+const READS = new Set(['snap', 'find', 'text', 'a11y', 'console', 'network', 'screenshot', 'cookies', 'pdf', 'state export', 'location', 'tabs']);
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined);
 
@@ -73,8 +74,12 @@ function actionFlags(b: Record<string, unknown>): Array<[string, string | true]>
   if (str(b.max) !== undefined) f.push(['max', str(b.max)!]);
   if (str(b.scope) !== undefined) f.push(['scope', str(b.scope)!]);
   if (b.console === true) f.push(['console', true]);
+  if (b.network === true) f.push(['network', true]);
   if (b.shotOnError === true) f.push(['shot-on-error', true]);
   if (str(b.engine) !== undefined) f.push(['engine', str(b.engine)!]);
+  // Comportement (rejoué) : réponse aux dialogues, bascule sur le popup ouvert par l'action.
+  if (str(b.dialog) !== undefined) f.push(['dialog', str(b.dialog)!]);
+  if (b.follow === true) f.push(['follow', true]);
   return f;
 }
 
@@ -92,7 +97,8 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
     case 'POST /navigate': return L('nav', [str(b.url) ?? ''], actionFlags(b));
     case 'POST /click': return L('click', [t ?? ''], actionFlags(b));
     case 'POST /hover': return L('hover', [t ?? ''], actionFlags(b));
-    case 'POST /fill': return L('fill', [t ?? '', str(b.value) ?? ''], actionFlags(b));
+    // secret:NOM : seul le nom arrive ici (la valeur est substituée après l'enregistrement) ; rejouable tel quel.
+    case 'POST /fill': return L('fill', [t ?? '', typeof b.secret === 'string' ? `secret:${b.secret}` : str(b.value) ?? ''], actionFlags(b));
     case 'POST /select': return L('select', [t ?? '', str(b.value) ?? ''], actionFlags(b));
     case 'POST /check': return L('check', [t ?? ''], [...(b.checked === false ? [['uncheck', true] as [string, true]] : []), ...actionFlags(b)]);
     case 'POST /press': return L('press', [str(b.key) ?? '', ...(t !== undefined ? [t] : [])], actionFlags(b));
@@ -114,23 +120,78 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
       const pos = [kind];
       const f: Array<[string, string | true]> = [];
       if (kind === 'value' || kind === 'sel' || kind === 'no-sel') pos.push(t ?? '');
+      if (kind === 'request') {
+        // [~] "<MÉTHODE> <chemin|url>" [statut] : la cible n'est pas un élément (jamais traduite).
+        if (b.match === 'contains') pos.push('~');
+        pos.push(t ?? '');
+        if (str(b.status) !== undefined) pos.push(str(b.status)!);
+        if (b.match === 'regex') f.push(['regex', true]);
+      }
       if (b.expected !== undefined) {
         if (b.match === 'contains') pos.push('~');
         pos.push(str(b.expected) ?? '');
         if (b.match === 'regex') f.push(['regex', true]);
       }
-      for (const k of ['timeout', 'scope', 'since', 'ignore'] as const) if (str(b[k]) !== undefined) f.push([k, str(b[k])!]);
+      for (const k of ['timeout', 'scope', 'since', 'ignore', 'max'] as const) if (str(b[k]) !== undefined) f.push([k, str(b[k])!]);
       if (b.shotOnError === true) f.push(['shot-on-error', true]);
       return L('expect', pos, f, 'expect');
     }
-    case 'GET /snap': case 'GET /text': {
+    case 'GET /snap': case 'GET /text': case 'GET /a11y': {
+      // find <motif> : GET /snap?find=… (--max y compte des lignes : paramètre limit).
+      if (u.pathname === '/snap' && q.get('find') !== null) {
+        const f: Array<[string, string | true]> = [];
+        if (q.get('role') !== null) f.push(['role', q.get('role')!]);
+        if (q.get('limit') !== null) f.push(['max', q.get('limit')!]);
+        if (q.get('scope') !== null) f.push(['scope', q.get('scope')!]);
+        if (q.get('nameMax') !== null) f.push(['name-max', q.get('nameMax')!]);
+        return L('find', [q.get('find')!], f);
+      }
       const f: Array<[string, string | true]> = [];
       if (q.get('max') !== null) f.push(['max', q.get('max')!]);
       if (q.get('scope') !== null) f.push(['scope', q.get('scope')!]);
       if (q.get('nameMax') !== null) f.push(['name-max', q.get('nameMax')!]);
       if (q.get('markdown') !== null) f.push(['markdown', true]);
+      if (q.get('mode') !== null) f.push([q.get('mode')!, true]);
       return L(u.pathname.slice(1), [], f);
     }
+    // Historique de l'onglet et défilement.
+    case 'POST /back': case 'POST /forward': return L(u.pathname.slice(1), [], actionFlags(b));
+    case 'POST /reload': return L('reload', [], [...(b.hard === true ? [['hard', true] as [string, true]] : []), ...actionFlags(b)]);
+    case 'POST /scroll': {
+      const f: Array<[string, string | true]> = [];
+      for (const [k, flag] of [['by', 'by'], ['to', 'to']] as const) if (str(b[k]) !== undefined) f.push([flag, str(b[k])!]);
+      if (b.untilStable === true) f.push(['until-stable', true]);
+      if (str(b.maxSteps) !== undefined) f.push(['max-steps', str(b.maxSteps)!]);
+      return L('scroll', t !== undefined ? [t] : [], [...f, ...actionFlags(b)]);
+    }
+    case 'POST /network': {
+      const f: Array<[string, string | true]> = [];
+      if (str(b.since) !== undefined) f.push(['since', str(b.since)!]);
+      // 50 : défaut posé par le client (nombre) ; une valeur donnée arrive en chaîne.
+      if (b.limit !== 50 && str(b.limit) !== undefined) f.push(['max', str(b.limit)!]);
+      if (str(b.type) !== undefined) f.push(['type', str(b.type)!]);
+      if (b.failed === true) f.push(['failed', true]);
+      return L('network', [], f);
+    }
+    case 'GET /viewport': return L('viewport', [], [], 'read');
+    case 'POST /viewport': {
+      if (b.reset === true) return L('viewport', ['reset']);
+      const f: Array<[string, string | true]> = [];
+      const size = str(b.size);
+      if (size !== undefined && str(b.device) !== undefined) f.push(['device', str(b.device)!]);
+      if (str(b.dpr) !== undefined) f.push(['dpr', str(b.dpr)!]);
+      for (const [k, flag] of [['mobile', 'mobile'], ['touch', 'touch'], ['mobileUa', 'mobile-ua']] as const) if (b[k] === true) f.push([flag, true]);
+      return L('viewport', [size ?? str(b.device) ?? ''], f);
+    }
+    case 'POST /storage': {
+      const op = str(b.op) ?? '';
+      return L('storage', [op, str(b.area) ?? '', str(b.key) ?? '', ...(op === 'set' ? [str(b.value) ?? ''] : [])], [], op === 'get' ? 'read' : 'action');
+    }
+    // Onglets : les identifiants (t1, t2…) suivent l'ordre d'ouverture, le même au rejeu du même parcours.
+    case 'GET /tabs': return L('tabs', []);
+    case 'POST /tabs/select': return L('tab', [str(b.id) ?? '']);
+    case 'POST /tabs/new': return L('tab', ['new', ...(str(b.url) !== undefined ? [str(b.url)!] : [])]);
+    case 'POST /tabs/close': return L('tab', ['close', ...(str(b.id) !== undefined ? [str(b.id)!] : [])]);
     case 'GET /console': case 'POST /console': {
       const src = method === 'GET' ? Object.fromEntries(q) : b;
       const f: Array<[string, string | true]> = [];
@@ -158,7 +219,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
 /** Positions des arguments qui désignent un élément (traduits en sélecteur durable). */
 export function targetIndex(line: CommandLine): number | undefined {
   switch (line.cmd) {
-    case 'click': case 'hover': case 'fill': case 'select': case 'check': case 'type': case 'upload': return 0;
+    case 'click': case 'hover': case 'fill': case 'select': case 'check': case 'type': case 'upload': case 'scroll': return 0;
     case 'press': return line.pos.length > 1 ? 1 : undefined;
     case 'expect': return ['value', 'sel', 'no-sel'].includes(line.pos[0] ?? '') ? 1 : undefined;
     default: return undefined;
@@ -251,7 +312,9 @@ export class HistoryLog {
  */
 export function sanitize(e: HistoryEntry): HistoryEntry {
   const vi = valueIndex(e.line);
-  if (vi !== undefined && e.line.pos[vi] !== undefined) {
+  // fill … secret:NOM : un nom, pas une valeur (substituée par le serveur au rejeu) — jamais masqué.
+  const secretName = e.line.cmd === 'fill' && vi !== undefined && secretRef(e.line.pos[vi] ?? '') !== undefined;
+  if (vi !== undefined && e.line.pos[vi] !== undefined && !secretName) {
     const s = e.target?.secret;
     const why = s === true ? 'champ secret : password, ou autocomplete de mot de passe, de code ou de carte' : s === undefined || s === null ? 'type du champ non vérifiable : masqué par prudence' : undefined;
     if (why !== undefined) { e.line.pos[vi] = MASK; e.masked = why; }
@@ -288,7 +351,7 @@ export function formatHistory(entries: HistoryEntry[]): string {
 }
 
 /** Options d'affichage propres à l'appel (sortie, budget) : retirées du script rejoué. */
-const OUTPUT_FLAGS = new Set(['snap-diff', 'max', 'scope', 'console', 'shot-on-error']);
+const OUTPUT_FLAGS = new Set(['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error']);
 
 export interface AsRunOptions {
   sessionId: string;

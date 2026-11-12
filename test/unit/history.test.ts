@@ -41,6 +41,43 @@ test('history : la ligne reconstruite depuis la requête redonne exactement la m
     'cookies',
     'upload #f /tmp/a.txt /tmp/b.txt',
     'profile travail',
+    // Commandes et options ajoutées par la vague 2 (navigation, lecture progressive, réseau, a11y, viewport,
+    // stockage, onglets, dialogues, secrets) : l'historique doit les rejouer à l'identique.
+    'back --snap-diff --dialog dismiss',
+    'forward --network',
+    'reload --hard --console',
+    'scroll',
+    'scroll main --until-stable --max-steps 5',
+    'scroll --by -300',
+    'scroll e4 --to bottom',
+    'snap --outline',
+    'snap --interactive --scope e2',
+    "find 'Ajouter au panier' --role button,link --max 5",
+    'find /Commande\\s+10\\d/ --scope main --name-max 0',
+    'a11y --scope #form --max 10',
+    'network',
+    'network --since 3 --failed --max 20 --type xhr,fetch',
+    'viewport',
+    'viewport reset',
+    'viewport 360x800 --mobile --dpr 3 --touch',
+    'viewport iphone-se',
+    'viewport 400x900 --device pixel-7 --mobile-ua',
+    'storage get local auth',
+    "storage set session panier '{\"n\":3}'",
+    'storage rm local auth',
+    'tabs',
+    'tab t2',
+    'tab new',
+    'tab new http://127.0.0.1:8080/aide',
+    'tab close',
+    'tab close t3',
+    "click '#oauth' --follow --dialog accept",
+    "click e5 --dialog 'Ada Lovelace' --network",
+    'fill #jeton secret:JETON_API',
+    'expect request "POST /api/commande" 201',
+    "expect request '~' /api/ --since 4 --timeout 2000",
+    "expect request 'GET /api/v\\d+/x' --regex",
+    'expect a11y --max 3 --scope main',
   ];
   for (const l of lines) {
     const rq = rqOf(l);
@@ -81,6 +118,24 @@ const entry = (seq: number, line: string, extra: Partial<HistoryEntry> = {}): Hi
   const c = commandOf(rq.method, rq.path, rq.body)!;
   return { seq, at: '2026-11-12T10:00:00.000Z', ms: 10, ok: true, via: 'api', kind: c.kind, line: c.line, ...extra };
 };
+
+test('history : fill secret:NOM gardé tel quel (un nom, jamais une valeur), même dans un champ mot de passe', () => {
+  const e = sanitize(entry(1, 'fill #mdp secret:MDP_PREPROD', { target: { given: '#mdp', durable: '#mdp', how: 'given', secret: true } }));
+  assert.equal(e.line.pos[1], 'secret:MDP_PREPROD');
+  assert.equal(e.masked, undefined);
+  assert.match(asRunScript([e], { sessionId: 's1' }), /^fill #mdp secret:MDP_PREPROD$/m);
+  // Une valeur qui ressemble à secret: mais n'est pas un nom valide reste masquée dans un champ secret.
+  const fake = sanitize(entry(2, "fill #mdp 'secret:a b'", { target: { given: '#mdp', durable: '#mdp', how: 'given', secret: true } }));
+  assert.equal(fake.line.pos[1], MASK);
+});
+
+test('history --as-run : lectures de la vague 2 omises, --network retiré, --dialog et --follow gardés', () => {
+  const es = ['find Pommes', 'a11y', 'network --failed', 'tabs', 'viewport', 'storage get local k', "click '#oauth' --follow --dialog accept --network", 'back --network'].map((l, i) => entry(i + 1, l));
+  const out = asRunScript(es, { sessionId: 's1' });
+  assert.match(out, /^click #oauth --dialog accept --follow$/m);
+  assert.match(out, /^back$/m);
+  for (const r of ['find', 'a11y', 'network', 'tabs', 'viewport', 'storage']) assert.doesNotMatch(out, new RegExp(`^${r}\\b`, 'm'), r);
+});
 
 test('history : mot de passe masqué avant conservation, prudence quand le type du champ est inconnu', () => {
   const pw = sanitize(entry(1, "fill '#mdp' 'hunter2'", { target: { given: '#mdp', durable: '#mdp', how: 'given', secret: true } }));
