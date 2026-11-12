@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
 import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
@@ -703,9 +704,12 @@ export class PageController {
    * d'observation qui suit l'action, son remplaçant est cherché et signalé (voir replacementNote).
    */
   private actTarget: number | undefined;
-  /** Historique : cible à décrire pendant l'action en cours (une fois), et sa description. */
-  private describeWanted: string | undefined;
-  private described: DurableTarget | undefined;
+  /**
+   * Historique : cible à décrire (une fois) et sa description, PROPRES à chaque appel d'action. Deux actions
+   * concurrentes d'une session ne sont pas sérialisées : un champ partagé de l'instance laissait l'une renvoyer
+   * la description de la cible de l'autre (mot de passe conservé, mauvais élément rejoué).
+   */
+  private readonly describeCtx = new AsyncLocalStorage<{ want: string | undefined; described?: DurableTarget | undefined }>();
   private probeSeq = 0;
   /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
   private pw: PlaywrightEngine | undefined;
@@ -2075,13 +2079,13 @@ export class PageController {
    * second snapshot pour l'historique.
    */
   private async resolve(sel: string, snap?: Snapshot): Promise<number> {
-    const want = this.describeWanted;
+    const ctx = this.describeCtx.getStore();
     const s = sel.trim();
-    if (want === undefined || s !== want) return this.resolveSel(sel, snap);
-    this.describeWanted = undefined;
+    if (ctx === undefined || ctx.want === undefined || s !== ctx.want) return this.resolveSel(sel, snap);
+    ctx.want = undefined;
     const sn = snap ?? (REF_RE.test(s) || s.startsWith('text:') ? await this.snapshot() : undefined);
     const id = await this.resolveSel(s, sn);
-    this.described = await this.describeResolved(s, id, sn).catch(() => undefined);
+    ctx.described = await this.describeResolved(s, id, sn).catch(() => undefined);
     return id;
   }
 
@@ -2321,14 +2325,15 @@ export class PageController {
     this.notes = actionNotes;
     this.undelivered = false;
     this.actTarget = undefined;
-    this.describeWanted = opts.describeTarget?.trim();
-    this.described = undefined;
+    // Contexte de description lié à CET appel (fn et post s'y exécutent) ; vide si rien n'est demandé, pour
+    // qu'une action imbriquée n'hérite pas de celui de l'action qui l'appelle.
+    const dctx: { want: string | undefined; described?: DurableTarget | undefined } = { want: opts.describeTarget?.trim() || undefined };
     try {
       await this.ensureVisible();
       const before = opts.snapDiff ? await this.snapshot({ scope: opts.scope }) : undefined;
       const doc0 = this.docGen;
       let detail: string | void;
-      try { detail = await fn(before); } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp' }).catch(() => undefined); }
+      try { detail = await this.describeCtx.run(dctx, () => fn(before)); } finally { void this.s('Runtime.releaseObjectGroup', { objectGroup: 'grasp' }).catch(() => undefined); }
       const tEnd = Date.now();
       await this.settle();
       // Fenêtre d'attribution : requêtes parties pendant l'action ou juste après (un polling de fond n'en est pas).
@@ -2352,13 +2357,14 @@ export class PageController {
         if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
       }
       if (post !== undefined) {
-        const extra = await post(res).catch(() => undefined);
+        const extra = await this.describeCtx.run(dctx, () => post(res)).catch(() => undefined);
         if (extra !== undefined && extra !== '') res.detail = res.detail !== undefined ? `${res.detail} ; ${extra}` : extra;
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
-      if (this.described !== undefined) res.target = this.described;
+      // Défense : une description n'est rendue que pour la cible demandée par cet appel.
+      if (dctx.described !== undefined && dctx.described.given.trim() === opts.describeTarget?.trim()) res.target = dctx.described;
       return res;
-    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; this.describeWanted = undefined; this.described = undefined; }
+    } catch (e) { throw await this.decorate(e, opts, seq); } finally { this.notes = undefined; this.undelivered = false; this.actTarget = undefined; }
   }
 
   /** Rôles de champ de saisie interchangeables pour un remplacement (searchbox re-rendu en combobox). */

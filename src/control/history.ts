@@ -20,6 +20,19 @@ export interface Recording {
   finish(ok: boolean, status?: number, error?: string, result?: unknown): void;
 }
 
+/**
+ * Description reçue du bridge, acceptée seulement si elle porte sur la cible de CETTE commande (`given`, aux
+ * blancs près). Sinon (description d'une autre action concurrente, réponse incohérente) : ignorée, cible non
+ * traduite et type du champ inconnu — une saisie est alors masquée par prudence.
+ */
+export function ownTarget(given: string, t: unknown, why: string): TargetInfo {
+  if (typeof t === 'object' && t !== null && typeof (t as { given?: unknown }).given === 'string') {
+    if ((t as TargetInfo).given.trim() === given.trim()) return t as TargetInfo;
+    return { given, secret: null, note: 'description du bridge pour une autre cible : ignorée' };
+  }
+  return { given, secret: null, note: why };
+}
+
 /** Actions dont la résolution de cible sait se décrire (option describeTarget du bridge). */
 const INLINE = new Set(['click', 'hover', 'fill', 'select', 'check', 'press', 'type']);
 
@@ -45,7 +58,7 @@ export async function beginRecord(log: HistoryLog, method: string, path: string,
     } else {
       try {
         const r = await bridge('POST', '/internal/durable', { target: given });
-        target = r.status === 200 ? r.json() as TargetInfo : { given, secret: null, note: `cible non décrite (${r.status} : ${errorOf(r.text()).slice(0, 120)})` };
+        target = r.status === 200 ? ownTarget(given, r.json(), 'cible non décrite par le bridge') : { given, secret: null, note: `cible non décrite (${r.status} : ${errorOf(r.text()).slice(0, 120)})` };
       } catch (e) { target = { given, secret: null, note: `cible non décrite : ${(e as Error).message.slice(0, 120)}` }; }
     }
   }
@@ -55,7 +68,7 @@ export async function beginRecord(log: HistoryLog, method: string, path: string,
     finish(ok, status, error, result) {
       if (inline) {
         const t = typeof result === 'object' && result !== null ? (result as { target?: unknown }).target : undefined;
-        target = typeof t === 'object' && t !== null ? t as TargetInfo : { given: targetOf(c.line)!, secret: null, note: ok ? 'cible non décrite par le bridge' : 'action en échec' };
+        target = ownTarget(targetOf(c.line)!, t, ok ? 'cible non décrite par le bridge' : 'action en échec');
       }
       const e: HistoryEntry = { seq, at, ms: Date.now() - t0, ok, via, kind: c.kind, line: c.line, ...(target !== undefined ? { target } : {}), ...(status !== undefined && !ok ? { status } : {}), ...(error !== undefined && !ok ? { error } : {}) };
       log.push(sanitize(e));

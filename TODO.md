@@ -106,6 +106,11 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       export, rejeu dans une nouvelle session, même `text` final.
 - [x] Relecture : sauts de ligne — un argument sur plusieurs lignes n'est jamais écrit dans le script (ligne
       commentée), tout commentaire ramené à une ligne (une commande en échec ne peut plus y injecter une ligne).
+- [x] Relecture : actions concurrentes — description de cible liée à l'appel (AsyncLocalStorage), refusée par
+      le control plane si `given` diffère de la cible (saisie alors masquée).
+- [ ] Actions concurrentes d'une session : le groupe d'objets CDP `grasp` est libéré à la fin de chaque action,
+      l'autre peut échouer (« Could not find object with given id », vu 1 fois sur ~10 paires `fill`+`click`) ;
+      `notes`/`actTarget` sont aussi partagés. Sérialiser les actions par session, ou un groupe par action.
 - [ ] Remplacer le masque des mots de passe par `secret:NOM` quand les variables de secrets existeront.
 - [ ] Outil MCP `history` ; traduction des refs de `--scope` ; description sans snapshot séparé pour
       `expect`/`wait --sel`/`upload` par ref.

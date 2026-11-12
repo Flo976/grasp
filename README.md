@@ -900,6 +900,12 @@ expect text 'Liste de courses'
   un compte) : à compléter à la main. Il n'existe pas encore de syntaxe `secret:NOM` (variables de secrets) dans
   Grasp ; quand elle existera, c'est elle qui devra remplacer le masque. Les autres valeurs saisies (courriel,
   nom, recherche) sont conservées telles quelles : elles sont ce qui rend le script rejouable.
+- **Commandes concurrentes** d'une même session (le control plane ne les sérialise pas) : la description de
+  cible est liée à l'appel qui l'a demandée (contexte asynchrone propre à chaque action dans le bridge), et le
+  control plane refuse une description dont `given` n'est pas la cible de la commande (alors : ref non traduite,
+  saisie masquée). Testé (`test/integration/history-concurrence.test.ts`) : `fill` d'un mot de passe et `click`
+  par ref lancés ensemble, chacun reçoit sa propre description ; avant la correction, le `fill` recevait celle de
+  la case cochée (`secret: false`), donc le mot de passe était conservé.
 - **Coût mesuré** (Chrome headless, WSL2, médiane de 15 `hover` par ref, appel direct au bridge) : la description
   de cible ajoute 0,2 ms sur la page de test (`/historique`) et 16 ms sur une page de 2000 liens (317 → 333 ms),
   contre 188 ms pour une description par un snapshot séparé (première version, abandonnée). `expect`, `wait --sel`
