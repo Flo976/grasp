@@ -48,7 +48,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/expect']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -490,7 +490,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         const onClose = () => { if (!res.writableFinished) ac.abort(); };
         res.on('close', onClose);
         let r: RunResult;
-        try { r = await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true, ac.signal); } finally { res.off('close', onClose); }
+        try { r = await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true, ac.signal, { report: optBool(body, 'report') }); } finally { res.off('close', onClose); }
         if (r.aborted === true) {
           const last = r.steps.at(-1);
           log(`AVERTISSEMENT : session ${s.id} : run interrompu : client déconnecté après ${r.executed} étape(s) exécutée(s)${last !== undefined ? ` (dernière : [${last.n}] ${last.text} → ${last.ok ? 'OK' : `ERROR: ${last.error ?? ''}`})` : ''} ; ${r.total - r.executed} étape(s) non exécutée(s)`);

@@ -2,9 +2,10 @@ import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
 import { checkUrl, type EffectivePolicy } from '../core/policy.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
-import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
+import { ConsoleBuffer, formatArg, formatEntry, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
 import { saveCapture } from '../core/captures.js';
+import { EXPECT_DEFAULT_MS, POLLED, around, compileRegex, describeExpected, excerpt, findText, matchValue, normSpace, type ExpectSpec } from '../core/expect.js';
 import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors, type Snapshot } from './snapshot.js';
 import { parseKey } from './keys.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
@@ -60,6 +61,7 @@ export interface Shot { data: Buffer; width: number; height: number; format: Ima
 export interface SavedShot { path: string; width: number; height: number; bytes: number; format: ImageFormat; truncated?: boolean }
 
 export interface WaitOptions { text?: string | undefined; sel?: string | undefined; idle?: boolean | undefined; timeout?: number | undefined }
+export interface ExpectResult { ok: true; kind: string; waited: number; detail?: string }
 export interface WaitResult { ok: true; waited: number; condition: 'text' | 'sel' | 'idle' }
 /**
  * Résultat d'une attente de stabilité (DOM et réseau). `error` : l'attente elle-même a échoué (jamais
@@ -511,6 +513,16 @@ const BUTTON_FORM_FN = `function () {
   return b.form || b.closest('form, dialog, [role=dialog], [role=alertdialog], [aria-modal=true]') || b.ownerDocument.body;
 }`;
 
+/** Valeur d'un champ (value ; select : valeur de l'option choisie), sinon texte de l'élément (contenteditable…). */
+const VALUE_FN = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  if (!el) return '';
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return String(el.value);
+  return String(el.isContentEditable ? el.innerText : el.textContent || '').replace(/\\s+/g, ' ').trim();
+}`;
+/** Texte lu par expect text / no-text (au-delà, la fin de la page n'est pas examinée). */
+const EXPECT_TEXT_MAX = 2_000_000;
+
 const CLICK_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
 const HOVER_EVENTS = ['pointerover', 'pointermove', 'mouseover', 'mousemove'];
 const KEY_EVENTS = ['keydown', 'keyup', 'keypress', 'beforeinput', 'input'];
@@ -615,6 +627,8 @@ export class PageController {
    * empêche qu'une ref d'une page précédente désigne un élément du document courant.
    */
   private readonly knownRefs = new Map<string, { role: string; name: string; key: string; id: number | undefined; doc: number }>();
+  /** seq console juste avant la requête du document courant du cadre principal (expect no-console-errors). */
+  private docSeq = 0;
   /** Documents chargés dans le cadre principal (incrémenté à chaque Page.frameNavigated du cadre principal). */
   private docGen = 0;
   /** Monde isolé « grasp-lecture » du document courant (invalidé à chaque navigation du cadre principal). */
@@ -987,6 +1001,9 @@ export class PageController {
         return;
       }
       case 'Network.requestWillBeSent': {
+        // Début d'un document du cadre principal : point de départ de `expect no-console-errors` (sa propre
+        // réponse 4xx/5xx arrive avant le repère de navigation).
+        if (e.sessionId === this.sessionId && p.type === 'Document' && p.frameId === this.mainFrameId) this.docSeq = this.consoleBuf.seq;
         if (this.requests.size > 2000) this.requests.delete(this.requests.keys().next().value as string);
         this.requests.set(p.requestId, { method: String(p.request?.method ?? 'GET'), url: String(p.request?.url ?? '') });
         return;
@@ -1721,6 +1738,111 @@ export class PageController {
     })(${JSON.stringify(css)})`);
     if (r === -1) throw badRequest(`sélecteur CSS invalide : ${css}`);
     return r === 1 ? 'ok' : r === 2 ? 'hidden' : 'absent';
+  }
+
+  // ---------- Assertions de recette (expect) : lecture seule, code fixe ----------
+
+  /**
+   * Vérifie une assertion. text, no-text, url, title, sel, no-sel, value : relues toutes les 100 ms jusqu'au
+   * délai (5000 ms par défaut, 0 = une lecture) ; console et formulaire : constat immédiat. Échec = 417 dont le
+   * message dit l'attendu et le constaté (extrait borné), détail dans `expect` ; --shot-on-error y joint une capture.
+   */
+  async expect(spec: ExpectSpec, opts: { shotOnError?: boolean | undefined } = {}): Promise<ExpectResult> {
+    try { return await this.expectOnce(spec); } catch (e) {
+      throw await this.decorate(e, { shotOnError: opts.shotOnError === true }, 0);
+    }
+  }
+
+  private async expectOnce(spec: ExpectSpec): Promise<ExpectResult> {
+    const t0 = Date.now();
+    const fail = (observed: string, items?: string[]) => new GraspError(417, `attendu ${describeExpected(spec)} ; constaté : ${observed}`, { expect: { kind: spec.kind, expected: describeExpected(spec), observed, ...(items !== undefined ? { items } : {}) } });
+    const list = (items: string[]) => `${items.slice(0, 5).join(' | ')}${items.length > 5 ? ` | … et ${items.length - 5} autre(s)` : ''}`;
+    if (spec.kind === 'no-console-errors') {
+      this.assertConsole();
+      let since = spec.since ?? this.docSeq;
+      let note: string | undefined;
+      if (since > this.consoleBuf.seq) {
+        note = `tampon console recréé (seq ${since} > seq courant ${this.consoleBuf.seq}) : erreurs relues depuis le début du tampon`;
+        since = 0;
+      }
+      const ignore = spec.ignore !== undefined ? compileRegex(spec.ignore) : undefined;
+      const r = this.consoleBuf.query({ since, level: 'error', limit: 1000 });
+      const errs = r.entries.filter((e) => e.source !== 'navigation' && e.level === 'error' && !(ignore !== undefined && (ignore.test(e.text) || (e.url !== undefined && ignore.test(e.url)))));
+      if (errs.length > 0) {
+        const items = errs.map(formatEntry);
+        throw fail(`${errs.length} erreur(s) depuis #${since} : ${list(items)}`, items.slice(0, 50));
+      }
+      return { ok: true, kind: spec.kind, waited: Date.now() - t0, ...(note !== undefined ? { detail: note } : {}) };
+    }
+    if (spec.kind === 'no-form-errors') {
+      const items = await this.formErrorLines();
+      if (items.length > 0) throw fail(`${items.length} erreur(s) : ${list(items)}`, items.slice(0, 50));
+      return { ok: true, kind: spec.kind, waited: Date.now() - t0 };
+    }
+    if (!POLLED.has(spec.kind)) throw badRequest(`assertion inconnue ${spec.kind}`);
+    if (spec.target !== undefined && parseFrameTarget(spec.target) !== null) throw badRequest(`expect ${spec.kind} : sélecteur frame=… non pris en charge — wait --sel '${spec.target}' pour un élément dans un cadre`);
+    if (spec.scope !== undefined && parseFrameTarget(spec.scope) !== null) throw badRequest(`expect ${spec.kind} --scope : zone frame=… non prise en charge`);
+    const timeout = spec.timeout ?? EXPECT_DEFAULT_MS;
+    const end = t0 + timeout;
+    let observed = '';
+    for (;;) {
+      let r: { ok: boolean; observed: string };
+      try { r = await this.observe(spec); } catch (e) {
+        // Erreur du script (sélecteur invalide, ambigu, interdit) : immédiate. Page en transition : on relit.
+        if (e instanceof GraspError && [400, 403, 409].includes(e.status)) throw e;
+        r = { ok: false, observed: `lecture impossible (${(e as Error).message})` };
+      }
+      if (r.ok) return { ok: true, kind: spec.kind, waited: Date.now() - t0 };
+      observed = r.observed;
+      const left = end - Date.now();
+      if (left <= 0) break;
+      await sleep(Math.min(100, left));
+    }
+    throw fail(`${observed}${timeout > 0 ? ` (après ${timeout} ms)` : ''}`);
+  }
+
+  /** Une lecture de l'assertion : tenue ou non, et ce qui a été constaté (borné, une ligne). */
+  private async observe(spec: ExpectSpec): Promise<{ ok: boolean; observed: string }> {
+    const short = (v: string) => `« ${v.length > 300 ? `${v.slice(0, 300)}…` : v} »`;
+    switch (spec.kind) {
+      case 'text': case 'no-text': {
+        const zone = spec.scope !== undefined ? 'de la zone' : 'de la page';
+        const raw = spec.scope !== undefined ? await this.text(EXPECT_TEXT_MAX, spec.scope) : await this.evalIsolated<string>(`document.body ? document.body.innerText.slice(0, ${EXPECT_TEXT_MAX}) : ''`);
+        const t = normSpace(raw);
+        const f = findText(t, spec);
+        if (spec.kind === 'text') return { ok: f.index >= 0, observed: t === '' ? `aucun texte visible ${zone === 'de la zone' ? 'dans la zone' : 'dans la page'}` : `absent ; texte ${zone} : ${excerpt(t)}` };
+        return { ok: f.index < 0, observed: `présent : ${around(t, f.index, f.length)}` };
+      }
+      case 'url': case 'title': {
+        const loc = await this.location();
+        const v = spec.kind === 'url' ? loc.url : loc.title;
+        return { ok: matchValue(v, spec), observed: short(v) };
+      }
+      case 'sel': case 'no-sel': {
+        const st = await this.hasSel(spec.target!);
+        const desc = st === 'ok' ? 'visible' : st === 'hidden' ? 'présent mais invisible' : 'aucun élément ne correspond';
+        return { ok: spec.kind === 'sel' ? st === 'ok' : st !== 'ok', observed: desc };
+      }
+      case 'value': {
+        let id: number;
+        try { id = await this.resolve(spec.target!); } catch (e) {
+          if (e instanceof GraspError && e.status === 404) return { ok: false, observed: e.message };
+          throw e;
+        }
+        const v = await this.callIsolated<string>(id, VALUE_FN);
+        return { ok: matchValue(v, spec), observed: short(v) };
+      }
+      default: throw badRequest(`assertion ${spec.kind} non relue`);
+    }
+  }
+
+  /** Erreurs de formulaire de la page : lignes des champs invalides du snapshot, puis alertes hors arbre. */
+  async formErrorLines(): Promise<string[]> {
+    const snap = await this.snapshot({ maxBytes: 1 });
+    const fe = await this.formErrors();
+    // Relevé DOM impossible (navigation en cours) : les champs invalides de l'arbre restent rapportés.
+    const alerts = fe !== undefined ? fe.alerts : [];
+    return [...snap.invalid.map((i) => i.line), ...alerts.map((a) => `alerte "${a.length > 200 ? `${a.slice(0, 200)}…` : a}"`)];
   }
 
   // ---------- Sélecteurs : ref e5, CSS #id, texte text:Valider ----------

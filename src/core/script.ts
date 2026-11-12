@@ -4,11 +4,13 @@
  * Une même ligne produit la même requête, qu'elle soit tapée dans le terminal ou lue dans un script.
  */
 
+import { EXPECT_DEFAULT_MS, EXPECT_KINDS, expectSpecOf, isExpectKind, type ExpectKind } from './expect.js';
+
 export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'ignore']);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 export function parseArgs(argv: string[]): Args {
@@ -184,7 +186,7 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
@@ -198,6 +200,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
   upload: ['engine'], eval: [], cookies: [], profile: [],
+  expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
 };
 /** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
 const RUN_GLOBAL: Record<string, string> = {
@@ -256,10 +259,89 @@ export function buildRequest(a: Args): StepRequest {
     case 'cookies': return { cmd, method: 'GET', path: '/cookies' };
     case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
+    case 'expect': return expectRequest(a);
     default:
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);
       throw new ScriptError(`commande inconnue « ${cmd} » (commandes de run : ${RUN_COMMANDS.join(', ')})`);
   }
+}
+
+/** Options de chaque assertion (toutes acceptent --shot-on-error). */
+const EXPECT_FLAGS: Record<ExpectKind, readonly string[]> = {
+  'text': ['regex', 'scope', 'timeout'], 'no-text': ['regex', 'scope', 'timeout'],
+  'url': ['regex', 'timeout'], 'title': ['regex', 'timeout'], 'value': ['regex', 'timeout'],
+  'sel': ['timeout'], 'no-sel': ['timeout'],
+  'no-console-errors': ['since', 'ignore'], 'no-form-errors': [],
+};
+const EXPECT_ALL_FLAGS = ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'];
+
+/** Usage de chaque assertion (messages d'erreur, aide). */
+export const EXPECT_USAGE: Record<ExpectKind, string> = {
+  'text': 'expect text <texte> [--regex] [--scope <sél>] [--timeout ms]',
+  'no-text': 'expect no-text <texte> [--regex] [--scope <sél>] [--timeout ms]',
+  'url': 'expect url [~] <url> [--regex] [--timeout ms]',
+  'title': 'expect title [~] <titre> [--regex] [--timeout ms]',
+  'sel': 'expect sel <sélecteur> [--timeout ms]',
+  'no-sel': 'expect no-sel <sélecteur> [--timeout ms]',
+  'value': 'expect value <sélecteur> [~] <valeur> [--regex] [--timeout ms]',
+  'no-console-errors': 'expect no-console-errors [--ignore <regex>] [--since <seq>]',
+  'no-form-errors': 'expect no-form-errors',
+};
+
+/**
+ * `expect <assertion> …` → POST /expect. Comparaison : égalité par défaut (url, title, value), `~` = contient,
+ * `--regex` = expression régulière ; text et no-text cherchent toujours dans le texte de la page. Validé ici
+ * en entier (motif compris) : une assertion mal écrite refuse le script avant toute exécution.
+ */
+function expectRequest(a: Args): StepRequest {
+  const [kind, ...args] = a.pos;
+  if (kind === undefined) throw new ScriptError(`usage : grasp expect <assertion> … (assertions : ${EXPECT_KINDS.join(', ')})`);
+  if (!isExpectKind(kind)) throw new ScriptError(`assertion inconnue « ${kind} » (assertions : ${EXPECT_KINDS.join(', ')})`);
+  const allowed = EXPECT_FLAGS[kind];
+  for (const k of EXPECT_ALL_FLAGS) {
+    if (!a.flags.has(k) || k === 'shot-on-error' || allowed.includes(k)) continue;
+    throw new ScriptError(`--${k} ne s'applique pas à expect ${kind} (usage : ${EXPECT_USAGE[kind]})`);
+  }
+  const usage = () => {
+    // `~` non cité dans un terminal : la shell le remplace par le dossier personnel, d'où un argument de trop.
+    const tilde = (kind === 'url' || kind === 'title' || kind === 'value') && args.some((x) => x.startsWith('/') && x === process.env.HOME) ? " — dans un terminal, citez le ~ ('~') : la shell le remplace par votre dossier personnel" : '';
+    return new ScriptError(`usage : grasp ${EXPECT_USAGE[kind]}${tilde}`);
+  };
+  const regex = a.flags.has('regex');
+  const body: Record<string, unknown> = { kind };
+  /** [~] <valeur> : `~` = contient. */
+  const compared = (rest: string[]) => {
+    if (rest.length === 2 && rest[0] === '~') {
+      if (regex) throw new ScriptError(`expect ${kind} : « ~ » (contient) et --regex s'excluent`);
+      body.expected = rest[1]; body.match = 'contains';
+    } else if (rest.length === 1) { body.expected = rest[0]; body.match = regex ? 'regex' : 'exact'; } else throw usage();
+  };
+  switch (kind) {
+    case 'text': case 'no-text':
+      if (args.length !== 1) throw usage();
+      body.expected = args[0];
+      if (regex) body.match = 'regex';
+      break;
+    case 'url': case 'title': compared(args); break;
+    case 'value':
+      if (args.length < 2) throw usage();
+      body.target = args[0];
+      compared(args.slice(1));
+      break;
+    case 'sel': case 'no-sel':
+      if (args.length !== 1) throw usage();
+      body.target = args[0];
+      break;
+    default: if (args.length !== 0) throw usage();
+  }
+  for (const k of ['timeout', 'scope', 'since', 'ignore'] as const) {
+    const v = value(a, k);
+    if (v !== undefined) body[k] = v;
+  }
+  if (a.flags.has('shot-on-error')) body.shotOnError = true;
+  try { expectSpecOf(body); } catch (e) { throw new ScriptError((e as Error).message); }
+  const t = Number(body.timeout ?? EXPECT_DEFAULT_MS);
+  return { cmd: 'expect', method: 'POST', path: '/expect', body, timeoutMs: t + 15_000 };
 }
 
 /** Valeur d'un eval : JSON, ou le type quand il n'y a pas de valeur JSON (undefined, symbole…). */
