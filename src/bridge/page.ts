@@ -2106,7 +2106,7 @@ export class PageController {
    */
   private observeRequest(spec: ExpectSpec): { ok: boolean; observed: string } {
     this.assertNetwork();
-    const pat = parseRequestTarget(spec.target ?? '');
+    const pat = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
     const want = spec.status ?? DEFAULT_REQUEST_STATUS;
     const okStatus = parseStatus(want);
     let since = spec.since ?? this.docNetSeq;

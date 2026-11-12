@@ -206,12 +206,23 @@ export function networkLosses(c: { since?: number | undefined; omitted?: number 
 
 export interface RequestPattern { method?: string; url: string }
 
-/** « POST /api/commande » → méthode (en capitales) et motif d'URL ; sans méthode : toute méthode. */
-export function parseRequestTarget(t: string): RequestPattern {
+/** Méthodes HTTP reconnues quelle que soit la casse (« post /api/x ») ; un autre mot n'est une méthode qu'en capitales. */
+const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE'];
+
+/**
+ * « POST /api/commande » → méthode (normalisée en capitales) et motif d'URL ; sans méthode : toute méthode.
+ * Motif exact (ni `~` ni --regex) qui n'est ni un chemin `/…` ni une URL absolue, ou qui contient un blanc : 400
+ * avant exécution — il ne pourrait jamais correspondre (faux KO silencieux au délai).
+ */
+export function parseRequestTarget(t: string, match: ExpectMatch = 'exact'): RequestPattern {
   const s = t.trim();
-  const m = /^([A-Z]+)\s+(\S.*)$/.exec(s);
-  const p: RequestPattern = m !== null ? { method: m[1]!, url: m[2]!.trim() } : { url: s };
+  const m = /^([A-Za-z]+)\s+(\S.*)$/.exec(s);
+  const isMethod = m !== null && (HTTP_METHODS.includes(m[1]!.toUpperCase()) || /^[A-Z]+$/.test(m[1]!));
+  const p: RequestPattern = isMethod ? { method: m![1]!.toUpperCase(), url: m![2]!.trim() } : { url: s };
   if (p.url === '') throw badRequest('expect request : motif d\'URL vide (ex. "POST /api/commande")');
+  if (match === 'exact' && (/\s/.test(p.url) || !(p.url.startsWith('/') || /^[a-z][a-z0-9+.-]*:\/\//i.test(p.url)))) {
+    throw badRequest(`expect request : motif « ${s} » invalide — attendu [MÉTHODE] puis un chemin (/api/commande) ou une URL absolue (méthodes : ${HTTP_METHODS.join(', ')}) ; sinon ~ (contient) ou --regex`);
+  }
   return p;
 }
 

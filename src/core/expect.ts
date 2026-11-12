@@ -102,7 +102,7 @@ export function describeExpected(spec: ExpectSpec): string {
     case 'no-console-errors': return `aucune erreur console${spec.ignore !== undefined ? ` (hors /${spec.ignore}/)` : ''}`;
     case 'no-form-errors': return 'aucune erreur de formulaire';
     case 'request': {
-      const p = parseRequestTarget(spec.target ?? '');
+      const p = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
       const how = spec.match === 'regex' ? `d'URL correspondant à /${p.url}/` : spec.match === 'contains' ? `d'URL contenant ${q(p.url)}` : q(p.url);
       return `requête ${p.method !== undefined ? `${p.method} ` : ''}${how} de statut ${spec.status ?? DEFAULT_REQUEST_STATUS}`;
     }
@@ -152,7 +152,7 @@ export function expectSpecOf(body: Record<string, unknown>): ExpectSpec {
   if ((needs.expected as readonly string[]).includes(kind) && spec.expected === undefined) throw badRequest(`expect ${kind} : valeur attendue requise`);
   if ((kind === 'text' || kind === 'no-text') && spec.match !== 'regex' && normSpace(spec.expected ?? '') === '') throw badRequest(`expect ${kind} : texte non vide attendu`);
   if (kind === 'request') {
-    const p = parseRequestTarget(spec.target ?? '');
+    const p = parseRequestTarget(spec.target ?? '', spec.match ?? 'exact');
     if (spec.match === 'regex') compileRegex(p.url);
     return spec;
   }

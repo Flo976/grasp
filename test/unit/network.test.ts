@@ -115,6 +115,15 @@ test('parseTypes, parseStatus, parseRequestTarget : validation', () => {
   assert.deepEqual(parseRequestTarget('/api/commande'), { url: '/api/commande' });
   assert.deepEqual(parseRequestTarget('http://h/api'), { url: 'http://h/api' });
   assert.throws(() => parseRequestTarget('  '), /motif d'URL vide/);
+  // Méthode en minuscules : reconnue et normalisée, jamais avalée dans le motif d'URL (faux KO silencieux).
+  assert.deepEqual(parseRequestTarget('get /boutique'), { method: 'GET', url: '/boutique' });
+  assert.deepEqual(parseRequestTarget('Post /api/x'), { method: 'POST', url: '/api/x' });
+  assert.deepEqual(parseRequestTarget('PROPFIND /dav'), { method: 'PROPFIND', url: '/dav' }, 'autre méthode : en capitales');
+  // Motif exact qui ne peut jamais correspondre : 400 avant exécution.
+  for (const bad of ['envoie /api/x', 'api/commande', 'POST api/commande', 'POST /api/a b']) assert.throws(() => parseRequestTarget(bad), /motif « .* » invalide/, bad);
+  // ~ et --regex : texte libre, blancs compris.
+  assert.deepEqual(parseRequestTarget('recherche q', 'contains'), { url: 'recherche q' });
+  assert.deepEqual(parseRequestTarget('post commande\\?', 'regex'), { method: 'POST', url: 'commande\\?' });
 });
 
 test('urlMatches : chemin exact (requête ignorée sauf ? dans le motif), URL absolue, ~ contient, --regex ; jamais sur l\'URL brute', () => {

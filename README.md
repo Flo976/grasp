@@ -760,8 +760,11 @@ FIN
   `--timeout` (5000 ms par défaut, 60 000 au plus ; `0` = une seule lecture) — la page réagit souvent après
   l'action précédente (XHR, route). no-console-errors et no-form-errors sont un **constat immédiat**.
 - **`expect request`** vérifie qu'un « Enregistrer » a **vraiment appelé l'API** et qu'elle a répondu :
-  `expect request "POST /api/commande" 201`. La méthode (en capitales) est facultative (`expect request
-  /api/commande` : toute méthode). Comparaison stricte par défaut, comme `url` : un motif `/chemin` est comparé
+  `expect request "POST /api/commande" 201`. La méthode est facultative (`expect request /api/commande` :
+  toute méthode) ; GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT et TRACE sont reconnues quelle que
+  soit la casse (`post /api/x` = `POST /api/x`), une autre méthode seulement en capitales. Un motif strict qui ne
+  pourrait jamais correspondre (ni chemin `/…` ni URL absolue, ou avec un blanc : `envoie /api/x`,
+  `api/commande`) est refusé en **400** avant exécution, jamais un faux KO au délai. Comparaison stricte par défaut, comme `url` : un motif `/chemin` est comparé
   au **chemin** de l'URL (la chaîne de requête est ignorée, sauf si le motif contient `?`), une URL absolue à
   origine + chemin ; `~` : l'URL contient le motif ; `--regex` : l'URL lui correspond. `~` et `--regex` portent
   sur l'URL **masquée** (un motif ne peut pas sonder la valeur d'un `?token=`). Une requête encore en vol ne
