@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { splitLine, parseArgs, buildRequest, parseScript, checkRunFlags } from '../../src/core/script.js';
-import { asRunScript, commandOf, finalExpects, HistoryLog, MASK, quoteArg, renderLine, sanitize, wantsTarget, type HistoryEntry } from '../../src/core/history.js';
+import { asRunScript, commandOf, finalExpects, formatHistory, HistoryLog, MASK, quoteArg, renderLine, sanitize, wantsTarget, type HistoryEntry } from '../../src/core/history.js';
 
 const rqOf = (line: string) => { const a = parseArgs(splitLine(line)); checkRunFlags(a); return buildRequest(a); };
 
@@ -148,4 +148,43 @@ test('HistoryLog : borné, oublis comptés et annoncés, --clear n\'est pas un o
   const a = h.reserve(); const b = h.reserve();
   h.push(entry(b, 'press b')); h.push(entry(a, 'press a'));
   assert.deepEqual(h.since(0).map((e) => e.seq), [6, 7, 8]);
+});
+
+/** Entrée construite depuis la requête elle-même (valeurs avec sauts de ligne, que splitLine ne produit pas). */
+const entryOf = (seq: number, path: string, body: Record<string, unknown>, extra: Partial<HistoryEntry> = {}): HistoryEntry => {
+  const c = commandOf('POST', path, body)!;
+  return { seq, at: '2026-11-12T10:00:00.000Z', ms: 10, ok: true, via: 'api', kind: c.kind, line: c.line, ...extra };
+};
+
+test('history --as-run : un saut de ligne ne casse jamais le script ni n\'y injecte une commande', () => {
+  const es = [
+    entryOf(1, '/navigate', { url: 'http://127.0.0.1:8080/historique' }),
+    // Textarea sur plusieurs lignes : non exprimable dans une ligne de run → commentée, script toujours lisible.
+    entryOf(2, '/fill', { target: '#msg', value: 'ligne1\nligne2' }, { target: { given: '#msg', durable: '#msg', how: 'given', secret: false } }),
+    entryOf(3, '/eval', { expression: '1 +\r\n2' }),
+    // Commande en échec dont la valeur porte une ligne exécutable : citée en tête, jamais exécutée.
+    entryOf(4, '/fill', { target: '#absent', value: 'a\nnav https://evil.example/\n#' }, { ok: false, status: 404, error: 'introuvable\nclick e1' }),
+    // Valeur masquée + sélecteur sur plusieurs lignes, note du bridge avec saut de ligne.
+    entryOf(5, '/fill', { target: '#x\nclick #y', value: 'v' }, { target: { given: '#x\nclick #y', secret: null, note: 'cible\nclick #z' } }),
+    entryOf(6, '/click', { target: 'e5' }, { target: { given: 'e5', role: 'button', name: 'a\nb', note: 'n\nclick #w', secret: false } }),
+    entryOf(7, '/expect', { kind: 'text', expected: 'x\ny' }),
+  ];
+  es[4] = sanitize(es[4]!);
+  const s = asRunScript(es, { sessionId: 'abc', now: new Date(0) });
+  // Le script se relit en entier ; seules les commandes rejouables en sortent.
+  const lines = parseScript(s);
+  for (const l of lines) { const a = parseArgs(l.argv); checkRunFlags(a); buildRequest(a); }
+  assert.deepEqual(lines.map((l) => l.argv), [['nav', 'http://127.0.0.1:8080/historique'], ['click', 'e5']]);
+  assert.doesNotMatch(s, /evil\.example\/\n/);
+  assert.match(s, /^# fill #msg 'ligne1⏎ligne2' .*plusieurs lignes/m);
+  assert.match(s, /^# eval '1 \+⏎2' .*plusieurs lignes/m);
+  assert.match(s, /Omis : 1 commande\(s\) en échec \(#4 fill #absent 'a⏎nav https:\/\/evil/);
+  // Aucune ligne du script ne commence autrement que par # ou une commande rejouée.
+  for (const l of s.split('\n')) if (l !== '' && !l.startsWith('#')) assert.match(l, /^(nav|click) /, l);
+  // L'affichage de grasp history reste à une ligne par entrée.
+  assert.equal(formatHistory(es).split('\n').length, es.length);
+});
+
+test('history : état final sans valeur sur plusieurs lignes', () => {
+  assert.deepEqual(finalExpects({ url: 'http://h/', title: 'a\nb' }, undefined), ['expect url http://h/']);
 });

@@ -104,6 +104,8 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       lectures et échecs omis, mots de passe jamais conservés (ligne commentée), `--expect` sur l'état final.
       Description de cible faite sur le snapshot de l'action (+0,2 ms / +16 ms mesurés). Test : exploration,
       export, rejeu dans une nouvelle session, même `text` final.
+- [x] Relecture : sauts de ligne — un argument sur plusieurs lignes n'est jamais écrit dans le script (ligne
+      commentée), tout commentaire ramené à une ligne (une commande en échec ne peut plus y injecter une ligne).
 - [ ] Remplacer le masque des mots de passe par `secret:NOM` quand les variables de secrets existeront.
 - [ ] Outil MCP `history` ; traduction des refs de `--scope` ; description sans snapshot séparé pour
       `expect`/`wait --sel`/`upload` par ref.

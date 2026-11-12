@@ -267,14 +267,23 @@ export function sanitize(e: HistoryEntry): HistoryEntry {
 
 const cut = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
+/**
+ * Un script de run se lit ligne à ligne (`parseScript` découpe sur \n avant `splitLine`) : aucune citation n'y
+ * protège un saut de ligne. Tout texte qui part dans le script (ou dans l'affichage) passe donc par `oneLine`,
+ * et une commande dont un argument contient \r ou \n n'est jamais écrite telle quelle (commentée, non rejouable).
+ */
+const NEWLINE = /[\r\n]/;
+export const oneLine = (s: string): string => s.replace(/\r\n|[\r\n]/g, '⏎');
+const multiline = (l: CommandLine): boolean => l.pos.some((p) => NEWLINE.test(p)) || l.flags.some(([, v]) => typeof v === 'string' && NEWLINE.test(v));
+
 /** `grasp history` : une ligne par entrée, bornée (arguments coupés à 80 caractères pour la lecture). */
 export function formatHistory(entries: HistoryEntry[]): string {
   return entries.map((e) => {
-    const shown: CommandLine = { cmd: e.line.cmd, flags: e.line.flags.map(([k, v]) => [k, typeof v === 'string' ? cut(v, 80) : v]), pos: e.line.pos.map((p) => cut(p, 80)) };
+    const shown: CommandLine = { cmd: e.line.cmd, flags: e.line.flags.map(([k, v]) => [k, typeof v === 'string' ? cut(oneLine(v), 80) : v]), pos: e.line.pos.map((p) => cut(oneLine(p), 80)) };
     const time = e.at.slice(11, 19);
-    const tr = e.target?.durable !== undefined && e.target.durable !== e.target.given ? ` → ${quoteArg(cut(e.target.durable, 80))}` : '';
+    const tr = e.target?.durable !== undefined && e.target.durable !== e.target.given ? ` → ${quoteArg(cut(oneLine(e.target.durable), 80))}` : '';
     const extra = [e.masked !== undefined ? 'valeur masquée' : undefined, e.via === 'run' ? 'run' : undefined].filter(Boolean).join(', ');
-    return `#${e.seq} ${time} ${e.ok ? 'OK' : 'KO'} ${renderLine(shown)}${tr} (${e.ms} ms${extra !== '' ? `, ${extra}` : ''})${e.ok ? '' : ` — ${e.status ?? ''} ${cut(e.error ?? '', 160)}`}`;
+    return `#${e.seq} ${time} ${e.ok ? 'OK' : 'KO'} ${renderLine(shown)}${tr} (${e.ms} ms${extra !== '' ? `, ${extra}` : ''})${e.ok ? '' : ` — ${e.status ?? ''} ${cut(oneLine(e.error ?? ''), 160)}`}`;
   }).join('\n');
 }
 
@@ -296,7 +305,9 @@ export interface AsRunOptions {
  * - commandes en échec omises (citées en tête) : elles n'ont pas eu l'effet voulu ;
  * - options d'affichage retirées (--snap-diff, --max, --scope, --console, --shot-on-error) ;
  * - ref → sélecteur durable relevé avant l'action ; ref non traduite : gardée, avec la raison en commentaire ;
- * - valeur masquée ou ligne non rejouable : ligne commentée, à compléter (jamais une fausse valeur saisie).
+ * - valeur masquée ou ligne non rejouable : ligne commentée, à compléter (jamais une fausse valeur saisie) ;
+ * - argument sur plusieurs lignes (textarea, eval) : ligne commentée, ⏎ à la place des sauts de ligne ; et tout
+ *   texte recopié en commentaire (échecs, notes) est ramené à une ligne : rien ne peut y devenir exécutable.
  */
 export function asRunScript(entries: HistoryEntry[], o: AsRunOptions): string {
   const body: string[] = [];
@@ -323,7 +334,8 @@ export function asRunScript(entries: HistoryEntry[], o: AsRunOptions): string {
     }
     const text = renderLine(line);
     if (e.masked !== undefined) { masked++; body.push(`# ${text}   # #${e.seq} : valeur masquée, ${e.masked} — décommentez et complétez avant de rejouer`); continue; }
-    if (e.unreplayable !== undefined) { body.push(`# ${text}   # #${e.seq} : ${e.unreplayable}`); continue; }
+    const unreplayable = e.unreplayable ?? (multiline(line) ? 'valeur sur plusieurs lignes : un script run lit une commande par ligne — à refaire à la main' : undefined);
+    if (unreplayable !== undefined) { body.push(`# ${text}   # #${e.seq} : ${unreplayable}`); continue; }
     body.push(notes.length > 0 ? `${text}   # ${notes.join(' ; ')}` : text);
   }
   const head: string[] = [];
@@ -334,19 +346,22 @@ export function asRunScript(entries: HistoryEntry[], o: AsRunOptions): string {
   head.push('# élément seul, sinon CSS stable vérifié unique (README « Historique et rejeu »).');
   const r = [...reads].map(([k, n]) => `${k} ×${n}`).join(', ');
   if (reads.size > 0) head.push(`# Omis : ${[...reads.values()].reduce((a, b) => a + b, 0)} lecture(s) pure(s) (${r}).`);
-  if (failed.length > 0) head.push(`# Omis : ${failed.length} commande(s) en échec (${failed.slice(0, 5).map((e) => `#${e.seq} ${cut(renderLine(e.line), 50)}`).join(' ; ')}${failed.length > 5 ? ' ; …' : ''}).`);
+  if (failed.length > 0) head.push(`# Omis : ${failed.length} commande(s) en échec (${failed.slice(0, 5).map((e) => `#${e.seq} ${cut(oneLine(renderLine(e.line)), 50)}`).join(' ; ')}${failed.length > 5 ? ' ; …' : ''}).`);
   if (masked > 0) head.push(`# ATTENTION : ${masked} valeur(s) masquée(s), lignes commentées : le script ne se rejoue pas à l'identique sans elles.`);
   if (untranslated > 0) head.push(`# ATTENTION : ${untranslated} ref(s) non traduite(s) (commentaire en fin de ligne).`);
   if ((o.lost ?? 0) > 0) head.push(`# ATTENTION : ${o.lost} entrée(s) plus ancienne(s) oubliée(s) (${HISTORY_MAX} au plus par session) : le début du parcours manque.`);
   if (body.length === 0) head.push('# (aucune commande rejouable)');
   const tail = o.expects !== undefined && o.expects.length > 0 ? ['# État final constaté à l\'export :', ...o.expects] : [];
-  return [...head, ...body, ...tail].join('\n') + '\n';
+  // Ligne exécutable : aucun saut de ligne possible (écartée plus haut) ; commentaires : ramenés à une ligne.
+  return [...head, ...body, ...tail].map(oneLine).join('\n') + '\n';
 }
 
 /** Lignes `expect` de l'état final : URL et titre exacts, premier titre de niveau 1 (ou premier titre) du snapshot. */
 export function finalExpects(loc: { url: string; title: string } | undefined, snap: string | undefined): string[] {
   const out: string[] = [];
   if (loc !== undefined) {
+    // Valeur sur plusieurs lignes : pas d'expect (non exprimable dans un script).
+    if (NEWLINE.test(loc.url) || NEWLINE.test(loc.title)) loc = { url: NEWLINE.test(loc.url) ? '' : loc.url, title: NEWLINE.test(loc.title) ? '' : loc.title };
     if (loc.url !== '' && loc.url !== 'about:blank') out.push(renderLine({ cmd: 'expect', flags: [], pos: ['url', loc.url] }));
     if (loc.title !== '') out.push(renderLine({ cmd: 'expect', flags: [], pos: ['title', loc.title] }));
   }

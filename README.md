@@ -866,6 +866,12 @@ expect text 'Liste de courses'
   - options d'affichage retirées des actions (`--snap-diff`, `--max`, `--scope`, `--console`, `--shot-on-error`) ;
     `--engine`, `--delay`, `--uncheck` gardées ;
   - `state import` (hors `run`) laissé en commentaire ; `eval` gardé (il faudra `allowEval` au rejeu) ;
+  - **une commande par ligne** : `run` découpe le script sur les sauts de ligne avant toute citation. Une commande
+    dont un argument contient `\n` ou `\r` (`fill` d'un textarea sur plusieurs lignes, `eval` sur plusieurs
+    lignes) est donc **commentée** (`# … : valeur sur plusieurs lignes`, `⏎` à la place des sauts), jamais écrite
+    telle quelle ; et tout texte recopié en commentaire (échecs cités en tête, notes, erreurs) est ramené à une
+    ligne : une valeur saisie ne peut pas y faire apparaître une ligne exécutable. `grasp history` affiche de même
+    une ligne par entrée ;
   - `--expect` ajoute l'**état final** relu au moment de l'export : `expect url` et `expect title` exacts, et
     `expect text` du premier titre de niveau 1 du snapshot (à défaut, du premier titre ; omis s'il est coupé).
 - **Refs → sélecteurs durables**. La cible d'une commande par ref est décrite **avant** l'action (après un clic,
