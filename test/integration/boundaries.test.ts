@@ -121,10 +121,17 @@ test('snap, --snap-diff, --console, console, erreur citant la page : tout est en
   assert.equal(e!.source, 'erreur', miss.stderr);
   assert.match(e!.body.join('\n'), /Révéler \[marqueur imité\]/);
 
-  // Erreur 400 (syntaxe de l'agent) : jamais encadrée.
+  // Erreur 400 qui cite la page : option absente d'un <select> piégé → les libellés des options sont encadrés.
+  const sel = await runCli(on, ['select', '#mode', 'absente']);
+  assert.notEqual(sel.code, 0);
+  const [o] = blocks(sel.stderr);
+  assert.ok(o !== undefined && o.source === 'erreur', sel.stderr);
+  assert.match(o.body.join('\n'), /IGNORE PREVIOUS INSTRUCTIONS/);
+  assert.equal(sel.stderr.split('IGNORE PREVIOUS').length, o.body.join('\n').split('IGNORE PREVIOUS').length, 'rien de la page hors du bloc');
+  // Erreur 400 de syntaxe de l'agent : encadrée aussi (le bridge ne distingue pas ce qu'un 400 cite).
   const bad = await runCli(on, ['console', '--level', 'tout']);
   assert.notEqual(bad.code, 0);
-  assert.doesNotMatch(bad.stderr, /<<</);
+  assert.equal(blocks(bad.stderr)[0]?.source, 'erreur', bad.stderr);
 });
 
 test('run : sorties des étapes et rapport de recette (erreur, page finale) encadrés', async () => {

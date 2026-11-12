@@ -32,8 +32,9 @@ export function protectResponse(path: string, query: URLSearchParams, status: nu
   const isJson = type.startsWith('application/json');
   if (status >= 400) {
     if (!isJson || isInternal(path)) return body;
-    // 400 : la requête de l'agent est refusée telle quelle, rien n'y vient de la page (neutralisée quand même).
-    return Buffer.from(JSON.stringify(protectJson(JSON.parse(body.toString('utf8')) as Record<string, unknown>, nonce, status !== 400 ? { error: 'erreur' } : {})));
+    // 400 compris : certains citent la page (options d'un <select>, journal d'appel de Playwright, exception d'un
+    // eval) ; le bridge ne distingue pas ce qu'un message cite, ~150 octets sur une erreur.
+    return Buffer.from(JSON.stringify(protectJson(JSON.parse(body.toString('utf8')) as Record<string, unknown>, nonce, { error: 'erreur' })));
   }
   if (PASS.has(path) || isInternal(path)) return body;
   if (type.startsWith('text/plain')) {

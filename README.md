@@ -1345,8 +1345,11 @@ destinée au futur `grasp skill` : constante `BOUNDARY_RULE` de `src/core/bounda
 - **Ce qui est encadré** : le corps de `snap` (titre de l'en-tête compris), de `text` (`source=markdown` avec
   `--markdown`), le `--snap-diff` (`diff`), les notes d'une action (`note` : libellé d'option choisi, message
   d'un champ invalide…), les lignes de console (`console`, commande et `--console`), les messages d'erreur du bridge
-  (`erreur` : noms proches, candidats, constaté d'un `expect`, exception de la page) sauf les 400 (refus de la
-  requête de l'agent, rien n'y vient de la page) ; dans `grasp run`, chaque étape et le rapport de recette
+  (`erreur` : noms proches, candidats, constaté d'un `expect`, exception de la page), **400 compris** : un refus de
+  la requête peut citer la page (options d'un `<select>` quand la valeur demandée manque, journal d'appel de
+  Playwright avec l'élément résolu), et le bridge ne distingue pas ce qu'un message cite (~150 octets par erreur,
+  testé avec une option piégée sur `/piege`). Les erreurs du control plane (session, route, config) ne passent pas
+  par le bridge et ne sont pas encadrées : rien n'y vient de la page ; dans `grasp run`, chaque étape et le rapport de recette
   (console, formulaire, page finale). Les champs JSON (titre d'un `nav`, `candidates`, entrées de console…) sont
   neutralisés sans être encadrés ; `boundary: {nonce, imitations}` y donne le nonce de la réponse.
 - **Où** : dans le bridge (`src/bridge/boundaries.ts`), qui enveloppe toute son API d'après la politique gelée ;
@@ -1773,8 +1776,8 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   modèle qui ignore la règle ; leur efficacité dépend de l'agent, et n'a pas été mesurée ici sur un modèle. La
   neutralisation couvre les déguisements listés, pas tous les homoglyphes d'Unicode (une imitation non reconnue
   reste sans le nonce, donc sans fin authentique). Non encadrés : la valeur d'un `eval` (opt-in), `cookies`,
-  `state export`, le chemin d'une capture et l'image elle-même (texte d'une capture lu par un modèle de vision),
-  les messages 400. Dans une erreur, la phrase de Grasp est encadrée avec ce qu'elle cite (pas de découpe plus
+  `state export`, le chemin d'une capture et l'image elle-même (texte d'une capture lu par un modèle de vision).
+  Dans une erreur, la phrase de Grasp est encadrée avec ce qu'elle cite (pas de découpe plus
   fine). Défaut `auto` : un tunnel `ssh -L` vers `localhost` laisse l'allowlist locale, donc les frontières
   inactives, alors que la page est distante (`contentBoundaries=true`). MCP : couvert par les réponses du bridge et
   le formateur de console partagé, sans test de bout en bout dédié.
