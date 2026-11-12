@@ -69,3 +69,14 @@ upload e6 /tmp/x --engine playwright
 profile perso`);
   assert.equal(ok.length, 11);
 });
+
+test('text --markdown : ?markdown=1 (CLI et run) ; refusé ailleurs ou avec une valeur', async () => {
+  const r = (line: string) => buildRequest(parseArgs(splitLine(line)));
+  assert.deepEqual(r('text --markdown'), { cmd: 'text', method: 'GET', path: '/text?markdown=1' });
+  assert.deepEqual(r('text --markdown --max 500 --scope main'), { cmd: 'text', method: 'GET', path: '/text?max=500&scope=main&markdown=1' });
+  assert.throws(() => r('snap --markdown'), /--markdown ne s'applique qu'à text/);
+  assert.throws(() => r('text --markdown=oui'), /--markdown ne prend pas de valeur/);
+  const { compileScript } = await import('../../src/control/run.js');
+  assert.equal(compileScript('text --markdown --scope main').length, 1);
+  assert.throws(() => compileScript('snap --markdown'), /ligne 1 : option --markdown inconnue pour snap/);
+});

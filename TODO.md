@@ -15,8 +15,10 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       Fait : sans dépendance, outils = lignes de commande via `buildRequest`, serveur lancé si absent,
       session créée puis fermée (ou imposée par `--session`). Reste : notifications de progression pour
       les `run` longs, annulation (`notifications/cancelled` ignorée : l'étape en cours va à son terme).
-- [ ] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
-      dans le monde isolé `grasp-lecture`.
+- [x] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
+      dans le monde isolé `grasp-lecture`. Fait (branche `feat/texte-markdown`) : aussi `GET /text?markdown=1`
+      et `grasp run` ; budget et `--scope` de `text` ; `frame=…` via Playwright (monde de la page du cadre).
+      Implémentation propre à Grasp (pas de code repris d'Obscura).
 - [x] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
       transférer une session connectée vers une autre machine ou un conteneur.
       Fait (branche `feat/etat-export-import`) : format `grasp-state` v1 (sur-ensemble du storageState

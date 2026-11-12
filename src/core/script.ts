@@ -138,6 +138,13 @@ export function readQuery(a: Args): string {
     if (!/^\d+$/.test(nm)) throw new ScriptError('--name-max attend un entier positif ou nul (0 = noms entiers)');
     q.set('nameMax', nm);
   }
+  // --markdown : sortie Markdown de text ; ailleurs refusé, jamais ignoré.
+  const md = a.flags.get('markdown');
+  if (md !== undefined) {
+    if (a.cmd !== 'text') throw new ScriptError(`--markdown ne s'applique qu'à text (${a.cmd} a son propre format)`);
+    if (md !== true) throw new ScriptError("--markdown ne prend pas de valeur (grasp text --markdown)");
+    q.set('markdown', '1');
+  }
   return q.size > 0 ? `?${q}` : '';
 }
 
@@ -194,7 +201,7 @@ const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', '
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
-  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope'],
+  snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],
   wait: ['text', 'sel', 'timeout', 'idle'],
   console: ['level', 'since', 'limit', 'clear'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).

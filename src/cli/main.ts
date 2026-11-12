@@ -618,7 +618,9 @@ Profils      profiles [--json]                       liste (* = profil de la ses
 Lecture      snap [--max octets] [--scope <ref|css|frame=…>] [--name-max N]   budget 12000 octets par défaut (config snapMax)
                --name-max N : noms coupés à N caractères (défaut 80, textes 100), coupure toujours marquée « … » ;
                0 = noms entiers (titres longs) ; les refs n'en dépendent pas ; aussi sur une ligne de run
-             text [--max N] [--scope <ref|css|frame=…>]        4000 caractères par défaut (config textMax)
+             text [--max N] [--scope <ref|css|frame=…>] [--markdown]   4000 caractères par défaut (config textMax)
+               --markdown : contenu visible en Markdown (titres, listes, liens absolus, images, tableaux, code),
+               même budget, même zone, même ligne de troncature ; aussi sur une ligne de run
                --scope <iframe> : texte du cadre s'il est de même origine, sinon erreur explicite ; zone vide :
                rien sur stdout, « note: aucun texte visible » sur stderr
                --scope 'frame=#editeur [>> sél]' : DANS une iframe, même d'une autre origine (moteur Playwright) ;
