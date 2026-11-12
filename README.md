@@ -1811,8 +1811,8 @@ configuration des commandes désactivées par défaut).
 - `grasp help --json` : `{format: "grasp-help/1", version, globalOptions, selectors, commands, runCommands,
   expectKinds, mcpTools}` sur une ligne. Chaque option porte `type` (`string`, `integer`, `boolean`, `enum` avec
   `values`), `arg`, `alias`, et pour une commande de run `run: true|false` (`screenshot -o` : terminal seulement).
-  `mcpTools` est la réponse de `tools/list` du serveur MCP, telle quelle (schémas d'entrée compris). 40 Ko en
-  tout ; `grasp help --json click` : une commande, 1,3 Ko.
+  `mcpTools` est la réponse de `tools/list` du serveur MCP, telle quelle (schémas d'entrée compris). 83 Ko en
+  tout (vague 3) ; `grasp help --json click` : une commande, 1,7 Ko.
 - `grasp help <commande>` : fiche lisible (usage, options typées, sous-commandes, présence dans run et MCP).
   `grasp help` sans argument garde l'aide rédigée à la main.
 
