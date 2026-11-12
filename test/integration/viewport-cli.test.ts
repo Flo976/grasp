@@ -94,10 +94,16 @@ test('viewport --mobile : note explicite quand la page n\'a pas de <meta name=vi
     const env = { ...t.env, GRASP_SESSION: id };
     const ok = async (args: string[], input?: string) => { const r = await runCli(env, args, input); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stderr}`); return r; };
 
-    // Session neuve, about:blank : pas de note meta viewport (rien n'est encore chargé).
+    // Session neuve, about:blank : la mesure (document vide, 980 px en --mobile) n'est pas celle du site ; une
+    // note le dit, pour qu'une première ligne de recette ne passe pas pour un échec du viewport.
     const vierge = await ok(['viewport']);
-    assert.doesNotMatch(vierge.stderr, /meta name=viewport/, vierge.stderr);
-    assert.equal(JSON.parse((await ok(['viewport', '--json'])).stdout).detail, undefined);
+    assert.match(vierge.stdout, /— page : 98\dx\d+/, vierge.stdout);
+    assert.match(vierge.stderr, /note: aucune page chargée \(about:blank\) : « page : 98\dx\d+ » est la mesure d'un document vide.*360x800 est bien réglé/, vierge.stderr);
+    assert.doesNotMatch(vierge.stderr, /pas de <meta name=viewport> dans la page/);
+    assert.match(JSON.parse((await ok(['viewport', '--json'])).stdout).detail, /aucune page chargée/);
+    // Même note dans run (cas de l'essai Dexyu : première ligne du script, avant tout nav).
+    const runVierge = await ok(['run'], 'viewport 360x800 --mobile\n');
+    assert.match(runVierge.stderr, /aucune page chargée \(about:blank\)/, runVierge.stderr);
 
     // Page avec <meta name=viewport> : largeur mesurée = viewport, aucune note.
     await ok(['nav', `${site.url}/viewport`]);

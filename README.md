@@ -2002,8 +2002,11 @@ Mise en page mobile
   la page se met en page sur 980 px CSS comme sur un téléphone — mesuré : `innerWidth` 980 en mode mobile sur une
   page sans balise ; `grasp viewport` l'annonce alors par une note, `note: pas de <meta name=viewport> dans la
   page : Chrome la met en page sur 980 px de large … — comportement normal en --mobile, pas un échec du viewport`,
-  en commande isolée, dans `run` et en MCP ; aucune note quand la page a la balise, ni sur `about:blank` d'une
-  session neuve, avant toute navigation — testé) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
+  en commande isolée, dans `run` et en MCP ; aucune note quand la page a la balise. Sur `about:blank` d'une
+  session neuve, avant toute navigation, la mesure est celle d'un document vide : une autre note le dit
+  (`note: aucune page chargée (about:blank) : « page : 980x2178 » est la mesure d'un document vide, pas celle de
+  votre site — le viewport 360x800 est bien réglé…`), pour qu'une première ligne de recette ne passe pas pour un
+  échec — testé) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
   `Emulation.setTouchEmulationEnabled` (5 points de contact ; mesuré : `(pointer: coarse)` vrai, alors qu'un onglet
   headless répond `none` sans émulation). Les clics restent des événements souris CDP, vérifiés comme d'habitude
   (testé sous émulation tactile). Tailles de 50 à 10 000 px ; toute valeur invalide → 400.

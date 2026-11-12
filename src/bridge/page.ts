@@ -3764,18 +3764,22 @@ export class PageController {
    * Viewport courant : réglage de Grasp et ce que la page mesure (monde isolé : la page ne peut pas le fausser).
    * En mode mobile, une page SANS <meta name=viewport> est mise en page sur 980 px par Chrome (comme tout navigateur
    * mobile) : la largeur mesurée diffère alors du viewport demandé ; une note le dit — ce n'est pas un échec.
-   * Pas de note hors page http(s) (about:blank d'une session neuve) : rien n'y est à mettre en page.
+   * Hors page http(s) (about:blank d'une session neuve, avant toute navigation), la mesure n'a pas de sens
+   * (document vide, mis en page lui aussi sur 980 px en --mobile) : une note le dit quand elle diffère du viewport
+   * demandé, pour qu'une première ligne de recette « viewport … --mobile » ne passe pas pour un échec.
    */
   async viewportInfo(): Promise<ViewportResult> {
     const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string; meta: boolean; web: boolean } | undefined>(
       `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent, meta: document.querySelector('meta[name="viewport" i]') !== null, web: /^https?:$/.test(location.protocol) })`,
     ).catch(() => undefined);
-    // Page web seulement : sur about:blank (session neuve, avant toute navigation), la note serait du bruit.
     const noMeta = this.vp !== undefined && this.vp.mobile && m !== undefined && !m.meta && m.web;
+    // about:blank & co : rien n'est chargé ; note seulement si la mesure diffère du viewport demandé.
+    const blank = this.vp !== undefined && m !== undefined && !m.web && (m.width !== this.vp.width || m.height !== this.vp.height);
     return {
       ok: true, viewport: this.vp === undefined ? null : { ...this.vp },
       ...(this.vp !== undefined ? { description: describeViewport(this.vp) } : {}),
-      ...(noMeta ? { detail: `pas de <meta name=viewport> dans la page : Chrome la met en page sur 980 px de large (puis la réduit à l'écran), d'où « page : ${m!.width}x${m!.height} » au lieu de ${this.vp!.width}x${this.vp!.height} — comportement normal en --mobile, pas un échec du viewport` } : {}),
+      ...(noMeta ? { detail: `pas de <meta name=viewport> dans la page : Chrome la met en page sur 980 px de large (puis la réduit à l'écran), d'où « page : ${m!.width}x${m!.height} » au lieu de ${this.vp!.width}x${this.vp!.height} — comportement normal en --mobile, pas un échec du viewport` }
+        : blank ? { detail: `aucune page chargée (about:blank) : « page : ${m!.width}x${m!.height} » est la mesure d'un document vide, pas celle de votre site — le viewport ${this.vp!.width}x${this.vp!.height} est bien réglé et s'appliquera au premier nav (980 px de large seulement si la page n'a pas de <meta name=viewport>)` } : {}),
       ...(m !== undefined ? { measured: { width: m.width, height: m.height, dpr: m.dpr, touchPoints: m.touchPoints, pointer: m.pointer, mobileUa: /\bMobile\b/.test(m.ua) } } : {}),
     };
   }

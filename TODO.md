@@ -410,3 +410,5 @@ Suites de l'intégration :
   `expect no-console-errors` les compte.
   → oui pour les deux (réponses ≥ 400, net::ERR, CORS, bloquées par Grasp ; pas les annulations ni les traqueurs) :
   dit dans l'aide CLI, le catalogue (help/SKILL.md) et le README ; aucun écart entre les deux à corriger.
+- [x] **Note `viewport` sur about:blank** (écart relevé au contrôle final de la vague 3) : avant toute navigation,
+  « page : 980x2178 » est maintenant expliqué (mesure d'un document vide, viewport bien réglé), aussi dans `run`.
