@@ -835,7 +835,8 @@ export class PageController {
   /** Identifiants HTTP basic de la session (mémoire seulement ; jamais journalisés ni rapportés en clair). */
   private creds: readonly HttpCredential[] = [];
   /** Secrets saisis par `fill … secret:NOM` dans cette session : masqués à la source (avant toute coupure). */
-  readonly secretRedactor = new Redactor();
+  /** Partagé par les onglets d'une session (adopt) : un secret saisi dans un onglet est masqué dans un popup. */
+  secretRedactor = new Redactor();
   /** Champs remplis avec un secret (backendNodeId → nom) : leur valeur est rendue `secret:NOM`, même tronquée. */
   private readonly secretNodes = new Map<number, string>();
   /** Requêtes auxquelles des identifiants ont déjà été fournis : un second défi = identifiants refusés. */
@@ -921,6 +922,11 @@ export class PageController {
     pc.engineCfg = sibling.engineCfg;
     pc.pw = new PlaywrightEngine({ ...sibling.engineCfg, targetId });
     pc.downloadDir = sibling.downloadDir;
+    // Secrets saisis dans la session : masqués aussi dans ce nouvel onglet (un popup OAuth peut recopier un jeton).
+    pc.secretRedactor = sibling.secretRedactor;
+    // Viewport émulé de la session : le nouvel onglet est rendu à la même taille dès son premier document.
+    const vp = sibling.vp;
+    pc.nativeScreen = sibling.nativeScreen;
     try {
       if (resume !== undefined) {
         // Cible en pause : Page.enable et les autres domaines n'aboutissent qu'après la relance (mesuré, Chrome 150 :
@@ -928,11 +934,12 @@ export class PageController {
         // relance (la cible les traite dans l'ordre, avant son premier document), puis attendus.
         pc.cdp.on('event', pc.listener);
         await pc.guard(sessionId);
-        const pre = [pc.s('Page.enable'), pc.s('DOM.enable'), pc.s('Accessibility.enable'), ...(pc.policy.allowConsole ? [pc.enableConsole(sessionId)] : [])];
+        const pre = [pc.s('Page.enable'), pc.s('DOM.enable'), pc.s('Accessibility.enable'), ...(pc.policy.allowConsole ? [pc.enableConsole(sessionId)] : []), ...(vp !== undefined ? await pc.emulationSends(vp) : [])];
         await resume();
         await Promise.all(pre);
       }
       await pc.init(sibling.downloadDir);
+      if (resume === undefined && vp !== undefined) await Promise.all(await pc.emulationSends(vp));
     } catch (e) { pc.dispose(); throw e; }
     return pc;
   }
@@ -1856,8 +1863,14 @@ export class PageController {
 
   private async historyNav(kind: 'back' | 'forward' | 'reload', opts: ActionOptions, hard: boolean): Promise<ActionResult & { url: string; title: string }> {
     if (opts.console === true) this.assertConsole();
+    if (opts.network === true) this.assertNetwork();
+    // --dialog et --network comme pour nav : un beforeunload de la page quittée, un alert du document d'arrivée.
+    const policy = parseDialogOption(opts.dialog);
     const seq = this.consoleBuf.seq;
+    const netSeq = this.netLog.seq;
+    this.actNetSeq = netSeq;
     const trk0 = this.trackersBlocked;
+    this.beginDialogs(policy);
     try {
       const h = await this.s<{ currentIndex: number; entries: Array<{ id: number; url: string; title: string }> }>('Page.getNavigationHistory');
       const n = h.entries.length;
@@ -1878,9 +1891,10 @@ export class PageController {
       this.rebound = null;
       this.mainFailed = null;
       const since = Date.now();
+      const dlg0 = this.dialogs.length;
       if (kind === 'reload') await this.s('Page.reload', { ignoreCache: hard });
       else await this.s('Page.navigateToHistoryEntry', { entryId: entry.id });
-      await this.historyCommitted(nav0, since);
+      await this.historyCommitted(nav0, since, dlg0);
       const stab = await this.waitStable(this.limits.stableTimeoutMs, { since, challenge: true });
       const loc = await this.location();
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
@@ -1896,9 +1910,17 @@ export class PageController {
       else if (stab.background === true) notes.push(BACKGROUND_NOTE);
       if (notes.length > 0) out.detail = notes.join(' ; ');
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
+      // Dialogues relevés en dernier, politique close au même moment (comme nav et act).
+      this.endDialogs();
+      const dlg = this.takeDialogs(out);
+      if (dlg.length > 0) {
+        out.detail = [...dlg, ...(out.detail !== undefined ? [out.detail] : [])].join(' ; ');
+        if (out.diff !== undefined) out.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${out.diff}`;
+      }
       if (opts.console === true) out.console = this.consoleSince(seq);
+      if (opts.network === true) out.network = this.networkSince(netSeq);
       return out;
-    } catch (e) { throw await this.decorate(e, opts, seq); }
+    } catch (e) { throw this.dialogError(await this.decorate(e, opts, seq, netSeq)); } finally { this.endDialogs(); }
   }
 
   /**
@@ -1908,11 +1930,14 @@ export class PageController {
    * n'empêche pas la page d'arriver) et `rebound` (rebinding), comme pour nav. Ni l'une ni l'autre ne rend non
    * plus l'échec réseau du document : il se lit à la page d'erreur de Chrome chargée à sa place (502, comme nav).
    */
-  private async historyCommitted(nav0: number, since: number): Promise<void> {
+  private async historyCommitted(nav0: number, since: number, dlg0 = this.dialogs.length): Promise<void> {
     const end = Date.now() + 30_000;
     for (;;) {
       const b = this.blockedMain as Blocked | null;
       if (b !== null && b.at >= since) throw forbidden(`navigation bloquée par le garde : ${b.reason} (${b.url})`);
+      // beforeunload refusé (--dialog dismiss) : la page reste, aucune navigation ne viendra — dit aussitôt (comme
+      // l'ERR_ABORTED de nav), sans attendre 30 s.
+      if (this.dialogs.slice(dlg0).some((d) => d.type === 'beforeunload' && !d.accepted) && !this.navigating()) throw conflict('navigation annulée : la page est restée affichée (beforeunload refusé)');
       if (this.navCount !== nav0 && !this.navigating()) break;
       if (Date.now() > end) throw new GraspError(504, 'délai dépassé : la navigation n\'a pas abouti en 30 s');
       await sleep(25);
@@ -3605,6 +3630,26 @@ export class PageController {
 
   /** Viewport émulé courant (undefined : celui du navigateur). */
   get viewport(): ViewportSpec | undefined { return this.vp === undefined ? undefined : { ...this.vp }; }
+
+  /**
+   * Overrides d'émulation d'un viewport, envoyés sans attendre leur réponse : sur une cible en pause (popup adopté),
+   * ils sont traités à la relance, avant le premier document. L'appelant attend les promesses rendues.
+   */
+  private async emulationSends(spec: ViewportSpec): Promise<Array<Promise<unknown>>> {
+    let ua: Record<string, unknown> | undefined;
+    if (spec.mobileUa) {
+      const { product } = await this.cdp.send<{ product: string }>('Browser.getVersion');
+      const { userAgent, major } = mobileUserAgent(product);
+      ua = { userAgent, userAgentMetadata: { brands: [{ brand: 'Chromium', version: major }, { brand: 'Not.A/Brand', version: '99' }], platform: 'Android', platformVersion: '10', architecture: '', model: 'K', mobile: true } };
+    }
+    const sends: Array<Promise<unknown>> = [
+      this.s('Emulation.setDeviceMetricsOverride', PageController.metricsOf(spec)),
+      this.s('Emulation.setTouchEmulationEnabled', spec.touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false }),
+    ];
+    if (ua !== undefined) { sends.push(this.s('Emulation.setUserAgentOverride', ua)); this.uaOverridden = true; }
+    this.vp = { ...spec };
+    return sends;
+  }
 
   /**
    * Pose (ou retire, `null`) le viewport émulé de l'onglet : taille CSS, densité, mode mobile, tactile, user agent

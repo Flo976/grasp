@@ -28,7 +28,9 @@ interface Opened { tab?: Tab; refused?: string; openerTarget: string | undefined
 interface Closure { id: string; next: Tab | undefined; last: boolean }
 
 /** Méthodes du contrôleur qui peuvent ouvrir ou fermer un onglet : enveloppées par `act`. */
-const ACTIONS = new Set(['nav', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'upload', 'evaluateTyped']);
+const ACTIONS = new Set(['nav', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'upload', 'evaluateTyped',
+  // Historique et défilement : un popup ouvert (ou refermé) pendant l'action est annoncé de même.
+  'history', 'reload', 'scroll']);
 /** Délai d'arrivée d'un popup demandé (Page.windowOpen → onglet adopté), puis de son premier document. */
 const POPUP_WAIT_MS = 2000;
 /** Délai d'adoption d'un onglet créé par `tab new`. */

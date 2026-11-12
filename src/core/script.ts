@@ -336,7 +336,7 @@ function viewportRequest(a: Args): StepRequest {
 export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport', 'tabs', 'tab'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run', 'history']);
 
-const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error'];
+const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'dialog'];
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine', 'dialog', 'follow'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 export const RUN_FLAGS: Record<string, readonly string[]> = {
@@ -452,7 +452,7 @@ function storageRequest(a: Args): StepRequest {
 
 /**
  * back, forward, reload [--hard], scroll [<sél>] [--by px | --to top|bottom] [--until-stable [--max-steps N]].
- * Options d'action (--snap-diff, --max, --scope, --console, --shot-on-error), sans --engine : refusé, jamais
+ * Options d'action (--snap-diff, --max, --scope, --console, --network, --shot-on-error, --dialog), sans --engine : refusé, jamais
  * ignoré. Valeurs transmises telles quelles : le bridge valide (« --by abc » est une erreur 400).
  */
 function historyRequest(a: Args): StepRequest {
