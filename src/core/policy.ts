@@ -30,6 +30,8 @@ export interface EffectivePolicy {
   hostResolverRules: readonly string[];
   /** Hôtes dont le certificat TLS n'est PAS vérifié (vide par défaut ; dérogation limitée à ces hôtes). */
   ignoreCertErrorsFor: readonly string[];
+  /** Requêtes vers les domaines de la liste de traqueurs embarquée : annulées dans le navigateur (garde Fetch). */
+  blockTrackers: boolean;
   /** Le blocage n'est pas configurable : détecter ≠ bloquer, on bloque toujours. */
   navigation: 'enforce';
   tokenRequired: true;
@@ -48,6 +50,7 @@ export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> 
     proxyBypassList: Object.freeze([...cfg.proxyBypassList]),
     hostResolverRules: Object.freeze([...cfg.hostResolverRules]),
     ignoreCertErrorsFor: Object.freeze(cfg.ignoreCertErrorsFor.map(normalizeHost)),
+    blockTrackers: cfg.blockTrackers,
     navigation: 'enforce' as const,
     tokenRequired: true as const,
   });

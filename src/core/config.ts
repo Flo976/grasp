@@ -30,6 +30,11 @@ export interface ResolvedConfig {
    * littéraux inscrits tels quels (127.0.0.1, localhost, [::1]) peuvent viser le réseau local.
    */
   allowPrivateNetwork: boolean;
+  /**
+   * Blocage des requêtes vers les serveurs de publicité et de traçage (liste de Peter Lowe embarquée). Activé
+   * par défaut : un agent lit la page, ces requêtes n'y ajoutent rien et allongent l'attente de stabilité.
+   */
+  blockTrackers: boolean;
   transport: 'unix' | 'tcp';
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
@@ -74,6 +79,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowCookies: false,
   allowConsole: true,
   allowPrivateNetwork: false,
+  blockTrackers: true,
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
@@ -170,6 +176,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   allowCookies: bool,
   allowConsole: bool,
   allowPrivateNetwork: { ...bool, help: 'true|false : un nom de l\'allowlist peut résoudre vers une IP privée/réservée (défaut false : protection SSRF ; les hôtes littéraux inscrits restent permis)' },
+  blockTrackers: { ...bool, help: 'true|false : bloque les requêtes vers les ~3 500 domaines de publicité et de traçage de la liste de Peter Lowe (défaut true)' },
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',
     parse(raw) { if (raw !== 'unix' && raw !== 'tcp') throw new Error('unix|tcp attendu'); return raw; },
@@ -236,6 +243,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowCookies: pick('allowCookies'),
     allowConsole: pick('allowConsole'),
     allowPrivateNetwork: pick('allowPrivateNetwork'),
+    blockTrackers: pick('blockTrackers'),
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),

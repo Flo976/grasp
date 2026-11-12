@@ -14,7 +14,7 @@ import type { Resolver } from '../../src/core/ssrf.js';
 export interface PageFixture { page: PageController; chrome: ChromeProcess; cdp: CdpClient; capturesDir: string; downloadDir: string; close(): Promise<void> }
 
 /** Moteur Playwright du bridge : module chargé (défaut playwright-core) et délai d'inactivité. */
-export interface EngineFixture { module?: string; idleMs?: number }
+export interface EngineFixture { module?: string; idleMs?: number; chromeArgs?: readonly string[] }
 
 /**
  * Réseau de la fixture. `chromeArgs` : arguments Chrome supplémentaires, ignorés de la politique (ex.
