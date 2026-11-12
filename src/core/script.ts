@@ -364,7 +364,7 @@ export const RUN_FLAGS: Record<string, readonly string[]> = {
   network: ['since', 'failed', 'max', 'type'],
   // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
-  upload: ['engine'], eval: [], cookies: [], storage: [], state: [], profile: [], tabs: [], tab: [],
+  upload: ['engine'], eval: [], cookies: [], storage: ['origin'], state: [], profile: [], tabs: [], tab: [],
   viewport: VIEWPORT_FLAGS,
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'max', 'shot-on-error'],
   // Historique et défilement : options d'action sans --engine (rien à rejouer par Playwright).
@@ -454,9 +454,12 @@ export function buildRequest(a: Args): StepRequest {
   }
 }
 
-export const STORAGE_USAGE = 'storage get|rm local|session <clé> | storage set local|session <clé> <valeur>';
+export const STORAGE_USAGE = 'storage get|rm local|session <clé> [--origin <url>] | storage set local|session <clé> <valeur> [--origin <url>]';
 
-/** `storage get|set|rm local|session <clé> [valeur]` → POST /storage (stockage de l'origine affichée). */
+/**
+ * `storage get|set|rm local|session <clé> [valeur] [--origin <url>]` → POST /storage : stockage de l'origine affichée,
+ * ou de l'origine désignée par --origin (avant le premier chargement, par ex. sur about:blank).
+ */
 function storageRequest(a: Args): StepRequest {
   const [op, area, key, ...rest] = a.pos;
   const usage = () => new ScriptError(`usage : grasp ${STORAGE_USAGE}`);
@@ -464,7 +467,9 @@ function storageRequest(a: Args): StepRequest {
   if (op !== 'get' && op !== 'set' && op !== 'rm') throw new ScriptError(`storage : opération inconnue « ${op} » (get, set, rm)`);
   if (area !== 'local' && area !== 'session') throw new ScriptError(`storage : stockage inconnu « ${area} » (local ou session)`);
   if (op === 'set' ? rest.length !== 1 : rest.length !== 0) throw usage();
-  return { cmd: 'storage', method: 'POST', path: '/storage', body: { op, area, key, ...(op === 'set' ? { value: rest[0] } : {}) } };
+  const origin = a.flags.get('origin');
+  if (origin === true || origin === '') throw new ScriptError('--origin attend une origine http(s) (ex. --origin https://app.exemple.com)');
+  return { cmd: 'storage', method: 'POST', path: '/storage', body: { op, area, key, ...(op === 'set' ? { value: rest[0] } : {}), ...(origin !== undefined ? { origin } : {}) } };
 }
 
 /**

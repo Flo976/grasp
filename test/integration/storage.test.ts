@@ -75,6 +75,67 @@ storage get local theme
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });
 
+test('storage --origin : valeur posée sur about:blank, avant tout chargement de l\'origine, lue par la page ; mêmes contrôles', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  // *.localhost dans l'allowlist : refusé par la protection SSRF (boucle locale par un joker), sans DNS.
+  writeConfig(t.env, { allowCookies: true, allowedDomains: ['127.0.0.1', '*.localhost'] });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const ok = async (args: string[]) => { const r = await runCli(env, args); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stderr}`); return r; };
+    const hits0 = site.hits.length;
+
+    // Sur about:blank : localStorage posé hors de la page (document vide servi par Grasp), aucune requête vers le site.
+    const set = await ok(['storage', 'set', 'local', 'theme', 'avant', '--origin', `${site.url}/compte?x=1`]);
+    assert.equal(set.stdout, 'OK\n');
+    assert.match(set.stderr, new RegExp(`localStorage de ${site.url.replace(/[.]/g, '\\.')}`));
+    assert.equal((await ok(['storage', 'get', 'local', 'theme', '--origin', site.url])).stdout, 'avant\n');
+    // sessionStorage (propre à l'onglet) : set seulement, appliqué au premier document de l'origine ; clés fusionnées.
+    assert.match((await ok(['storage', 'set', 'session', 'brouillon', 'v1', '--origin', site.url])).stderr, /appliqué au premier document de cette origine/);
+    await ok(['storage', 'set', 'session', 'premier', 'gardé', '--origin', site.url]);
+    await ok(['storage', 'set', 'session', 'brouillon', 'v2', '--origin', site.url]);
+    const sget = await runCli(env, ['storage', 'get', 'session', 'brouillon', '--origin', site.url]);
+    assert.equal(sget.code, 1);
+    assert.match(sget.stderr, /propre à l'onglet/);
+    assert.equal(site.hits.length, hits0, `aucune requête vers le site avant la navigation : ${site.hits.slice(hits0).join(', ')}`);
+
+    await ok(['nav', `${site.url}/compte`]);
+    assert.match((await ok(['text'])).stdout, /Thème : avant[\s\S]*Brouillon : v2/, 'valeurs lues par la page elle-même');
+    assert.equal((await ok(['storage', 'get', 'session', 'premier'])).stdout, 'gardé\n', 'clés des set successifs fusionnées');
+
+    // Mêmes contrôles qu'une navigation : origine invalide, hors allowlist, SSRF.
+    const bad = await runCli(env, ['storage', 'set', 'local', 'k', 'v', '--origin', 'ftp://127.0.0.1']);
+    assert.equal(bad.code, 1);
+    assert.match(bad.stderr, /origine http\(s\) attendue/);
+    const out = await runCli(env, ['storage', 'set', 'local', 'k', 'v', '--origin', 'https://ailleurs.example']);
+    assert.equal(out.code, 1);
+    assert.match(out.stderr, /hors allowlist/);
+    const port = new URL(site.url).port;
+    const ssrf = await runCli(env, ['storage', 'set', 'local', 'k', 'v', '--origin', `http://app.localhost:${port}`]);
+    assert.equal(ssrf.code, 1);
+    assert.match(ssrf.stderr, /--origin http:\/\/app\.localhost:\d+ refusée : .*boucle locale/);
+    assert.match((await runCli(env, ['storage', 'set', 'local', 'k', 'v', '--origin'])).stderr, /--origin attend/);
+
+    // Dans run, sur une session neuve (about:blank) : poser avant la première navigation ; note d'origine une seule fois.
+    const id2 = (await runCli(t.env, ['session', 'create'])).stdout.trim();
+    const r = await runCli({ ...t.env, GRASP_SESSION: id2 }, ['run'], `storage set local theme run --origin ${site.url}
+storage set local autre x --origin ${site.url}
+storage set session brouillon b --origin ${site.url}
+storage set session encore e --origin ${site.url}
+nav ${site.url}/compte
+storage set local theme apres
+expect text "Thème : run"
+expect text "Brouillon : b"
+`);
+    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+    assert.equal((r.stderr.match(/note: localStorage de /g) ?? []).length, 1, `note localStorage une fois par origine :\n${r.stderr}`);
+    assert.equal((r.stderr.match(/note: sessionStorage de /g) ?? []).length, 1, `note sessionStorage une fois par origine :\n${r.stderr}`);
+    assert.match(r.stderr, /\[4\] note: appliqué au premier document/, 'la précision propre à l\'étape reste');
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});
+
 test('storage : refusé tant que allowCookies est désactivé (défaut), message qui nomme la clé', async () => {
   const t = makeTestEnv();
   const site = await startTestSite();
@@ -96,6 +157,7 @@ test('storage : refusé tant que allowCookies est désactivé (défaut), message
     assert.equal(run.code, 1);
     assert.match(run.stdout, /\[1\] state import .* → ERROR: .*allowCookies/);
     assert.equal((await srv.api('POST', '/storage', { op: 'set', area: 'local', key: 'k', value: 'v' }, { 'x-grasp-session': id })).status, 403);
+    assert.equal((await srv.api('POST', '/storage', { op: 'set', area: 'local', key: 'k', value: 'v', origin: site.url }, { 'x-grasp-session': id })).status, 403, '--origin : même exigence allowCookies');
     assert.match((await runCli(env, ['text'])).stdout, /Thème : aucun/, 'rien écrit');
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });

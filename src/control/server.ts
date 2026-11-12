@@ -689,7 +689,12 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
    * Une étape de `grasp run` : la même route du bridge qu'une commande isolée (mêmes contrôles de politique,
    * mêmes limites), ou la bascule de profil du control plane. Le bridge est relu à chaque étape (bascule).
    */
-  async function execStep(s: Session, rq: StepRequest, onNotice: (n: string) => void, record = false): Promise<unknown> {
+  /**
+   * `clientShots` (run --out-dir) : --shot-on-error n'est PAS transmis au bridge (sa capture irait dans l'état de
+   * Grasp) ; runScript prend la capture d'échec lui-même et la renvoie au client, qui l'écrit sous --out-dir.
+   * L'historique garde l'option telle qu'écrite.
+   */
+  async function execStep(s: Session, rq: StepRequest, onNotice: (n: string) => void, record = false, clientShots = false): Promise<unknown> {
     if (s.closed !== undefined) throw new GraspError(409, `session ${s.id} fermée pendant le script`);
     if (rq.path === 'profile') {
       const rec = record ? await beginRecord(s.history, 'POST', '/profile', rq.body, 'run', bridgeOf(s)) : undefined;
@@ -706,7 +711,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       // Historique : seulement les étapes du script (pas les lectures internes du rapport de recette).
       if (record) rec = await beginRecord(s.history, rq.method, rq.path, rq.body, 'run', bridgeOf(s));
       // Secret substitué APRÈS l'enregistrement : l'historique ne voit que son nom (secret: "NOM").
-      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, withSecret(secrets, rq.path.split('?')[0]!, rec !== undefined ? rec.body : rq.body), {}, rq.timeoutMs);
+      let sent = rec !== undefined ? rec.body : rq.body;
+      if (clientShots && sent !== undefined && sent.shotOnError === true) { const { shotOnError: _, ...rest } = sent; sent = rest; }
+      r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, withSecret(secrets, rq.path.split('?')[0]!, sent), {}, rq.timeoutMs);
       rec?.finish(r.status < 400, r.status, r.status >= 400 ? errorOf(r.text()) : undefined, rec.inline && r.status < 400 ? r.json() : undefined);
     } catch (e) {
       rec?.finish(false, e instanceof GraspError ? e.status : 502, (e as Error).message);
@@ -879,7 +886,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         // Analyse complète avant toute exécution, puis étapes séquentielles : un seul aller-retour HTTP.
         // Corps élargi : il peut porter le contenu des fichiers de `state import` (imports), plus le script.
         const body = await readJson(req, RUN_MAX_BYTES);
-        const steps = compileScript(str(body, 'script'), { files: optBool(body, 'files') === true });
+        const files = optBool(body, 'files') === true;
+        // clientShots : captures d'échec renvoyées au client (grasp run --out-dir), comme screenshot -o ; exige files.
+        const clientShots = optBool(body, 'clientShots') === true;
+        if (clientShots && !files) throw new GraspError(400, 'clientShots n\'est disponible qu\'avec files (la CLI grasp run écrit les captures sous --out-dir)');
+        const steps = compileScript(str(body, 'script'), { files });
         attachImports(steps, body.imports);
         const s = pickSession(req, url);
         // Client parti avant la fin (Ctrl-C, délai de l'agent) : plus aucune étape ne démarre, et le journal dit
@@ -891,8 +902,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         let notice: string | undefined;
         try {
           const own = new Set(steps.map((x) => x.rq));
-          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = notice !== undefined ? `${notice} ; ${n}` : n; }, own.has(rq)), optBool(body, 'continue') === true, ac.signal, {
-            report: optBool(body, 'report'),
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = notice !== undefined ? `${notice} ; ${n}` : n; }, own.has(rq), clientShots), optBool(body, 'continue') === true, ac.signal, {
+            report: optBool(body, 'report'), clientShots,
             takeNotice: () => { const n = notice; notice = undefined; return n; },
           });
         } finally { res.off('close', onClose); }

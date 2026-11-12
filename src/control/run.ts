@@ -26,8 +26,14 @@ export interface RunStep {
   error?: string;
   /** Réponse brute du bridge (--json). */
   result?: unknown;
-  /** Rapport de recette : capture prise juste après l'échec de l'étape. */
+  /** Rapport de recette, --shot-on-error : capture prise juste après l'échec de l'étape (chemin). */
   screenshot?: string;
+  /**
+   * Capture d'échec à écrire par le client sous --out-dir (`clientShots`) : nom relatif proposé et image en base64,
+   * retirés par la CLI une fois le fichier écrit (`screenshot` devient alors le chemin final). `inError` : demandée
+   * par --shot-on-error, dont le message d'erreur cite le chemin.
+   */
+  failShot?: { saveAs: string; data: string; inError: boolean };
   ms: number;
 }
 export interface RunResult { ok: boolean; total: number; executed: number; steps: RunStep[]; aborted?: boolean; report?: RunReport }
@@ -125,7 +131,7 @@ function compileLines(script: string): Array<{ src: ScriptLine; rq: StepRequest 
  * `opts.report` : rapport de recette (d'office avec `expect`) ; `opts.takeNotice` : note du control plane à joindre à
  * l'étape qui vient de s'exécuter (navigateur recyclé juste avant).
  */
-export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal, opts: { report?: boolean | undefined; takeNotice?: (() => string | undefined) | undefined } = {}): Promise<RunResult> {
+export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal, opts: { report?: boolean | undefined; takeNotice?: (() => string | undefined) | undefined; clientShots?: boolean | undefined } = {}): Promise<RunResult> {
   const out: RunStep[] = [];
   let failed = false;
   const wantReport = opts.report ?? steps.some((s) => s.rq.cmd === 'expect');
@@ -137,6 +143,8 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
     try { startSeq = Number((await exec({ cmd: 'console', method: 'POST', path: '/console', body: { limit: 1 } }) as { seq: number }).seq); } catch (e) { consoleOff = (e as Error).message; }
   }
   let shots = 0;
+  let clientShots = 0;
+  const rctx: RenderCtx = { storageSeen: new Set() };
   for (const [i, { src, rq }] of steps.entries()) {
     if (failed && !cont) break;
     if (signal?.aborted === true) return { ok: false, total: steps.length, executed: out.length, steps: out, aborted: true };
@@ -146,7 +154,7 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
       const result = await exec(rq);
       step.ok = true;
       step.result = result;
-      const r = render(rq.cmd, result);
+      const r = render(rq.cmd, result, rctx);
       if (r.output !== undefined && r.output !== '') step.output = r.output;
       if (r.detail !== undefined && r.detail !== '') step.detail = r.detail;
     } catch (e) {
@@ -163,10 +171,36 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
         if (net !== undefined && Array.isArray(net.entries) && net.entries.length > 0) step.output = [step.output, formatNetEntries(net.entries, net.boundary)].filter((x) => x !== undefined && x !== '').join('\n');
         if (typeof extra.screenshot === 'string') step.screenshot = extra.screenshot;
       }
-      // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
-      if (wantReport && step.screenshot === undefined && shots < MAX_REPORT_SHOTS) {
-        shots++;
-        try { step.screenshot = String((await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot?save=1' }) as { path: string }).path); } catch (se) { step.detail = `capture impossible : ${(se as Error).message}`; }
+      // --out-dir (clientShots) : capture d'échec (--shot-on-error, rapport) renvoyée au client, qui l'écrit sous
+      // --out-dir comme un screenshot -o ; le control plane n'a pas demandé la capture du bridge (voir execStep).
+      const onError = rq.body?.shotOnError === true;
+      if (opts.clientShots === true) {
+        if (step.screenshot === undefined && (onError || wantReport)) {
+          const room = onError ? clientShots < MAX_RUN_SHOT_FILES : shots < MAX_REPORT_SHOTS;
+          if (!room) step.detail = `capture omise : ${onError ? MAX_RUN_SHOT_FILES : MAX_REPORT_SHOTS} captures d'échec au plus par run`;
+          else {
+            if (!onError) shots++;
+            clientShots++;
+            const saveAs = `echec-etape-${step.n}.png`;
+            try {
+              const shot = await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot', saveAs }) as { data?: string };
+              if (typeof shot.data !== 'string') throw new Error('image absente de la réponse');
+              step.screenshot = saveAs;
+              step.failShot = { saveAs, data: shot.data, inError: onError };
+            } catch (se) {
+              step.detail = `capture impossible : ${(se as Error).message}`;
+              if (onError) step.error += ` (capture impossible : ${(se as Error).message})`;
+            }
+          }
+        }
+      } else if (wantReport && step.screenshot === undefined) {
+        // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
+        // Plafond atteint : même note qu'avec --out-dir, une capture manquante n'est jamais tue.
+        if (shots >= MAX_REPORT_SHOTS) step.detail = `capture omise : ${MAX_REPORT_SHOTS} captures d'échec au plus par run`;
+        else {
+          shots++;
+          try { step.screenshot = String((await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot?save=1' }) as { path: string }).path); } catch (se) { step.detail = `capture impossible : ${(se as Error).message}`; }
+        }
       }
     }
     // Note du control plane (navigateur recyclé avant l'étape) : en tête des notes de l'étape.
@@ -280,7 +314,10 @@ function losses(c: { since?: number | undefined; omitted?: number | undefined; d
 }
 
 /** Sortie utile d'une étape réussie, comme la commande isolée l'écrirait (sans les « OK »). */
-function render(cmd: string, result: unknown): { output?: string; detail?: string } {
+/** État d'un run partagé entre les étapes, pour le rendu : notes d'origine de storage déjà données. */
+interface RenderCtx { storageSeen: Set<string> }
+
+function render(cmd: string, result: unknown, ctx?: RenderCtx): { output?: string; detail?: string } {
   const j = (typeof result === 'object' && result !== null ? result : {}) as Record<string, unknown>;
   switch (cmd) {
     case 'snap': case 'find': case 'text': {
@@ -303,7 +340,13 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
         if (st.value === null) return { detail: `clé « ${st.key} » absente du ${st.area}Storage de ${st.origin}` };
         return { output: wrapTagged(st.value ?? '', (j as { boundary?: BoundaryTag }).boundary, 'stockage'), ...(st.truncated !== undefined ? { detail: `AVERTISSEMENT : valeur tronquée (${st.truncated} caractères)` } : {}) };
       }
-      return { detail: `${st.area}Storage de ${st.origin}${st.op === 'rm' && st.existed === false ? ` : clé « ${st.key} » déjà absente` : ''}` };
+      // Note de l'origine : une fois par origine et par stockage dans un run (ctx.storageSeen), pas à chaque set.
+      const where = `${st.area}Storage de ${st.origin}`;
+      const extra = st.op === 'rm' && st.existed === false ? `clé « ${st.key} » déjà absente` : (j as { pending?: boolean }).pending === true ? 'appliqué au premier document de cette origine dans l\'onglet' : undefined;
+      const first = ctx === undefined || !ctx.storageSeen.has(where);
+      ctx?.storageSeen.add(where);
+      if (first) return { detail: extra !== undefined ? `${where} : ${extra}` : where };
+      return extra !== undefined ? { detail: extra } : {};
     }
     case 'network': {
       const n = j as { entries?: NetEntry[]; seq?: number; omitted?: number; dropped?: number; boundary?: BoundaryTag };

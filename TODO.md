@@ -373,8 +373,10 @@ Suites de l'intégration :
   Relecture : `~/` développé par la CLI (pas de shell sur une ligne de run ; ni `~utilisateur` ni `$VAR`), corps de
   `POST /run` borné à 68 Mo et mesuré par la CLI avant l'envoi (refus clair, jamais un 413), état de plus de 4 Mo
   testé dans un run, chemin relatif de la commande isolée rendu absolu dans l'historique (testé).
-- [ ] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
-  Poser la valeur pour une origine avant le premier chargement, comme `state import`.
+- [x] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
+  Poser la valeur pour une origine avant le premier chargement, comme `state import`. — Fait : `storage get|set|rm
+  … --origin <url>` (CLI, `run`, outils MCP `run` et `storage`) : localStorage via l'onglet d'état (document vide servi par Grasp),
+  sessionStorage en attente du premier document ; allowlist, SSRF, allowCookies.
 - [x] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
   true`, ce qui pousse un agent à contourner le skill. Proposer plutôt les alternatives (`storage`, `expect`, `find`).
   → `EVAL_REFUSAL` (src/core/policy.ts), même texte en CLI, run, MCP : alternatives sans eval, `allowEval` présenté
@@ -384,15 +386,18 @@ Suites de l'intégration :
 - [ ] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
   `expect not-clipped <sél>`, ou boîtes englobantes en option de `snap`/`find` (une image alt="" n'est pas dans
   l'arbre a11y).
-- [ ] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
-  (« pas de meta viewport → largeur de mise en page 980 »).
-- [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
-  des étapes KO restent dans state/grasp/captures/.
+- [x] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
+  (« pas de meta viewport → largeur de mise en page 980 »). — Fait : note en `--mobile` quand la page n'a pas la
+  balise (CLI, run, MCP), aucune sinon ni sur about:blank.
+- [x] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
+  des étapes KO restent dans state/grasp/captures/. — Fait : avec `--out-dir`, `echec-etape-<n>.png` écrit par la
+  CLI (mêmes contrôles que `-o`), chemin final dans le rapport, le message et `--json` ; plafond annoncé par
+  `capture omise : …`, avec ou sans `--out-dir`.
 - [x] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
   → outils `storage` (get|set|rm, local|session) et `state_import` (JSON en argument), mêmes contrôles que la CLI ;
   `storage get` encadré par les frontières de contenu (source=stockage, testé côté MCP), `state` borné à 64 Mo.
-- [ ] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
-  une fois par origine suffit.
+- [x] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
+  une fois par origine suffit. — Fait : une fois par origine et par stockage dans un même run.
 - [x] **Doc `console --level error`** : dire qu'il inclut les erreurs réseau, et préciser si
   `expect no-console-errors` les compte.
   → oui pour les deux (réponses ≥ 400, net::ERR, CORS, bloquées par Grasp ; pas les annulations ni les traqueurs) :

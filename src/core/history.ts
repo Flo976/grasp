@@ -185,7 +185,7 @@ export function commandOf(method: string, pathWithQuery: string, body: Record<st
     }
     case 'POST /storage': {
       const op = str(b.op) ?? '';
-      return L('storage', [op, str(b.area) ?? '', str(b.key) ?? '', ...(op === 'set' ? [str(b.value) ?? ''] : [])], [], op === 'get' ? 'read' : 'action');
+      return L('storage', [op, str(b.area) ?? '', str(b.key) ?? '', ...(op === 'set' ? [str(b.value) ?? ''] : [])], str(b.origin) !== undefined ? [['origin', str(b.origin)!]] : [], op === 'get' ? 'read' : 'action');
     }
     // Onglets : les identifiants (t1, t2…) suivent l'ordre d'ouverture, le même au rejeu du même parcours.
     case 'GET /tabs': return L('tabs', []);

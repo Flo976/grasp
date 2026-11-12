@@ -115,8 +115,9 @@ limite la lecture à une zone.
   vérifier qu'un bouton a vraiment appelé l'API ; jamais d'en-têtes ni de corps ([détails](#journal-réseau)).
 - 💬 **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action ; défaut sûr (`confirm` et `prompt`
   refusés), tout dialogue rapporté ([détails](#dialogues-javascript---dialog)).
-- 🧑‍💻 **Session factice sans `eval`** : `grasp storage set local <clé> <valeur>` ou `state import`, en commande
-  isolée, sur une ligne de `grasp run` ou par les outils MCP `storage` et `state_import`
+- 🧑‍💻 **Session factice sans `eval`** : `grasp storage set local <clé> <valeur> [--origin <url>]` (même sur
+  `about:blank`, avant le premier chargement) ou `state import`, en commande isolée, sur une ligne de `grasp run`
+  ou par les outils MCP `storage` et `state_import`
   ([détails](#session-factice-sans-alloweval)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
 - 🚫 **Traqueurs bloqués** (liste de Peter Lowe, ~3 500 domaines) : pages plus légères, attente plus courte
@@ -682,7 +683,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `history [--since <seq>] [--limit N] [--clear]`, `history --as-run [--expect] [-o f]` | Commandes de la session (500 au plus, en mémoire) ; `--as-run` : script `grasp run` rejouable, refs traduites en sélecteurs durables, mots de passe masqués. Voir [Historique](#historique-et-rejeu--grasp-history). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
-| `storage get\|rm local\|session <clé>`, `storage set local\|session <clé> <valeur\|->` | Stockage Web de l'origine affichée, sans `eval`. Exige `allowCookies`. Voir [Session factice](#session-factice-sans-alloweval). |
+| `storage get\|rm local\|session <clé>`, `storage set local\|session <clé> <valeur\|->`, `[--origin <url>]` | Stockage Web de l'origine affichée (ou de `--origin`, même avant son premier chargement), sans `eval`. Exige `allowCookies`. Voir [Session factice](#session-factice-sans-alloweval). |
 | `tabs`, `tab <id> \| new [url] \| close [id]` | Onglets de la session : popups et `target=_blank` pilotables, `--follow` sur une action. Voir [Onglets et popups](#onglets-et-popups). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403 ; refus d'`eval` : alternatives sans eval, jamais la commande qui l'active). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 | `help [commande] [--json]`, `skill` | Aide : fiche d'une commande, description machine (`--json`), mode d'emploi pour un agent IA. Voir [Aide pour agents](#aide-pour-agents--grasp-skill-et-grasp-help---json). |
@@ -1150,6 +1151,15 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   pas) ; placée **avant le premier `nav`**, elle pose le localStorage sans requête au site et le sessionStorage au
   premier document de son origine. Via l'API HTTP sans `files`/`imports`, ou l'outil MCP `run`, la ligne est
   refusée (400) avec la voie à prendre : `POST /state/import {state}`, ou l'outil MCP `state_import`.
+- **Captures d'échec sous `--out-dir`** : avec un `--out-dir` explicite, les captures automatiques des étapes KO
+  (`--shot-on-error` et capture du [rapport de recette](#recette--expect-et-rapport-de-run)) suivent le même
+  chemin que `screenshot -o` : l'image revient au client, qui l'écrit sous `--out-dir` (`echec-etape-<n>.png`,
+  0600, mêmes contrôles de chemin ; `-2`, `-3`… si une capture nommée du run porte déjà ce nom), et le rapport
+  (`capture : <chemin final>`), le message de `--shot-on-error` et `--json` (`screenshot`) citent le chemin
+  écrit ; rien ne va dans `captures/` de l'état de Grasp. 20 captures `--shot-on-error` et 5 captures de rapport
+  au plus par run ; au-delà, chaque étape KO sans capture porte la note `capture omise : N captures d'échec au
+  plus par run` — avec ou sans `--out-dir` (testé). Écriture impossible : note de l'étape (`capture d'échec non écrite : …`), jamais en silence.
+  Sans `--out-dir`, inchangé : fichier 0600 dans l'état de Grasp, chemin cité.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
 - Chaque étape passe par la **même route** du bridge qu'en commande isolée : mêmes contrôles de politique
@@ -1309,12 +1319,22 @@ déjà l'export et l'import de l'[état](#état--export-et-import), mêmes donn�
    **Par MCP** : outil `state_import`, avec le JSON lui-même en argument `state` (pas un chemin : l'outil ne
    donne pas à l'agent MCP de lecture de fichiers).
 
-2. **`grasp storage`, page déjà ouverte sur l'origine** — utile au milieu d'un `grasp run` :
+2. **`grasp storage`, page déjà ouverte sur l'origine, ou `--origin` avant tout chargement** — utile dans un
+   `grasp run` :
 
    ```
    grasp storage set local|session <clé> <valeur|->     # - : valeur lue sur stdin (hors de ps et de l'historique)
    grasp storage get local|session <clé>               # valeur sur stdout ; clé absente → code 1
    grasp storage rm  local|session <clé>
+   grasp storage set local auth '{"jeton":"factice"}' --origin http://127.0.0.1:8080   # même sur about:blank
+   ```
+
+   ```bash
+   grasp run <<'FIN'
+   storage set local auth '{"jeton":"factice","role":"admin"}' --origin http://127.0.0.1:8080
+   nav http://127.0.0.1:8080/compte
+   expect text "Connecté"
+   FIN
    ```
 
    ```bash
@@ -1326,15 +1346,24 @@ déjà l'export et l'import de l'[état](#état--export-et-import), mêmes donn�
    FIN
    ```
 
-   Porte sur l'**origine affichée** seulement (http(s), dans l'allowlist ; sur `about:blank` : refus 409 qui dit
-   de naviguer d'abord). Code **fixe** de Grasp exécuté dans le monde isolé (même stockage que la page, invisible
+   Sans `--origin`, porte sur l'**origine affichée** (http(s), dans l'allowlist ; sur `about:blank` : refus 409
+   qui propose `--origin`). **`--origin <url>`** désigne une autre origine (le chemin de l'URL est ignoré), soumise
+   aux **mêmes contrôles qu'une navigation** : allowlist, protection SSRF (un nom qui résout en privé est refusé,
+   403), `allowCookies`. Le `localStorage` y est lu ou écrit comme par `state import` : dans un onglet d'arrière-plan
+   où Grasp sert lui-même un document vide de cette origine — **aucune requête** n'atteint le site, **aucun script**
+   de l'application ne s'exécute. Le `sessionStorage`, propre à l'onglet, ne peut être que **posé** (`set`) : il est
+   appliqué au premier document de cette origine dans l'onglet (les `set` successifs s'additionnent) ; `get`/`rm`
+   d'une origine non affichée → 409 qui le dit. Une origine égale à celle affichée revient au cas sans `--origin`.
+   Code **fixe** de Grasp exécuté dans le monde isolé (même stockage que la page, invisible
    pour ses scripts) ; clé et valeur n'y entrent que sérialisées en JSON — rien n'est évalué, d'où l'indépendance
    vis-à-vis d'`allowEval`. Clé de 1 à 1000 caractères ; `get` rend 4000 caractères au plus et annonce la
    troncature. **Choix de la clé de politique** : `allowCookies` plutôt qu'une clé dédiée, parce que ce sont
    exactement les données (jetons de session) qu'`allowCookies` expose déjà par `state export`/`import` ; une
    quatrième clé n'ajouterait aucune protection et une incohérence possible. L'API HTTP : `POST /storage`
-   `{op, area, key, value?}` ; outil MCP `storage` (`op` get|set|rm, `area` local|session, `key`, `value` avec
-   set), mêmes contrôles (allowCookies, origine affichée dans l'allowlist, code fixe) ; clé absente → `isError`.
+   `{op, area, key, value?, origin?}` ; outil MCP `storage` (`op` get|set|rm, `area` local|session, `key`, `value`
+   avec set, `origin` facultatif), mêmes contrôles (allowCookies, allowlist, SSRF avec `origin`, code fixe) ;
+   clé absente → `isError`. Dans un run, la note « localStorage de <origine> » n'est donnée qu'**une fois par
+   origine et par stockage** (pas à chaque `set`).
 
 ### Historique et rejeu : grasp history
 
@@ -1882,7 +1911,10 @@ Mise en page mobile
   vérifie le résultat, pas la commande. `--json` : `{ok, viewport, description, measured, detail?}`.
 - **Options** : `--mobile` = mode mobile de Chrome (la balise `<meta name="viewport">` est appliquée ; sans elle,
   la page se met en page sur 980 px CSS comme sur un téléphone — mesuré : `innerWidth` 980 en mode mobile sur une
-  page sans balise) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
+  page sans balise ; `grasp viewport` l'annonce alors par une note, `note: pas de <meta name=viewport> dans la
+  page : Chrome la met en page sur 980 px de large … — comportement normal en --mobile, pas un échec du viewport`,
+  en commande isolée, dans `run` et en MCP ; aucune note quand la page a la balise, ni sur `about:blank` d'une
+  session neuve, avant toute navigation — testé) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
   `Emulation.setTouchEmulationEnabled` (5 points de contact ; mesuré : `(pointer: coarse)` vrai, alors qu'un onglet
   headless répond `none` sans émulation). Les clics restent des événements souris CDP, vérifiés comme d'habitude
   (testé sous émulation tactile). Tailles de 50 à 10 000 px ; toute valeur invalide → 400.
@@ -2263,7 +2295,7 @@ POST /type   {target, text, delay?, …}        (toute action : engine? = native
 GET  /network?since=&limit=&failed=1&type=    POST /network {since?, limit?, failed?, type?}  → {entries[], seq, omitted, dropped}
 GET  /a11y?scope=&max=  → {url, title, total, counts, issues[], omitted, text, note}
 GET  /viewport  POST /viewport {size? | device?, dpr?, mobile?, touch?, mobileUa?} | {reset: true}
-POST /storage {op: get|set|rm, area: local|session, key, value?}   (allowCookies)
+POST /storage {op: get|set|rm, area: local|session, key, value?, origin?}   (allowCookies)
 POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)

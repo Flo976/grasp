@@ -81,6 +81,7 @@ interface ShotResult { saveAs: string; data?: string; path?: string }
 export function writeRunShots(r: RunResult, outDir: string): void {
   // Vérifié avant le run (checkRunOut) ; s'il a disparu depuis, chaque capture échoue ci-dessous, sans lever.
   try { mkdirSync(outDir, { recursive: true }); } catch { /* writeUnder le dira, étape par étape */ }
+  const written = new Set<string>();
   for (const st of r.steps) {
     const res = st.result as ShotResult | undefined;
     if (!st.ok || res === undefined || typeof res !== 'object' || typeof res.saveAs !== 'string' || typeof res.data !== 'string') continue;
@@ -88,6 +89,7 @@ export function writeRunShots(r: RunResult, outDir: string): void {
     delete res.data;
     try {
       const file = writeUnder(outDir, res.saveAs, data);
+      written.add(file);
       res.path = file;
       st.output = file;
     } catch (e) {
@@ -100,6 +102,7 @@ export function writeRunShots(r: RunResult, outDir: string): void {
       if (r.report !== undefined) r.report.ok = false;
     }
   }
+  writeFailShots(r, outDir, written);
 }
 
 /**
@@ -155,3 +158,34 @@ export function checkRunBody(body: Record<string, unknown>, max = RUN_MAX_BYTES)
   const n = Buffer.byteLength(JSON.stringify(body));
   if (n > max) throw new Error(`run trop gros : ${n} octets à envoyer (${max} au plus, script et fichiers de state import compris)`);
 }
+
+/**
+ * Captures d'échec (--shot-on-error, rapport) d'un run --out-dir : écrites sous --out-dir avec les mêmes contrôles
+ * que screenshot -o, sans écraser une capture nommée du même run ; le rapport et le message d'erreur citent le
+ * chemin final. Un échec d'écriture est signalé dans les notes de l'étape (déjà en échec), jamais en silence.
+ */
+function writeFailShots(r: RunResult, outDir: string, written: Set<string>): void {
+  for (const st of r.steps) {
+    const fs = st.failShot;
+    if (fs === undefined) continue;
+    delete st.failShot;
+    const rs = r.report?.steps.find((x) => x.n === st.n);
+    let rel = fs.saveAs;
+    for (let i = 2; written.has(resolve(realpathOr(outDir), rel)); i++) rel = fs.saveAs.replace(/\.png$/, `-${i}.png`);
+    try {
+      const file = writeUnder(outDir, rel, Buffer.from(fs.data, 'base64'));
+      written.add(file);
+      st.screenshot = file;
+      const err = fs.inError ? `${st.error ?? 'échec'} (capture : ${file})` : undefined;
+      if (err !== undefined) st.error = err;
+      if (rs !== undefined) { rs.screenshot = file; if (err !== undefined) rs.error = err; }
+    } catch (e) {
+      delete st.screenshot;
+      if (rs !== undefined) delete rs.screenshot;
+      const note = `capture d'échec non écrite : ${(e as Error).message}`;
+      st.detail = st.detail !== undefined ? `${st.detail} ; ${note}` : note;
+    }
+  }
+}
+
+const realpathOr = (p: string): string => { try { return realpathSync(p); } catch { return p; } };

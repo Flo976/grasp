@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { makeTestEnv, type TestEnv } from '../helpers/env.js';
@@ -165,6 +165,44 @@ screenshot --el h1 -o titre.jpg
   const api = await srv.api('POST', '/run', { script: 'screenshot -o x.png' }, { 'x-grasp-session': env.GRASP_SESSION! });
   assert.equal(api.status, 400);
   assert.match(api.json().error, /screenshot -o n'est disponible que depuis la CLI/);
+});
+
+test('run --out-dir : captures d\'échec (rapport, --shot-on-error) écrites par la CLI sous --out-dir, chemin final cité ; sans --out-dir, inchangé', async () => {
+  const outDir = join(t.root, 'echecs');
+  const capDir = srv.paths.capturesDir;
+  const before = existsSync(capDir) ? readdirSync(capDir).length : 0;
+  const esc = (p: string) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Étape 2 : capture nommée qui prend le nom proposé pour l'échec de l'étape 3 (jamais écrasée).
+  const script = `nav ${site.url}/
+screenshot -o echec-etape-3.png
+expect text "Texte introuvable" --timeout 0
+click '#nexistepas' --shot-on-error
+`;
+  const r = await runCli(env, ['run', '--continue', '--out-dir', outDir], script);
+  assert.equal(r.code, 1, `${r.stdout}\n${r.stderr}`);
+  const f3 = join(outDir, 'echec-etape-3-2.png');
+  const f4 = join(outDir, 'echec-etape-4.png');
+  assert.match(r.stdout, new RegExp(`^KO  \\[3\\] .*\\n {6}.*\\n {6}capture : ${esc(f3)}$`, 'm'), r.stdout);
+  assert.match(r.stdout, new RegExp(`^KO  \\[4\\] .*\\n {6}.*\\(capture : ${esc(f4)}\\)\\n {6}capture : ${esc(f4)}$`, 'm'), r.stdout);
+  assert.match(r.stdout, new RegExp(`\\[4\\] click '#nexistepas' --shot-on-error → ERROR: .*\\(capture : ${esc(f4)}\\)`));
+  for (const f of [f3, f4, join(outDir, 'echec-etape-3.png')]) {
+    assert.deepEqual([...readFileSync(f).subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], `PNG ${f}`);
+    assert.equal(statSync(f).mode & 0o777, 0o600);
+  }
+  assert.equal(existsSync(capDir) ? readdirSync(capDir).length : 0, before, 'rien dans le répertoire de captures de Grasp');
+  // --json : chemin final, jamais l'image en base64.
+  const j = await runCli(env, ['run', '--json', '--continue', '--out-dir', outDir], `click '#nexistepas' --shot-on-error\n`);
+  const res = JSON.parse(j.stdout) as { steps: Array<{ screenshot?: string; error?: string; failShot?: unknown }> };
+  assert.equal(res.steps[0]!.screenshot, join(outDir, 'echec-etape-1.png'));
+  assert.equal(res.steps[0]!.failShot, undefined);
+  assert.ok(j.stdout.length < 4000, `sortie bornée : ${j.stdout.length} octets`);
+  // API HTTP (ou MCP) : clientShots sans files → refus explicite, aucune étape exécutée.
+  const api = await srv.api('POST', '/run', { script: `click '#nexistepas' --shot-on-error`, clientShots: true }, { 'x-grasp-session': env.GRASP_SESSION! });
+  assert.equal(api.status, 400);
+  assert.match(api.json().error, /clientShots n'est disponible qu'avec files/);
+  // Sans --out-dir : capture dans l'état de Grasp, comme avant.
+  const sans = await runCli(env, ['run'], `expect text "Texte introuvable" --timeout 0\n`);
+  assert.match(sans.stdout, new RegExp(`capture : ${esc(capDir)}/grasp-\\S+\\.png$`, 'm'), sans.stdout);
 });
 
 test('run : --out-dir ou chemin de screenshot -o inutilisable → refus AVANT le run, aucune étape exécutée (pas de clic après une étape KO)', async () => {

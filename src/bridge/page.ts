@@ -856,8 +856,11 @@ export class PageController {
   private downloadDir = '';
   private engineCfg: { endpoint: string | undefined; module: string | undefined; idleMs: number; isLocal: boolean } = { endpoint: undefined, module: undefined, idleMs: PW_IDLE_MS, isLocal: false };
   private readonly listener = (e: CdpEvent): void => { void this.onEvent(e); };
-  /** sessionStorage importé, en attente du premier document de son origine dans l'onglet. */
-  private pendingSession: { origin: string; identifier: string } | undefined;
+  /**
+   * sessionStorage en attente du premier document de son origine dans l'onglet (state import, storage set session
+   * --origin), par origine : script du monde isolé et clés qu'il pose (fusionnées d'un set à l'autre).
+   */
+  private readonly pendingSession = new Map<string, { identifier: string; items: StateItem[] }>();
   /** Viewport émulé de la session (grasp viewport), réappliqué après un agrandissement de capture ; undefined = natif. */
   private vp: ViewportSpec | undefined;
   /** Un user agent mobile a été posé sur l'onglet (à retirer au reset). */
@@ -3698,6 +3701,7 @@ export class PageController {
     const stab = await this.waitStable();
     const out = await this.viewportInfo();
     const notes = [
+      ...(out.detail !== undefined ? [out.detail] : []),
       ...(!stab.stable ? [PageController.unstableNote(stab)] : []),
       ...(spec !== null && spec.mobileUa ? ['user agent mobile : effectif pour les requêtes suivantes ; la page déjà chargée a été servie avec l\'ancien (rechargez-la avec nav)'] : []),
       ...(spec === null && prev !== undefined && prev.mobileUa ? ['user agent d\'origine rétabli pour les requêtes suivantes'] : []),
@@ -3705,14 +3709,22 @@ export class PageController {
     return notes.length > 0 ? { ...out, detail: notes.join(' ; ') } : out;
   }
 
-  /** Viewport courant : réglage de Grasp et ce que la page mesure (monde isolé : la page ne peut pas le fausser). */
+  /**
+   * Viewport courant : réglage de Grasp et ce que la page mesure (monde isolé : la page ne peut pas le fausser).
+   * En mode mobile, une page SANS <meta name=viewport> est mise en page sur 980 px par Chrome (comme tout navigateur
+   * mobile) : la largeur mesurée diffère alors du viewport demandé ; une note le dit — ce n'est pas un échec.
+   * Pas de note hors page http(s) (about:blank d'une session neuve) : rien n'y est à mettre en page.
+   */
   async viewportInfo(): Promise<ViewportResult> {
-    const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string } | undefined>(
-      `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent })`,
+    const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string; meta: boolean; web: boolean } | undefined>(
+      `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent, meta: document.querySelector('meta[name="viewport" i]') !== null, web: /^https?:$/.test(location.protocol) })`,
     ).catch(() => undefined);
+    // Page web seulement : sur about:blank (session neuve, avant toute navigation), la note serait du bruit.
+    const noMeta = this.vp !== undefined && this.vp.mobile && m !== undefined && !m.meta && m.web;
     return {
       ok: true, viewport: this.vp === undefined ? null : { ...this.vp },
       ...(this.vp !== undefined ? { description: describeViewport(this.vp) } : {}),
+      ...(noMeta ? { detail: `pas de <meta name=viewport> dans la page : Chrome la met en page sur 980 px de large (puis la réduit à l'écran), d'où « page : ${m!.width}x${m!.height} » au lieu de ${this.vp!.width}x${this.vp!.height} — comportement normal en --mobile, pas un échec du viewport` } : {}),
       ...(m !== undefined ? { measured: { width: m.width, height: m.height, dpr: m.dpr, touchPoints: m.touchPoints, pointer: m.pointer, mobileUa: /\bMobile\b/.test(m.ua) } } : {}),
     };
   }
@@ -3911,9 +3923,9 @@ export class PageController {
     if (o === null) return;
     this.seenOrigins.add(o);
     // sessionStorage importé : appliqué par le script au premier document de son origine, puis retiré.
-    const p = this.pendingSession;
-    if (main && p !== undefined && p.origin === o) {
-      this.pendingSession = undefined;
+    const p = this.pendingSession.get(o);
+    if (main && p !== undefined) {
+      this.pendingSession.delete(o);
       void this.s('Page.removeScriptToEvaluateOnNewDocument', { identifier: p.identifier }).catch(() => undefined);
     }
   }
@@ -4081,15 +4093,30 @@ export class PageController {
         await this.evalIsolated(WRITE_STORAGE_FN('sessionStorage', ss.items));
         session = 'applied';
       } else {
-        // Script du monde isolé (même stockage que la page, invisible pour ses scripts), retiré après usage.
-        if (this.pendingSession !== undefined) await this.s('Page.removeScriptToEvaluateOnNewDocument', { identifier: this.pendingSession.identifier }).catch(() => undefined);
-        const source = `if (location.origin === ${JSON.stringify(ss.origin)}) ${WRITE_STORAGE_FN('sessionStorage', ss.items)};`;
-        const { identifier } = await this.s<{ identifier: string }>('Page.addScriptToEvaluateOnNewDocument', { source, worldName: 'grasp-etat' });
-        this.pendingSession = { origin: ss.origin, identifier };
+        await this.setPendingSession(ss.origin, ss.items, true);
         session = 'pending';
       }
     }
     return { ok: true, cookies, origins, localStorageKeys: keys, sessionStorage: session, skipped };
+  }
+
+  /**
+   * sessionStorage d'une origine pas encore affichée : script du monde isolé (même stockage que la page, invisible
+   * pour ses scripts), exécuté au premier document de l'origine dans l'onglet puis retiré (noteOrigin). `replace` :
+   * l'état importé remplace l'attente de cette origine ; sinon (storage set) les clés sont fusionnées.
+   */
+  private async setPendingSession(origin: string, items: StateItem[], replace: boolean): Promise<void> {
+    const prev = this.pendingSession.get(origin);
+    let merged = items;
+    if (!replace && prev !== undefined) {
+      const m = new Map(prev.items.map((it) => [it.name, it.value] as const));
+      for (const it of items) m.set(it.name, it.value);
+      merged = [...m].map(([name, value]) => ({ name, value }));
+    }
+    if (prev !== undefined) await this.s('Page.removeScriptToEvaluateOnNewDocument', { identifier: prev.identifier }).catch(() => undefined);
+    const source = `if (location.origin === ${JSON.stringify(origin)}) ${WRITE_STORAGE_FN('sessionStorage', merged)};`;
+    const { identifier } = await this.s<{ identifier: string }>('Page.addScriptToEvaluateOnNewDocument', { source, worldName: 'grasp-etat' });
+    this.pendingSession.set(origin, { identifier, items: merged });
   }
 
   /**
@@ -4098,20 +4125,42 @@ export class PageController {
    * Code FIXE dans le monde isolé (même stockage que la page, invisible pour ses scripts) : la clé et la valeur n'y
    * entrent que sérialisées en JSON — aucune évaluation arbitraire, d'où l'indépendance vis-à-vis d'allowEval.
    * get : valeur bornée à STORAGE_GET_MAX caractères, troncature annoncée.
+   *
+   * `origin` (--origin) : une AUTRE origine que celle affichée — y compris sur about:blank, avant tout chargement —,
+   * soumise à l'allowlist et à la protection SSRF comme une navigation. localStorage : ouvert dans l'onglet d'état
+   * (document vide servi par Grasp, aucune requête vers le site, aucun script du site exécuté), comme state import.
+   * sessionStorage (propre à l'onglet) : set seulement, appliqué au premier document de cette origine dans l'onglet.
    */
-  async storage(op: string, area: string, key: string, value?: string): Promise<{ ok: true; op: 'get' | 'set' | 'rm'; origin: string; area: 'local' | 'session'; key: string; value?: string | null; truncated?: number; existed?: boolean }> {
+  async storage(op: string, area: string, key: string, value?: string, originArg?: string): Promise<{ ok: true; op: 'get' | 'set' | 'rm'; origin: string; area: 'local' | 'session'; key: string; value?: string | null; truncated?: number; existed?: boolean; pending?: true }> {
     this.stateAllowed();
     if (op !== 'get' && op !== 'set' && op !== 'rm') throw badRequest(`opération inconnue « ${op} » (get, set, rm)`);
     if (area !== 'local' && area !== 'session') throw badRequest(`stockage inconnu « ${area} » (local ou session)`);
     if (key === '' || key.length > 1000) throw badRequest('clé attendue (1 à 1000 caractères)');
     if (op === 'set' && value === undefined) throw badRequest('storage set : valeur attendue');
-    const origin = normalizeOrigin((await this.location()).url);
-    if (origin === null) throw conflict('la page affichée n\'a pas d\'origine http(s) (about:blank ?) : naviguez d\'abord vers le site, puis posez la valeur (le stockage est celui de l\'origine affichée)');
+    const here = normalizeOrigin((await this.location()).url);
+    let origin = here;
+    if (originArg !== undefined) {
+      origin = normalizeOrigin(originArg);
+      if (origin === null) throw badRequest(`--origin : origine http(s) attendue (ex. https://app.exemple.com), reçu « ${originArg} »`);
+      if (!checkUrl(this.policy.allowedDomains, origin).allowed) throw forbidden(`origine hors allowlist : ${origin} (allowedDomains)`);
+      const v = await checkNavigation(this.ssrfCtx, `${origin}/`, this.dns);
+      if (!v.allowed) throw forbidden(`--origin ${origin} refusée : ${v.reason}`);
+    }
+    if (origin === null) throw conflict('la page affichée n\'a pas d\'origine http(s) (about:blank ?) : naviguez d\'abord vers le site, ou désignez l\'origine avec --origin <url> (valeur posée avant le premier chargement)');
     if (!checkUrl(this.policy.allowedDomains, origin).allowed) throw forbidden(`origine hors allowlist : ${origin}`);
     const s = area === 'local' ? 'localStorage' : 'sessionStorage';
     const args = JSON.stringify({ op, key, value: value ?? null });
-    const r = await this.evalIsolated<{ value: string | null; existed: boolean }>(`((a) => { const s = ${s}; const old = s.getItem(a.key); if (a.op === 'set') s.setItem(a.key, a.value); else if (a.op === 'rm') s.removeItem(a.key); return { value: old, existed: old !== null }; })(${args})`);
+    const fn = `((a) => { const s = ${s}; const old = s.getItem(a.key); if (a.op === 'set') s.setItem(a.key, a.value); else if (a.op === 'rm') s.removeItem(a.key); return { value: old, existed: old !== null }; })(${args})`;
     const base = { ok: true as const, op: op as 'get' | 'set' | 'rm', origin, area: area as 'local' | 'session', key };
+    let r: { value: string | null; existed: boolean };
+    if (origin === here) r = await this.evalIsolated<{ value: string | null; existed: boolean }>(fn);
+    else if (area === 'local') {
+      try { r = await this.withScratch((sid) => this.inOrigin<{ value: string | null; existed: boolean }>(sid, origin, fn)); } catch (e) { throw new GraspError(502, `localStorage de ${origin} : ${(e as Error).message}`); }
+    } else {
+      if (op !== 'set') throw conflict(`sessionStorage de ${origin} : propre à l'onglet, lisible seulement une fois l'origine affichée (avec --origin, seul storage set l'est : valeur appliquée au premier document de cette origine)`);
+      await this.setPendingSession(origin, [{ name: key, value: value! }], false);
+      return { ...base, pending: true };
+    }
     if (op !== 'get') return { ...base, existed: r.existed };
     if (r.value !== null && r.value.length > STORAGE_GET_MAX) return { ...base, value: r.value.slice(0, STORAGE_GET_MAX), truncated: r.value.length };
     return { ...base, value: r.value };

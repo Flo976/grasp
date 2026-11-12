@@ -81,3 +81,40 @@ test('CLI : session create --viewport, viewport (lecture, réglage, reset), lign
     assert.match((await ok(['text'])).stdout, /Largeur 360/);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
 });
+
+test('viewport --mobile : note explicite quand la page n\'a pas de <meta name=viewport> (mise en page sur 980 px), aucune sinon', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  const paths = resolvePaths(t.env, t.env.HOME!);
+  mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.configFile, JSON.stringify({ allowedDomains: ['127.0.0.1'] }), { mode: 0o600 });
+  const srv = await startServer(t.env);
+  try {
+    const id = (await runCli(t.env, ['session', 'create', '--viewport', '360x800', '--mobile'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    const ok = async (args: string[], input?: string) => { const r = await runCli(env, args, input); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stderr}`); return r; };
+
+    // Session neuve, about:blank : pas de note meta viewport (rien n'est encore chargé).
+    const vierge = await ok(['viewport']);
+    assert.doesNotMatch(vierge.stderr, /meta name=viewport/, vierge.stderr);
+    assert.equal(JSON.parse((await ok(['viewport', '--json'])).stdout).detail, undefined);
+
+    // Page avec <meta name=viewport> : largeur mesurée = viewport, aucune note.
+    await ok(['nav', `${site.url}/viewport`]);
+    const avec = await ok(['viewport']);
+    assert.match(avec.stdout, /— page : 360x800/);
+    assert.doesNotMatch(avec.stderr, /meta name=viewport/);
+    assert.equal(JSON.parse((await ok(['viewport', '--json'])).stdout).detail, undefined);
+
+    // Page sans meta (« / ») : Chrome la met en page sur 980 px ; la note le dit, la mesure reste affichée.
+    await ok(['nav', `${site.url}/`]);
+    const sans = await ok(['viewport']);
+    assert.match(sans.stdout, /— page : 98\dx\d+/);
+    assert.match(sans.stderr, /note: pas de <meta name=viewport> dans la page : Chrome la met en page sur 980 px .*comportement normal en --mobile/);
+    // Même note dans run (lecture et réglage) ; aucune quand le mode mobile est retiré.
+    const run = await ok(['run'], 'viewport\nviewport 360x800 --mobile\nviewport 360x800\n');
+    assert.match(run.stderr, /\[1\] note: pas de <meta name=viewport>/);
+    assert.match(run.stderr, /\[2\] note: pas de <meta name=viewport>/);
+    assert.doesNotMatch(run.stderr, /\[3\] note: pas de <meta/);
+  } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup(); }
+});

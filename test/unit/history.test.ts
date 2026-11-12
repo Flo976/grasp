@@ -65,6 +65,8 @@ test('history : la ligne reconstruite depuis la requête redonne exactement la m
     'storage get local auth',
     "storage set session panier '{\"n\":3}'",
     'storage rm local auth',
+    'storage set local theme sombre --origin http://127.0.0.1:8080',
+    'storage get session k --origin https://app.exemple.com',
     'tabs',
     'tab t2',
     'tab new',
