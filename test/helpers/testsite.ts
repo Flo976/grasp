@@ -298,6 +298,29 @@ export const DIALOGUE_PAGE = `<!doctype html><html lang="fr"><head><meta charset
 <button id="demander" onclick="document.getElementById('rep').textContent = 'Réponse : ' + confirm('Supprimer ?')">Demander</button><p id="rep">Réponse : -</p></body></html>`;
 
 /**
+ * Dialogues JavaScript pilotables (--dialog) : suppression confirmée par confirm(), renommage par prompt(),
+ * alert(), garde beforeunload armée par un clic (Chrome exige une activation de l'utilisateur), et un
+ * confirm() ouvert 1,5 s après le clic (hors de l'action).
+ */
+export const DIALOGUES_PAGE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Dialogues</title></head><body>
+<h1>Articles</h1>
+<ul id="liste">
+<li id="la">Article A <button id="sup-a" onclick="if (confirm('Supprimer « Article A » ?')) this.parentElement.remove()">Supprimer A</button></li>
+<li id="lb">Article B <button id="sup-b" onclick="if (confirm('Supprimer « Article B » ?')) this.parentElement.remove()">Supprimer B</button></li>
+</ul>
+<button id="renommer" onclick="const n = prompt('Nouveau nom ?', 'Sans titre'); document.getElementById('nom').textContent = 'Nom : ' + (n === null ? '(annulé)' : n)">Renommer</button>
+<p id="nom">Nom : -</p>
+<button id="info" onclick="alert('Enregistré'); document.getElementById('etat').textContent = 'Alerte vue'">Info</button>
+<p id="etat">-</p>
+<button id="modifier" onclick="window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; }; document.getElementById('garde').textContent = 'Modifications non enregistrées'">Modifier</button>
+<p id="garde">-</p>
+<button id="plus-tard" onclick="setTimeout(() => { document.getElementById('tard').textContent = 'Réponse tardive : ' + confirm('Plus tard ?'); }, 1500)">Plus tard</button>
+<p id="tard">-</p>
+<a href="/dialogues-fin">Quitter</a>
+</body></html>`;
+const DIALOGUES_FIN_PAGE = '<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Fin</title></head><body><h1>Page quittée</h1></body></html>';
+
+/**
  * Erreurs de formulaire, toutes les variantes de balisage, dans un tiroir sans <form> ni bouton submit
  * (comme Malt). « Enregistrer » valide et n'enregistre rien tant qu'un champ est invalide.
  * - Code postal : message relié par aria-describedby (avec un texte d'aide) + aria-invalid ;
@@ -888,6 +911,8 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/pw-editeur') { res.end(PW_EDITEUR_PAGE); return; }
     if (u.pathname === '/pw-texte') { res.end(PW_TEXTE_PAGE); return; }
     if (u.pathname === '/dialogue') { res.end(DIALOGUE_PAGE); return; }
+    if (u.pathname === '/dialogues') { res.end(DIALOGUES_PAGE); return; }
+    if (u.pathname === '/dialogues-fin') { res.end(DIALOGUES_FIN_PAGE); return; }
     if (u.pathname === '/erreurs') { res.end(ERREURS_PAGE); return; }
     if (u.pathname === '/cases') { res.end(CASES_PAGE); return; }
     if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }

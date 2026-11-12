@@ -381,7 +381,7 @@ test('dialogues : Playwright connecté ne ferme pas ceux des autres onglets (mod
     await f.page.navigate(`${site.url}/dialogue`);
     const d = await f.page.click('#demander', pw);
     assert.equal(f.page.playwrightConnected, true);
-    assert.match(d.detail ?? '', /dialogue fermé — confirm: Supprimer \?/);
+    assert.match(d.detail ?? '', /dialogue confirm « Supprimer \? » → refusé/);
     assert.equal(await f.page.text(undefined, '#rep'), 'Réponse : false');
     const c = await CdpClient.connect(f.chrome.wsUrl);
     try {

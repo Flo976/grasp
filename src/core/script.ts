@@ -11,7 +11,7 @@ export class ScriptError extends Error {}
 
 export interface Args { cmd: string; pos: string[]; flags: Map<string, string | true> }
 
-export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir', 'viewport', 'device', 'dpr']);
+export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port', 'use-when', 'profile-directory', 'el', 'format', 'quality', 'max-width', 'level', 'since', 'limit', 'scope', 'text', 'sel', 'timeout', 'engine', 'delay', 'name-max', 'proxy', 'http-auth', 'origin', 'ignore', 'listen', 'out-dir', 'viewport', 'device', 'dpr', 'dialog']);
 // back / forward / reload / scroll : --by N (px), --to top|bottom, --max-steps N.
 for (const f of ['by', 'to', 'max-steps']) VALUE_FLAGS.add(f);
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
@@ -137,8 +137,14 @@ function actionBody(a: Args, extra: Record<string, unknown>): Record<string, unk
     // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
     ...(max !== undefined ? { max } : {}), ...(scope !== undefined ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
-    ...engineOf(a),
+    ...engineOf(a), ...dialogOf(a),
   };
+}
+
+/** --dialog accept|dismiss|<texte> : réponse aux dialogues ouverts pendant l'action ; transmis tel quel, le bridge valide. */
+function dialogOf(a: Args): { dialog?: string } {
+  const d = value(a, 'dialog');
+  return d !== undefined ? { dialog: d } : {};
 }
 
 /** --engine native|playwright : transmis tel quel, le bridge valide. */
@@ -264,8 +270,8 @@ function viewportRequest(a: Args): StepRequest {
 export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
-const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
 const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error'];
+const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine', 'dialog'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 export const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,

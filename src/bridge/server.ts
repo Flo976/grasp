@@ -37,7 +37,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog') };
       const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });

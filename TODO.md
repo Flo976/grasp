@@ -106,6 +106,16 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `viewport.test.ts` (media query vérifiée par `text`), `viewport-cli.test.ts`, `unit/viewport.test.ts`. Relecture : reset d'un
       viewport à la taille de l'écran réel sans attente de 2 s ; `viewport` annoncé dans l'outil MCP `run`.
       Reste : test réel sur chrome.exe ; outil MCP dédié (aujourd'hui par `run`) ; UA Safari pour les appareils iOS.
+## Pilotage
+
+- [x] **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action (CLI, API, `grasp run`, MCP) ;
+      défaut sûr inchangé (`confirm`/`prompt` refusés, `alert` fermé, `beforeunload` accepté). Fait (branche
+      `feat/dialogues`, `src/core/dialog.ts`) : tout dialogue vu est rapporté (note, `dialogs`, en tête du
+      `--snap-diff`), y compris hors action (à l'action suivante) et en cas d'échec. Pas d'option de session
+      (choix : une réponse positive se décide par action). Relecture : un texte ne confirme plus un `confirm`
+      (seul `accept` le fait ; `cancel`, `Dismiss`… → refus), valeur en `--…` refusée (400).
+      Dialogue ouvert pendant le `--snap-diff` d'après ou `post` : rapporté par l'action (relevé en dernier).
+      Reste : dialogues d'une iframe hors processus non testés.
 
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 

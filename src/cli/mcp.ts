@@ -191,8 +191,9 @@ const ACTION_PROPS: Record<string, Prop> = {
   console: B('Joint les entrées console produites pendant l\'action (200 au plus).'),
   shotOnError: B('En cas d\'échec, capture du viewport ; son chemin est ajouté au message d\'erreur.'),
   engine: S('Moteur de l\'action (défaut native ; playwright = moteur de repli, playwright-core requis).', { enum: ['native', 'playwright'] }),
+  dialog: S('Réponse aux dialogues JS ouverts pendant l\'action : accept, dismiss, ou le texte d\'un prompt (accepté avec ce texte ; un texte ne confirme jamais un confirm, seul accept le fait). Sans : alert fermé, beforeunload accepté, confirm/prompt REFUSÉS. Le dialogue vu est toujours rapporté.'),
 };
-const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, shotOnError: ACTION_PROPS.shotOnError! };
+const NAV_PROPS: Record<string, Prop> = { snapDiff: ACTION_PROPS.snapDiff!, max: ACTION_PROPS.max!, scope: ACTION_PROPS.scope!, console: ACTION_PROPS.console!, shotOnError: ACTION_PROPS.shotOnError!, dialog: ACTION_PROPS.dialog! };
 
 /** Nom d'argument MCP (camelCase) → option de la CLI. */
 const FLAG: Record<string, string> = {
