@@ -22,8 +22,13 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       → fait (`src/core/ssrf.ts`, clé `allowPrivateNetwork`, README « Protection SSRF ») : littéraux inscrits
       permis, noms résolus en privé refusés (pré-contrôle + garde `Fetch`), rebinding rattrapé après coup par
       `remoteIPAddress`. Reste : sous-ressources (`fetch()`, images) non couvertes, comme pour l'allowlist.
-- [ ] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
-      Seulement si on vise du volume.
+- [x] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
+      Seulement si on vise du volume. *Fait (branche `feat/recyclage-navigateurs`)* : le parallélisme existait
+      déjà (une session = un bridge = un Chrome, mesuré jusqu'à 20 sessions, ≈ 230 Mo chacune) et est désormais
+      testé ; `browserMaxRssMb` (PSS du groupe Chrome ; octets privés de chrome.exe) et `browserMaxAgeMin`,
+      désactivés par défaut, relancent le navigateur entre deux commandes (même session, même profil, cookies de
+      session reportés, page rechargée, note `navigateur recyclé : …`) ; `maxSessions` → 503. Voir README
+      « Sessions parallèles et recyclage ».
 - [ ] **Image Docker** : Chrome + Grasp, distroless, non-root.
 - [ ] **Évaluer Obscura comme moteur léger** derrière Grasp (il parle CDP et implémente
       `Accessibility.getFullAXTree`) : mesurer la couverture CDP réellement utilisée par le bridge.

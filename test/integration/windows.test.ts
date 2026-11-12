@@ -151,3 +151,45 @@ text --scope 'frame=#editeur >> #fichier'
     }
   }
 });
+
+test('windows (réel) : recyclage mémoire de chrome.exe (mesure PowerShell en arrière-plan), même session, aucun orphelin', { skip, timeout: 240_000 }, async () => {
+  const local = await windowsLocalAppData();
+  const root = join(local, `grasp-test-${randomBytes(3).toString('hex')}`);
+  const winRoot = await toWindowsPath(root);
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  const paths = resolvePaths(t.env, t.env.HOME);
+  mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.configFile, JSON.stringify({ chromePath: EXE, headless: true, allowedDomains: ['127.0.0.1'], windowsProfilesDir: root, browserMaxRssMb: 1 }), { mode: 0o600 });
+  const srv = await startServer(t.env);
+  try {
+    assert.match(srv.stderr(), /recyclage des navigateurs au-delà de 1 Mo \(octets privés de chrome\.exe, mesurés toutes les 30 s\)/);
+    const id = (await runCli(t.env, ['session', 'create', '--profile', 'win'])).stdout.trim();
+    const env = { ...t.env, GRASP_SESSION: id };
+    // 1re commande : aucune mesure encore (PowerShell part en arrière-plan), donc pas de relance.
+    const first = await runCli(env, ['nav', `${site.url}/submit?nom=Win`]);
+    assert.equal(first.code, 0, first.stderr);
+    assert.doesNotMatch(first.stderr, /recyclé/);
+    const before = (await srv.api('GET', '/sessions')).json()[0];
+    let rec = '';
+    for (let i = 0; i < 30 && rec === ''; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const r = await runCli(env, ['text']);
+      if (/navigateur recyclé/.test(r.stderr)) { rec = r.stderr; assert.match(r.stdout, /Nom : Win/); }
+    }
+    assert.match(rec, /^note: navigateur recyclé : \d+ Mo > 1 Mo ; page rechargée sur http:\/\/127\.0\.0\.1:\d+\/submit\?nom=Win$/m);
+    const after = (await srv.api('GET', '/sessions')).json()[0];
+    assert.deepEqual([after.id, after.profile, after.recycles], [id, 'win', 1]);
+    assert.notEqual(after.chromePid, before.chromePid);
+    srv.proc.kill('SIGTERM');
+    assert.equal(await waitExit(srv.proc, 60_000), 0, srv.stderr());
+    assert.equal(await ours(winRoot), 0, 'aucun chrome.exe lancé par Grasp ne survit');
+  } finally {
+    srv.proc.kill('SIGKILL');
+    await site.close();
+    t.cleanup();
+    for (let i = 0; i < 10 && existsSync(root); i++) {
+      try { rmSync(root, { recursive: true, force: true }); } catch { await new Promise((r) => setTimeout(r, 1000)); }
+    }
+  }
+});

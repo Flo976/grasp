@@ -22,6 +22,15 @@ import { compileScript, runScript, type RunResult } from './run.js';
 import type { StepRequest } from '../core/script.js';
 import { isGraspServer, isProcessAlive } from './procutil.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
+import { linuxGroupMemory, windowsChromeMemory, type MemoryReading } from '../browser/memory.js';
+
+/** chrome.exe : une mesure PowerShell (~1 s) au plus toutes les 30 s, en arrière-plan. */
+const WINDOWS_MEMORY_EVERY_MS = 30_000;
+
+/** Durée lisible d'un âge ou d'un seuil en minutes (secondes en dessous d'une minute). */
+function minutes(m: number): string {
+  return m >= 1 ? `${Number.isInteger(m) ? m : m.toFixed(1)} min` : `${Math.round(m * 60)} s`;
+}
 
 export interface Session {
   id: string;
@@ -36,6 +45,20 @@ export interface Session {
   switchDone?: Promise<void> | undefined;
   /** Session fermée (retirée de la table) : une bascule en vol doit abandonner. */
   closed?: Promise<void> | undefined;
+  /** Démarrage du navigateur courant (ms epoch) : relancé par une bascule ou un recyclage. */
+  browserStartedAt: number;
+  /** Nombre de recyclages du navigateur de cette session. */
+  recycles: number;
+  /** Commandes en cours sur la session (le recyclage n'a lieu qu'à 0 : entre deux commandes, jamais pendant). */
+  inflight: number;
+  /** Recyclage en cours : les commandes arrivées entre-temps l'attendent (pas de 409). */
+  recycling?: Promise<void> | undefined;
+  /** Note à joindre à la prochaine réponse (« navigateur recyclé : … »). */
+  notice?: string | undefined;
+  /** Dernière mesure mémoire du navigateur courant. */
+  memory?: (MemoryReading & { at: number }) | undefined;
+  /** Mesure chrome.exe en cours (PowerShell, en arrière-plan). */
+  memoryProbe?: Promise<void> | undefined;
   /** Options d'accès distant de la session, conservées en mémoire pour relancer le bridge (bascule de profil). */
   options: SessionOptions;
 }
@@ -208,6 +231,18 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   const sessions = new Map<string, Session>();
   let closing: Promise<void> | undefined;
+  /** Créations en cours (comptées dans maxSessions : N créations simultanées ne dépassent pas le plafond). */
+  let creating = 0;
+  // Recyclage : seulement pour un navigateur lancé par Grasp (en mode attach, il n'est pas à nous).
+  const recycleOn = config.cdpUrl === null && (config.browserMaxRssMb !== null || config.browserMaxAgeMin !== null);
+  if (config.cdpUrl !== null && (config.browserMaxRssMb !== null || config.browserMaxAgeMin !== null)) {
+    log('AVERTISSEMENT : mode attach : browserMaxRssMb / browserMaxAgeMin sans effet (Grasp ne relance pas un navigateur qu\'il n\'a pas lancé)');
+  }
+  if (recycleOn) {
+    const lim = [config.browserMaxRssMb !== null ? `${config.browserMaxRssMb} Mo (${browser?.kind === 'windows' ? 'octets privés de chrome.exe, mesurés toutes les 30 s' : 'PSS du groupe Chrome'})` : '', config.browserMaxAgeMin !== null ? minutes(config.browserMaxAgeMin) : ''].filter((x) => x !== '');
+    log(`recyclage des navigateurs au-delà de ${lim.join(' ou ')}, entre deux commandes`);
+  }
+  if (config.maxSessions !== null) log(`plafond : ${config.maxSessions} session(s) simultanée(s)`);
   const persistInstances = () => writePrivate(paths.instancesFile, JSON.stringify([...sessions.values()].map((s) => ({
     id: s.id, bridgePid: s.bridge.pid, chromePgid: s.bridge.chromePgid, userDataDir: s.userDataDir, ephemeral: s.ephemeral,
     ...(s.bridge.windowsUserDataDir !== undefined ? { windowsUserDataDir: s.bridge.windowsUserDataDir } : {}),
@@ -281,9 +316,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   async function createSession(profile: string | undefined, options: SessionOptions = { httpAuth: [] }): Promise<{ session: Session; profileCreated: boolean }> {
     const id = `s${randomBytes(6).toString('hex')}`;
+    if (config.maxSessions !== null && sessions.size + creating >= config.maxSessions) {
+      throw new GraspError(503, `plafond de ${config.maxSessions} session(s) atteint (${sessions.size} ouverte(s)${creating > 0 ? `, ${creating} en création` : ''}, maxSessions) : fermez-en une (\`grasp session close <id>\`) ou relevez maxSessions`);
+    }
     const p = profile !== undefined ? profileFor(profile, '--profile', `la session ${id} (en cours de création)`) : undefined;
+    creating++;
     try {
-      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false, options };
+      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false, options, browserStartedAt: Date.now(), recycles: 0, inflight: 0 };
       const bridge = await startBridge(base);
       if (closing !== undefined) {
         // Arrêt du serveur pendant le démarrage : la liste des sessions à fermer est déjà prise.
@@ -291,7 +330,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         if (base.ephemeral) removeDir(base.userDataDir);
         throw new GraspError(503, 'serveur en cours d\'arrêt');
       }
-      const s: Session = { ...base, bridge };
+      const s: Session = { ...base, browserStartedAt: Date.now(), bridge };
       sessions.set(id, s);
       persistInstances();
       if (profile !== undefined) store.touch(profile);
@@ -303,7 +342,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       ];
       log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${extra.map((x) => `, ${x}`).join('')})`);
       return { session: s, profileCreated: p?.created === true };
-    } finally { p?.release(); }
+    } finally { creating--; p?.release(); }
   }
 
   /**
@@ -361,6 +400,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       }
       if (s.closed !== undefined) await abandon();
       if (prev.ephemeral) removeDir(prev.userDataDir);
+      s.browserStartedAt = Date.now();
+      s.memory = undefined;
       store.touch(name);
       persistInstances();
       log(`session ${s.id} : profil ${prev.profile ?? '(éphémère)'} → ${name} (bridge ${s.bridge.pid}, Chrome ${s.bridge.chromePid})`);
@@ -372,6 +413,130 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       done();
     }
   }
+
+  /**
+   * Mémoire du navigateur courant. Linux : mesurée à chaque appel (/proc, quelques ms). chrome.exe : dernière mesure
+   * connue, rafraîchie en arrière-plan au plus toutes les 30 s (PowerShell coûte ~1 s) — le dépassement est donc
+   * vu à la commande qui suit la mesure.
+   */
+  function memoryOf(s: Session): MemoryReading | undefined {
+    const winDir = s.bridge.windowsUserDataDir;
+    if (winDir === undefined) {
+      const r = linuxGroupMemory(s.bridge.chromePgid);
+      s.memory = r !== null ? { ...r, at: Date.now() } : undefined;
+      return s.memory;
+    }
+    if (s.memoryProbe === undefined && (s.memory === undefined || Date.now() - s.memory.at >= WINDOWS_MEMORY_EVERY_MS)) {
+      const bridge = s.bridge;
+      s.memoryProbe = windowsChromeMemory(winDir)
+        .then((r) => { if (s.bridge === bridge) s.memory = r !== null ? { ...r, at: Date.now() } : undefined; })
+        .catch((e: Error) => log(`AVERTISSEMENT : session ${s.id} : mesure mémoire de chrome.exe impossible : ${e.message}`))
+        .finally(() => { s.memoryProbe = undefined; });
+    }
+    return s.memory;
+  }
+
+  /** Raison de recycler le navigateur de la session, ou undefined. Synchrone : rien ne s'intercale entre la décision et le verrou. */
+  function recycleReason(s: Session): string | undefined {
+    if (config.browserMaxAgeMin !== null) {
+      const age = (Date.now() - s.browserStartedAt) / 60_000;
+      if (age > config.browserMaxAgeMin) return `âge ${minutes(age)} > ${minutes(config.browserMaxAgeMin)}`;
+    }
+    if (config.browserMaxRssMb !== null) {
+      const m = memoryOf(s);
+      if (m !== undefined && m.mb > config.browserMaxRssMb) return `${m.mb} Mo > ${config.browserMaxRssMb} Mo`;
+    }
+    return undefined;
+  }
+
+  /**
+   * Recyclage : même mécanique que la bascule de profil (arrêt propre par Browser.close, cookies écrits, relance du
+   * bridge sur le MÊME --user-data-dir, même identifiant de session), puis report des cookies de session (perdus
+   * sinon) et rechargement de l'URL courante. Échec de la relance : session fermée, 502 explicite.
+   */
+  async function recycle(s: Session, why: string): Promise<void> {
+    const old = s.bridge;
+    const sock = { transport: 'unix' as const, socketPath: old.socketPath };
+    let done!: () => void;
+    s.switchDone = new Promise<void>((r) => { done = r; });
+    s.switching = true;
+    try {
+      let url: string | undefined;
+      let cookies: unknown[] = [];
+      try { const r = await request(sock, 'GET', '/location', undefined, {}, 10_000); if (r.status === 200) url = String(r.json().url); } catch { /* bridge muet : rien à recharger */ }
+      try { const r = await request(sock, 'GET', '/internal/session-cookies', undefined, {}, 10_000); if (r.status === 200) cookies = r.json().cookies as unknown[]; } catch { /* idem */ }
+      const code = await old.stop();
+      if (code === null) log(`ERREUR : session ${s.id} : le bridge n'a pas répondu à SIGTERM, tué par SIGKILL avec son navigateur`);
+      const aborted = () => new GraspError(409, `session ${s.id} fermée pendant le recyclage de son navigateur`);
+      if (s.closed !== undefined) throw aborted();
+      try {
+        s.bridge = await startBridge(s);
+      } catch (e) {
+        if (s.closed !== undefined) throw aborted();
+        sessions.delete(s.id);
+        s.closed = Promise.resolve();
+        persistInstances();
+        if (s.ephemeral) removeDir(s.userDataDir);
+        log(`ERREUR : session ${s.id} : recyclage (${why}) : relance impossible, session fermée : ${(e as Error).message}`);
+        throw new GraspError(502, `navigateur à recycler (${why}) mais relance impossible : ${(e as Error).message} — session ${s.id} fermée`);
+      }
+      if (s.closed !== undefined) { await s.bridge.stop(); throw aborted(); }
+      s.browserStartedAt = Date.now();
+      s.recycles++;
+      s.memory = undefined;
+      persistInstances();
+      const nsock = { transport: 'unix' as const, socketPath: s.bridge.socketPath };
+      const parts = [`navigateur recyclé : ${why}`];
+      if (cookies.length > 0) {
+        try {
+          const r = await request(nsock, 'POST', '/internal/session-cookies', { cookies }, {}, 10_000);
+          if (r.status !== 200) throw new Error(String(r.json().error ?? r.status));
+          parts.push(`${cookies.length} cookie(s) de session reporté(s)`);
+        } catch (e) { parts.push(`cookies de session perdus (${(e as Error).message})`); }
+      }
+      if (url === undefined || url === 'about:blank' || url === '') parts.push('page vide, rien à recharger');
+      else {
+        try {
+          const r = await request(nsock, 'POST', '/navigate', { url }, {}, 60_000);
+          if (r.status !== 200) throw new Error(String(r.json().error ?? r.status));
+          parts.push(`page rechargée sur ${url}`);
+        } catch (e) { parts.push(`rechargement de ${url} impossible (${(e as Error).message}) : la page repart de about:blank`); }
+      }
+      s.notice = parts.join(' ; ');
+      const after = config.browserMaxRssMb !== null && s.bridge.windowsUserDataDir === undefined ? linuxGroupMemory(s.bridge.chromePgid) : null;
+      log(`session ${s.id} : ${s.notice} (bridge ${s.bridge.pid}, Chrome ${s.bridge.chromePid}${after !== null ? `, ${after.mb} Mo après relance` : ''})`);
+      if (after !== null && config.browserMaxRssMb !== null && after.mb > config.browserMaxRssMb) {
+        log(`AVERTISSEMENT : session ${s.id} : ${after.mb} Mo juste après la relance, déjà au-delà de browserMaxRssMb=${config.browserMaxRssMb} : le navigateur sera recyclé à chaque commande — relevez le seuil`);
+      }
+    } finally {
+      s.switching = false;
+      done();
+    }
+  }
+
+  /**
+   * Entrée d'une commande sur la session : attend un recyclage en cours, ou le déclenche si la session est au repos
+   * (aucune autre commande en vol) et qu'un seuil est dépassé. Rend la note à joindre à la réponse. `leave` obligatoire.
+   */
+  async function enter(s: Session): Promise<string | undefined> {
+    s.inflight++;
+    try {
+      if (s.recycling !== undefined) {
+        await s.recycling.catch(() => undefined);
+        if (s.closed !== undefined) throw new GraspError(502, `session ${s.id} fermée : le recyclage de son navigateur a échoué (journal du serveur)`);
+      } else if (recycleOn && s.inflight === 1 && !s.switching && s.closed === undefined) {
+        const why = recycleReason(s);
+        if (why !== undefined) {
+          s.recycling = recycle(s, why).finally(() => { s.recycling = undefined; });
+          await s.recycling;
+        }
+      }
+    } catch (e) { s.inflight--; throw e; }
+    const n = s.notice;
+    s.notice = undefined;
+    return n;
+  }
+  const leave = (s: Session) => { s.inflight--; };
 
   /** Idempotent. Attend une bascule en vol (elle abandonne), puis arrête le bridge ; le profil reste réservé jusque-là. */
   function closeSession(s: Session): Promise<void> {
@@ -439,15 +604,21 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
    * Une étape de `grasp run` : la même route du bridge qu'une commande isolée (mêmes contrôles de politique,
    * mêmes limites), ou la bascule de profil du control plane. Le bridge est relu à chaque étape (bascule).
    */
-  async function execStep(s: Session, rq: StepRequest): Promise<unknown> {
+  async function execStep(s: Session, rq: StepRequest, onNotice: (n: string) => void): Promise<unknown> {
     if (s.closed !== undefined) throw new GraspError(409, `session ${s.id} fermée pendant le script`);
     if (rq.path === 'profile') return switchProfile(s, String(rq.body?.name ?? ''));
     if (!SESSION_ROUTES.has(rq.path.split('?')[0]!)) throw new GraspError(400, `route ${rq.path} indisponible dans run`);
-    if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
+    // Entre deux étapes : un recyclage peut avoir lieu ici, jamais pendant une étape.
+    const notice = await enter(s);
     let r;
     try {
+      if (notice !== undefined) onNotice(notice);
+      if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
       r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, rq.body, {}, rq.timeoutMs);
-    } catch (e) { throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`); }
+    } catch (e) {
+      if (e instanceof GraspError) throw e;
+      throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
+    } finally { leave(s); }
     const isJson = String(r.headers['content-type'] ?? '').startsWith('application/json');
     if (r.status >= 400) {
       let msg = r.text();
@@ -492,6 +663,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         return sendJson(res, 200, [...sessions.values()].map((s) => ({
           id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir,
           proxyServer: s.options.proxyServer ?? null, httpAuth: maskCredentials(s.options.httpAuth),
+          browserStartedAt: new Date(s.browserStartedAt).toISOString(), recycles: s.recycles,
+          ...(s.memory !== undefined ? { memoryMb: s.memory.mb, memoryMetric: s.memory.metric } : {}),
         })));
       }
       if (route === 'POST /sessions') {
@@ -555,7 +728,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         const onClose = () => { if (!res.writableFinished) ac.abort(); };
         res.on('close', onClose);
         let r: RunResult;
-        try { r = await runScript(steps, (rq) => execStep(s, rq), optBool(body, 'continue') === true, ac.signal); } finally { res.off('close', onClose); }
+        let notice: string | undefined;
+        try {
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }), optBool(body, 'continue') === true, ac.signal, () => { const n = notice; notice = undefined; return n; });
+        } finally { res.off('close', onClose); }
         if (r.aborted === true) {
           const last = r.steps.at(-1);
           log(`AVERTISSEMENT : session ${s.id} : run interrompu : client déconnecté après ${r.executed} étape(s) exécutée(s)${last !== undefined ? ` (dernière : [${last.n}] ${last.text} → ${last.ok ? 'OK' : `ERROR: ${last.error ?? ''}`})` : ''} ; ${r.total - r.executed} étape(s) non exécutée(s)`);
@@ -565,8 +741,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       }
       if (SESSION_ROUTES.has(url.pathname)) {
         const s = pickSession(req, url);
-        if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
-        return await proxy(s, req, res, url);
+        const notice = await enter(s);
+        try {
+          // Note de recyclage : en-tête sur toute réponse (JSON, texte, binaire, erreur), affichée par la CLI sur stderr.
+          if (notice !== undefined) res.setHeader('x-grasp-notice', encodeURIComponent(notice));
+          if (s.switching) throw new GraspError(409, `session ${s.id} : bascule de profil en cours, réessayez`);
+          return await proxy(s, req, res, url);
+        } finally { leave(s); }
       }
       throw new GraspError(404, `route inconnue : ${route}`);
     } catch (e) { sendError(res, e); }

@@ -51,6 +51,9 @@ class Client {
       if (code === 'ENOENT' || code === 'ECONNREFUSED') throw new CliError('serveur injoignable — lancez `grasp serve` (ou `grasp daemon install`)');
       throw e;
     }
+    // Note du control plane sur cette commande (navigateur recyclé juste avant), succès comme échec.
+    const notice = r.headers['x-grasp-notice'];
+    if (typeof notice === 'string') hint(`note: ${decodeURIComponent(notice)}`);
     if (r.status >= 400) {
       let msg = r.text();
       let extra: Record<string, unknown> | undefined;
@@ -611,6 +614,9 @@ Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
                retiré ou remplacé → 409 avec les homonymes (jamais de clic sur l'un d'eux), sinon 404 avec les
                3 candidats les plus proches ; ref d'une page précédente → 404 ; text: introuvable : noms proches
 Session      --session <id> ou GRASP_SESSION ; facultatif s'il n'y a qu'une session
+             sessions parallèles : une session = un bridge = un Chrome ; maxSessions (défaut : pas de plafond) → 503
+             recyclage : config browserMaxRssMb / browserMaxAgeMin (désactivés par défaut) ; navigateur relancé
+               entre deux commandes, même session et profil, page rechargée (« note: navigateur recyclé : … »)
 Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur stderr ; --json`;
 
 const argv = process.argv.slice(2);

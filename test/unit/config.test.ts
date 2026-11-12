@@ -78,6 +78,9 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   proxyBypassList: { raw: '*.local,<-loopback>', value: ['*.local', '<-loopback>'] },
   hostResolverRules: { raw: 'MAP site.exemple.com 127.0.0.1:8443, EXCLUDE localhost', value: ['MAP site.exemple.com 127.0.0.1:8443', 'EXCLUDE localhost'] },
   ignoreCertErrorsFor: { raw: 'site.exemple.com', value: ['site.exemple.com'] },
+  browserMaxRssMb: { raw: '800', value: 800 },
+  browserMaxAgeMin: { raw: '0.5', value: 0.5 },
+  maxSessions: { raw: '4', value: 4 },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {
@@ -132,4 +135,25 @@ test('windowsProfilesDir : chemin /mnt/<lecteur>/… ou C:\\…, sinon refus', (
   assert.throws(() => parseConfigFile('{"windowsProfilesDir": "/home/u/p"}', 'c.json'), /windowsProfilesDir/);
   assert.throws(() => parseConfigFile('{"windowsProfilesDir": "relatif"}', 'c.json'), /windowsProfilesDir/);
   assert.deepEqual(parseConfigFile(JSON.stringify({ windowsProfilesDir: 'D:\\grasp\\profiles' }), 'c.json'), { windowsProfilesDir: 'D:\\grasp\\profiles' });
+});
+
+test('recyclage et plafond : désactivés par défaut (absent ≠ désactivé), « none » = null explicite, valeurs bornées', () => {
+  const d = resolveConfig({});
+  assert.deepEqual([d.browserMaxRssMb, d.browserMaxAgeMin, d.maxSessions], [null, null, null]);
+  // Un fichier partiel n'active ni ne désactive rien d'autre.
+  const partial = resolveConfig(parseConfigFile('{"browserMaxRssMb": 800}', 'c.json'));
+  assert.deepEqual([partial.browserMaxRssMb, partial.browserMaxAgeMin, partial.maxSessions, partial.allowConsole], [800, null, null, true]);
+  assert.deepEqual(parseConfigFile('{"browserMaxAgeMin": null, "maxSessions": null}', 'c.json'), { browserMaxAgeMin: null, maxSessions: null });
+  for (const bad of ['{"browserMaxRssMb": 0}', '{"browserMaxRssMb": 1.5}', '{"browserMaxRssMb": "800"}', '{"browserMaxAgeMin": 0}', '{"browserMaxAgeMin": -1}', '{"maxSessions": 0}']) {
+    assert.throws(() => parseConfigFile(bad, 'c.json'), /browserMax|maxSessions/, bad);
+  }
+  const t = makeTestEnv();
+  try {
+    const file = join(t.root, 'config.json');
+    assert.equal(setConfigKey(file, 'browserMaxRssMb', 'none'), null);
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { browserMaxRssMb: null });
+    assert.throws(() => setConfigKey(file, 'browserMaxAgeMin', '1e3'), /browserMaxAgeMin/);
+    assert.throws(() => setConfigKey(file, 'browserMaxAgeMin', '0'), /browserMaxAgeMin/);
+    assert.equal(setConfigKey(file, 'browserMaxAgeMin', '0.02'), 0.02);
+  } finally { t.cleanup(); }
 });

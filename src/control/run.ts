@@ -52,7 +52,7 @@ export function compileScript(script: string): Array<{ src: ScriptLine; rq: Step
  * appelant qui ne verra jamais la réponse ne doit pas laisser des clics partir à l'aveugle. L'étape en cours
  * va à son terme (une action CDP ne s'interrompt pas proprement) ; `aborted` le signale.
  */
-export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal): Promise<RunResult> {
+export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal, takeNotice?: () => string | undefined): Promise<RunResult> {
   const out: RunStep[] = [];
   let failed = false;
   for (const [i, { src, rq }] of steps.entries()) {
@@ -78,6 +78,9 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
         if (Array.isArray(extra.console) && extra.console.length > 0) step.output = (extra.console as ConsoleEntry[]).map(formatEntry).join('\n');
       }
     }
+    // Note du control plane (navigateur recyclé avant l'étape) : en tête des notes de l'étape.
+    const notice = takeNotice?.();
+    if (notice !== undefined) step.detail = step.detail !== undefined ? `${notice} ; ${step.detail}` : notice;
     step.ms = Date.now() - t0;
     out.push(step);
   }

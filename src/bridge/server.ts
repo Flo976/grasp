@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { GraspError } from '../core/errors.js';
 import { readJson, sendBuffer, sendError, sendJson, str, optStr, optBool, optInt, optCount, optFlag } from '../core/http.js';
 import { isLevel, type ConsoleLevel } from '../core/console.js';
-import type { PageController, ShotOptions } from './page.js';
+import type { PageController, SessionCookie, ShotOptions } from './page.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
 
@@ -66,6 +66,12 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           return sendJson(res, 200, await page.consoleQuery({ level: level(q.get('level')), since: optCount(q.get('since'), 'since'), limit: optInt(q.get('limit'), 'limit'), clear: optFlag(q.get('clear'), 'clear') }));
         case 'POST /console':
           return sendJson(res, 200, await page.consoleQuery({ level: level(body.level), since: optCount(body.since, 'since'), limit: optInt(body.limit, 'limit'), clear: optBool(body, 'clear') }));
+        // Recyclage : routes internes du control plane (absentes de SESSION_ROUTES, jamais atteignables par l'agent).
+        case 'GET /internal/session-cookies': return sendJson(res, 200, { cookies: await page.sessionCookies() });
+        case 'POST /internal/session-cookies': {
+          if (!Array.isArray(body.cookies)) throw new GraspError(400, 'champ « cookies » (tableau) requis');
+          return sendJson(res, 200, { restored: await page.restoreCookies(body.cookies as SessionCookie[]) });
+        }
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());

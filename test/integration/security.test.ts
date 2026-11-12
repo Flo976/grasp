@@ -163,6 +163,9 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   proxyBypassList: { raw: '*.local,<-loopback>', value: ['*.local', '<-loopback>'] },
   hostResolverRules: { raw: 'MAP site.exemple.com 127.0.0.1:8443, EXCLUDE localhost', value: ['MAP site.exemple.com 127.0.0.1:8443', 'EXCLUDE localhost'] },
   ignoreCertErrorsFor: { raw: 'site.exemple.com', value: ['site.exemple.com'] },
+  browserMaxRssMb: { raw: '800', value: 800 },
+  browserMaxAgeMin: { raw: '0.5', value: 0.5 },
+  maxSessions: { raw: '4', value: 4 },
 };
 
 test('régression #4 (CLI) — `config set` sur chaque clé publique : persiste (relecture du fichier) ou lève', async () => {

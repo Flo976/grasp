@@ -64,6 +64,15 @@ export interface ResolvedConfig {
   hostResolverRules: string[];
   /** Hôtes dont le certificat TLS n'est pas vérifié. Vide par défaut ; jamais `*`. */
   ignoreCertErrorsFor: string[];
+  /**
+   * Recyclage : mémoire du groupe de processus Chrome d'une session (PSS sous Linux, octets privés sous Windows),
+   * en Mo, au-delà de laquelle le navigateur est relancé entre deux commandes. null (défaut) = jamais.
+   */
+  browserMaxRssMb: number | null;
+  /** Recyclage : âge du navigateur d'une session, en minutes (décimales permises), au-delà duquel il est relancé. null = jamais. */
+  browserMaxAgeMin: number | null;
+  /** Plafond de sessions simultanées (créations en cours comprises) : au-delà, 503 explicite. null (défaut) = pas de plafond. */
+  maxSessions: number | null;
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -94,6 +103,9 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   proxyBypassList: Object.freeze([]) as unknown as string[],
   hostResolverRules: Object.freeze([]) as unknown as string[],
   ignoreCertErrorsFor: Object.freeze([]) as unknown as string[],
+  browserMaxRssMb: null,
+  browserMaxAgeMin: null,
+  maxSessions: null,
 });
 
 /** Limites de lecture transmises au bridge (elles ne relèvent pas de la politique de sécurité). */
@@ -145,6 +157,16 @@ function list(valid: (x: string) => boolean, normalize: (x: string) => string, s
       for (const x of items as string[]) if (!valid(x)) throw new Error(error(x));
       return (items as string[]).map(normalize);
     },
+    help,
+  };
+}
+
+/** Entier ou null (« none » = désactivé explicitement, comme l'absence de la clé). */
+function optInt(min: number, max: number, help: string): KeySpec<number | null> {
+  const base = int(min, max, help);
+  return {
+    check: (v): v is number | null => v === null || base.check(v),
+    parse(raw) { return raw === 'none' ? null : base.parse(raw); },
     help,
   };
 }
@@ -222,6 +244,18 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
     (x) => { try { assertHostResolverRule(x); return ''; } catch (e) { return (e as Error).message; } }),
   ignoreCertErrorsFor: list(isCertHost, (x) => x.trim().toLowerCase(), /,/, 'hôtes dont le certificat TLS n\'est PAS vérifié (ex. site.exemple.com) ; jamais *, vide par défaut',
     (x) => `hôte invalide ${JSON.stringify(x)} : un nom ou *.domaine attendu (* seul refusé : la dérogation reste limitée à des hôtes listés)`),
+  browserMaxRssMb: optInt(1, 1_000_000, 'Mo : mémoire du groupe Chrome d\'une session (PSS sous Linux, octets privés de chrome.exe) au-delà de laquelle le navigateur est relancé entre deux commandes ; none = jamais (défaut)'),
+  browserMaxAgeMin: {
+    check: (v): v is number | null => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 525_600),
+    parse(raw) {
+      if (raw === 'none') return null;
+      const n = Number(raw);
+      if (!/^\d+(\.\d+)?$/.test(raw) || !(n > 0 && n <= 525_600)) throw new Error(`nombre de minutes > 0 attendu (décimales permises), reçu ${JSON.stringify(raw)}`);
+      return n;
+    },
+    help: 'minutes (décimales permises) : âge au-delà duquel le navigateur d\'une session est relancé entre deux commandes ; none = jamais (défaut)',
+  },
+  maxSessions: optInt(1, 10_000, 'sessions simultanées au plus (créations en cours comprises), 503 au-delà ; none = pas de plafond (défaut)'),
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -258,6 +292,9 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     proxyBypassList: pick('proxyBypassList'),
     hostResolverRules: pick('hostResolverRules'),
     ignoreCertErrorsFor: pick('ignoreCertErrorsFor'),
+    browserMaxRssMb: pick('browserMaxRssMb'),
+    browserMaxAgeMin: pick('browserMaxAgeMin'),
+    maxSessions: pick('maxSessions'),
   };
 }
 
