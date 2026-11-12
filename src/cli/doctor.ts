@@ -80,6 +80,7 @@ export async function runDoctor(paths: GraspPaths, env: NodeJS.ProcessEnv, home:
   if (browser?.kind === 'windows') add('setpriv', 'warn', 'non applicable à chrome.exe (pas de PDEATHSIG ni de groupe au-delà de WSL) : arrêt par CDP Browser.close, puis PowerShell ciblé sur le --user-data-dir ; si le control plane ET le bridge sont tués par SIGKILL, chrome.exe survit');
   else add('setpriv', realProbe.which('setpriv') ? 'ok' : 'warn', realProbe.which('setpriv') ? 'PR_SET_PDEATHSIG actif : Chrome meurt avec son bridge' : 'absent (util-linux) : Chrome ne mourra avec le bridge que via le control plane');
   add('XDG_RUNTIME_DIR', env.XDG_RUNTIME_DIR ? 'ok' : 'warn', env.XDG_RUNTIME_DIR ? paths.socketPath : `non défini : socket dans ${paths.socketPath}`);
+  if (paths.socketFallback !== undefined) add('socket (repli)', 'warn', `chemin normal trop long (${Buffer.byteLength(paths.socketFallback.original)} octets > 107) : sockets dans ${paths.socketFallback.dir}`);
   // Moteur Playwright de repli : optionnel, jamais requis.
   const pwv = playwrightVersion(env.GRASP_PLAYWRIGHT_MODULE || 'playwright-core');
   const fb = cfg?.fallbackEngine ?? 'none';

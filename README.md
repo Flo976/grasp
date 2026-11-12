@@ -1455,11 +1455,18 @@ session sur une page simple, beaucoup plus sur une application lourde. Le test d
 | Captures (sans `-o`) | `${XDG_STATE_HOME:-~/.local/state}/grasp/captures/` (0700, fichiers 0600, 50 gardées) |
 | États exportés (sans fichier) | `${XDG_STATE_HOME:-~/.local/state}/grasp/etats/` (0700, fichiers 0600, jamais purgés : à supprimer après usage) |
 | Profils navigateur | `${XDG_DATA_HOME:-~/.local/share}/grasp/profiles/<id>/` ; snap : `~/snap/chromium/common/grasp-profiles/` ; chrome.exe : `%LOCALAPPDATA%\grasp\profiles\` (sessions sans `--profile` : profil éphémère supprimé à la fermeture) |
-| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` |
+| Socket | `$XDG_RUNTIME_DIR/grasp.sock` (à défaut : `$XDG_STATE_HOME/grasp/run/`) ; bridges : `run/grasp/bridges/<id>.sock` ; chemin trop long : `/tmp/grasp-<uid>/<hash>/` (ci-dessous) |
 
-Un socket Unix est limité à 107 octets. Si `XDG_RUNTIME_DIR` est trop long pour le socket du control
-plane **ou** pour ceux des bridges, `grasp serve` refuse de démarrer en le disant (au lieu d'un
-`listen EADDRINUSE` trompeur à la première session) : prenez un `XDG_RUNTIME_DIR` plus court.
+Un socket Unix est limité à 107 octets. Si le chemin normal (`XDG_RUNTIME_DIR`, ou `XDG_STATE_HOME` à défaut)
+est trop long pour le socket du control plane **ou** pour ceux des bridges (Grasp lancé dans un répertoire
+temporaire profond), les sockets passent **ensemble** dans un répertoire de repli court :
+`/tmp/grasp-<uid>/<12 hex>/` (`grasp.sock`, `bridges/<id>.sock`), où `<12 hex>` est un condensé SHA-256 du chemin
+d'origine — deux installations distinctes n'ont pas le même socket, et le client fait le même calcul que le
+serveur (le chemin réel est aussi dans `endpoint.json`). `/tmp` étant partagé, chaque niveau doit être un vrai
+répertoire (pas un lien), appartenir à l'utilisateur et être en 0700 : `grasp serve` crée ce qui manque en 0700
+et **refuse** sinon (jamais de chmod silencieux) ; le client CLI et `grasp mcp` vérifient la même chose avant
+d'envoyer le token. Le repli est annoncé au démarrage et par `grasp doctor`. `$TMPDIR` n'est pas utilisé (il peut
+être lui-même profond).
 
 ## Découverte du navigateur
 

@@ -4,7 +4,7 @@ import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolvePaths, type GraspPaths } from '../core/paths.js';
+import { checkSocketFallbackDir, fallbackSocketBase, resolvePaths, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
 import { loadConfigFile, resolveConfig, setConfigKey, unsetConfigKey, isConfigKey, PUBLIC_KEYS, keyHelp } from '../core/config.js';
 import { startControlPlane } from '../control/server.js';
@@ -42,8 +42,13 @@ function endpointFromUrl(raw: string): Endpoint {
 function endpointOf(paths: GraspPaths): Endpoint {
   const url = process.env.GRASP_URL;
   if (url) return endpointFromUrl(url);
-  if (existsSync(paths.endpointFile)) return JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint;
-  return { transport: 'unix', socketPath: paths.socketPath };
+  const ep: Endpoint = existsSync(paths.endpointFile) ? JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint : { transport: 'unix', socketPath: paths.socketPath };
+  // Socket de repli sous /tmp (partagé) : le token n'y part que si le répertoire est bien le nôtre.
+  const fb = paths.socketFallback;
+  if (ep.transport === 'unix' && fb !== undefined && ep.socketPath.startsWith(`${fb.dir}/`)) {
+    try { checkSocketFallbackDir(fb.dir, fallbackSocketBase(), false); } catch (e) { throw new CliError((e as Error).message); }
+  }
+  return ep;
 }
 
 class Client {

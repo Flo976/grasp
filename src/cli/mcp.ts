@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { GraspPaths } from '../core/paths.js';
+import { checkSocketFallbackDir, fallbackSocketBase, type GraspPaths } from '../core/paths.js';
 import { request, type Endpoint, type HttpResult } from '../core/http.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { buildRequest, ScriptError, type Args, type StepRequest } from '../core/script.js';
@@ -36,8 +36,11 @@ class GraspCallError extends Error {
 const log = (m: string): void => { process.stderr.write(`grasp mcp: ${m}\n`); };
 
 function endpointOf(paths: GraspPaths): Endpoint {
-  if (existsSync(paths.endpointFile)) return JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint;
-  return { transport: 'unix', socketPath: paths.socketPath };
+  const ep: Endpoint = existsSync(paths.endpointFile) ? JSON.parse(readFileSync(paths.endpointFile, 'utf8')) as Endpoint : { transport: 'unix', socketPath: paths.socketPath };
+  // Socket de repli sous /tmp (partagé) : le token n'y part que si le répertoire est bien le nôtre.
+  const fb = paths.socketFallback;
+  if (ep.transport === 'unix' && fb !== undefined && ep.socketPath.startsWith(`${fb.dir}/`)) checkSocketFallbackDir(fb.dir, fallbackSocketBase(), false);
+  return ep;
 }
 
 function unreachable(e: unknown): boolean {

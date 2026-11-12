@@ -5,7 +5,7 @@ import { connect, isIP } from 'node:net';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
-import { bridgeSocketPath, checkSocketPaths, type GraspPaths } from '../core/paths.js';
+import { bridgeSocketPath, checkSocketFallbackDir, checkSocketPaths, fallbackSocketBase, type GraspPaths } from '../core/paths.js';
 import { checkPermissions, ensurePrivateDir } from '../core/perms.js';
 import { loadConfigFile, resolveConfig, limitsOf, type ResolvedConfig } from '../core/config.js';
 import { checkUrl, effectivePolicy, type EffectivePolicy } from '../core/policy.js';
@@ -192,6 +192,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   const { paths } = o;
   const log = o.log ?? ((m: string) => process.stderr.write(`${new Date().toISOString()} grasp: ${m}\n`));
 
+  // 0. Chemin de socket trop long : repli sous /tmp/grasp-<uid>/<hash>, vérifié (propriétaire, 0700, pas de lien).
+  if (paths.socketFallback !== undefined) {
+    checkSocketFallbackDir(paths.socketFallback.dir, fallbackSocketBase(), true);
+    log(`chemin de socket trop long (${Buffer.byteLength(paths.socketFallback.original)} octets > 107) : sockets dans ${paths.socketFallback.dir} (0700)`);
+  }
   // 1. Permissions AVANT toute création : on refuse, on ne corrige pas en silence.
   checkPermissions(permissionTargets(paths));
   for (const d of [paths.configDir, paths.stateDir, paths.logDir, paths.capturesDir, paths.dataDir, paths.profilesDir, paths.tmpProfilesDir, paths.runDir, paths.bridgesDir]) ensurePrivateDir(d);

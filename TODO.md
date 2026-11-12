@@ -145,8 +145,8 @@ Image Docker
 
 - [ ] **Viewport** : `grasp viewport 360x800 [--mobile] [--dpr N]` ou option de session
       (`Emulation.setDeviceMetricsOverride`) ; la fenêtre est fixée à 780 px, impossible de tester un défaut mobile.
-- [ ] **Socket trop long** : repli automatique (`/run/user/$UID` ou nom court haché) quand le chemin du socket
-      Unix dépasse la limite (GRASP_HOME dans un tmp profond), au lieu d'échouer.
+- [x] **Socket trop long** : repli automatique sur `/tmp/grasp-<uid>/<hash>/` (0700, propriétaire et absence de lien
+      vérifiés par le serveur et par le client) quand le chemin du socket Unix dépasse la limite, au lieu d'échouer.
 - [ ] **`screenshot -o <fichier>` dans `grasp run`** : aujourd'hui refusé ; utile pour des captures nommées
       dans un rapport de recette.
 - [ ] **`console --level error`** remonte aussi les événements de navigation : ne garder que les erreurs.
