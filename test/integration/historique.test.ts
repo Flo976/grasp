@@ -184,6 +184,28 @@ test('back et reload d\'une page dont une iframe est hors allowlist → OK, page
 });
 
 /**
+ * Serveur qui ne répond plus (connexion coupée) au retour sur une page non éligible au cache aller-retour : Chrome
+ * affiche sa page d'erreur. back et reload le disent (502, comme nav), jamais « OK » sur la page d'erreur.
+ */
+test('back / reload vers un serveur qui ne répond plus → 502 « navigation échouée », comme nav', async () => {
+  const panne = (on: boolean) => fetch(`${site.url}/api/hist-panne?on=${on ? 1 : 0}`).then((r) => r.text());
+  await fx.page.nav(`${site.url}/hist-cadre?cadre=/hist-c`);
+  await fx.page.nav(`${site.url}/hist-a`);
+  await panne(true);
+  try {
+    const echec = (e: GraspError) => e.status === 502 && /^navigation échouée : net::ERR_EMPTY_RESPONSE/.test(e.message);
+    await assert.rejects(fx.page.history(-1), echec);
+    await panne(false);
+    await fx.page.nav(`${site.url}/hist-cadre?cadre=/hist-c`);
+    await panne(true);
+    await assert.rejects(fx.page.reload(), echec);
+    await assert.rejects(fx.page.reload({ hard: true }), echec);
+    // Même réponse que nav dans la même situation.
+    await assert.rejects(fx.page.nav(`${site.url}/hist-cadre`), echec);
+  } finally { await panne(false); }
+});
+
+/**
  * Garde de navigation appliqué à l'historique. Réseau simulé comme dans ssrf.test.ts : Chrome envoie `*.test` sur
  * 127.0.0.1, et le résolveur du garde (injecté) répond ce que « le DNS » dit — ici, il change entre la visite et le
  * retour (public, puis privé). allowConsole=false : sans domaine Network, pas de contrôle anti-rebinding après

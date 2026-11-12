@@ -612,6 +612,12 @@ de test).
   widget) est refusée par le garde mais la page arrive quand même → `OK` et note `cadre bloqué : <raison>`
   (testé : `back` d'une page non éligible au bfcache et `reload [--hard]` d'une page dont l'iframe vise un
   domaine hors allowlist ; avant correction, ces commandes répondaient à tort 403).
+- **Échec réseau** : `Page.navigateToHistoryEntry` et `Page.reload` ne rendent pas d'erreur quand le serveur
+  ne répond pas ; Chrome charge alors sa page d'erreur (`chrome-error://chromewebdata/`) dans le cadre
+  principal. Grasp la repère et répond **502** `navigation échouée : net::ERR_… (<url>)`, comme `nav` (testé :
+  connexion coupée sans réponse → `net::ERR_EMPTY_RESPONSE` pour `back`, `reload` et `reload --hard` ; avant
+  correction, `OK` avec le titre de la page d'erreur). Sans domaine `Network` (`allowConsole=false`), le code
+  d'erreur n'est pas connu : `navigation échouée : page d'erreur du navigateur (<url>)`.
 - **Attente** : celle de `nav` (load, puis 400 ms de calme du DOM et du réseau, plafond `stableTimeoutMs`,
   challenge anti-bot guetté). Une route `pushState` dont la vue arrive en `fetch` après le `popstate` est
   attendue : la lecture qui suit voit déjà la nouvelle vue (testé avec une vue servie en 150 ms).

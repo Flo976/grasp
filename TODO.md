@@ -170,6 +170,6 @@ Image Docker
       jusqu'à ce que plus rien n'apparaisse (défilement infini), nœuds DOM apparus comptés, plafonds annoncés.
       CLI, API HTTP, `grasp run`, MCP. Tests : `test/integration/historique.test.ts`, `test/unit/historique.test.ts`.
       Relecture : seul le refus du document principal fait échouer back/forward/reload (une iframe hors
-      allowlist n'est qu'une note `cadre bloqué`).
+      allowlist n'est qu'une note `cadre bloqué`) ; serveur injoignable → 502 `navigation échouée`, comme nav.
       Reste : défilement horizontal, molette réelle (`Input.dispatchMouseEvent` `mouseWheel`) pour les pages qui
       n'écoutent que `wheel`, `scroll` dans une iframe (`frame=…`).

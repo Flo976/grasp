@@ -640,6 +640,13 @@ export class PageController {
    * iframes) : ce qui fait échouer back/forward/reload, dont la commande CDP ne rend pas d'erreur.
    */
   private blockedMain: Blocked | null = null;
+  /**
+   * Page d'erreur de Chrome (chrome-error://) chargée dans le cadre principal : URL inaccessible et erreur réseau
+   * du document (Network.loadingFailed, si le domaine Network est actif). Lu par back/forward/reload.
+   */
+  private mainFailed: { url: string; error: string | undefined; at: number } | null = null;
+  /** requestId du dernier document demandé par le cadre principal, et son échec réseau éventuel. */
+  private mainDocReq: { id: string; error: string | undefined } | undefined;
   /** Document servi par une adresse privée alors que le DNS de Grasp en donnait une publique (rebinding). */
   private rebound: Blocked | null = null;
   /** Résolveur DNS de la protection SSRF (injectable pour les tests). */
@@ -1337,6 +1344,7 @@ export class PageController {
       switch (e.method) {
         case 'Network.requestWillBeSent': {
           const url = String(e.params.request?.url ?? '');
+          if (e.params.type === 'Document' && main) this.mainDocReq = { id: String(e.params.requestId), error: undefined };
           if (!TRACKED_REQUESTS.has(String(e.params.type)) || /^(data|blob):/.test(url)) break;
           // Requête vers un traqueur : annulée par le garde avant de partir, elle n'est jamais attendue (ni une
           // « réaction » de la page à une action). Son requestWillBeSent peut précéder Fetch.requestPaused.
@@ -1347,7 +1355,13 @@ export class PageController {
           this.netStart(e.params.requestId, String(e.params.request?.method ?? 'GET'), url);
           break;
         }
-        case 'Network.loadingFinished': case 'Network.loadingFailed': this.netEnd(e.params.requestId); break;
+        case 'Network.loadingFinished': case 'Network.loadingFailed':
+          if (e.method === 'Network.loadingFailed') {
+            const d = this.mainDocReq;
+            if (d !== undefined && d.id === e.params.requestId) d.error = String(e.params.errorText ?? '');
+          }
+          this.netEnd(e.params.requestId);
+          break;
         case 'Page.frameRequestedNavigation': if (main && e.params.disposition === 'currentTab') this.pendingNavAt = Date.now(); break;
         case 'Page.frameStartedLoading': if (main) { this.loading = true; this.pendingNavAt = 0; this.loadStarts++; } break;
         case 'Page.frameStoppedLoading': if (main) this.loading = false; break;
@@ -1357,6 +1371,10 @@ export class PageController {
           this.noteOrigin(String(e.params.frame?.url ?? ''), e.params.frame?.parentId === undefined);
           if (e.params.frame?.parentId === undefined) {
             this.navCount++; this.docGen++; this.isoCtx = undefined;
+            const fu = String(e.params.frame?.url ?? '');
+            const unreachable = e.params.frame?.unreachableUrl as string | undefined;
+            this.mainFailed = unreachable !== undefined || fu.startsWith('chrome-error:')
+              ? { url: unreachable ?? fu, error: this.mainDocReq?.error || undefined, at: Date.now() } : null;
             this.topTracker = this.trackers?.matchUrl(String(e.params.frame?.url ?? ''));
             // Nouveau document : les requêtes de l'ancien sont mortes (leur fin n'est pas toujours rapportée),
             // et son historique de polling ne vaut plus.
@@ -1567,6 +1585,7 @@ export class PageController {
       this.blocked = null;
       this.blockedMain = null;
       this.rebound = null;
+      this.mainFailed = null;
       const since = Date.now();
       if (kind === 'reload') await this.s('Page.reload', { ignoreCache: hard });
       else await this.s('Page.navigateToHistoryEntry', { entryId: entry.id });
@@ -1595,7 +1614,8 @@ export class PageController {
    * Attend que la navigation d'historique ait abouti : document (ou route du même document) changé et chargement
    * terminé. Page.reload / navigateToHistoryEntry ne rendent pas d'erreur quand le garde annule la requête : le
    * blocage est lu dans `blockedMain` (garde Fetch, document du cadre principal seulement : une iframe refusée
-   * n'empêche pas la page d'arriver) et `rebound` (rebinding), comme pour nav.
+   * n'empêche pas la page d'arriver) et `rebound` (rebinding), comme pour nav. Ni l'une ni l'autre ne rend non
+   * plus l'échec réseau du document : il se lit à la page d'erreur de Chrome chargée à sa place (502, comme nav).
    */
   private async historyCommitted(nav0: number, since: number): Promise<void> {
     const end = Date.now() + 30_000;
@@ -1608,6 +1628,8 @@ export class PageController {
     }
     const rb = this.rebound as Blocked | null;
     if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${rb.reason} (${rb.url})`);
+    const f = this.mainFailed as { url: string; error: string | undefined; at: number } | null;
+    if (f !== null && f.at >= since) throw new GraspError(502, `navigation échouée : ${f.error ?? 'page d\'erreur du navigateur'} (${redactUrl(f.url)})`);
   }
 
   /**

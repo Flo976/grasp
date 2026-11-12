@@ -70,6 +70,8 @@ new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) suite()
 
 let reloads = 0;
 let cadres = 0;
+/** /hist-cadre en panne (connexion coupée sans réponse) : posé par /api/hist-panne?on=1|0. */
+let panne = false;
 
 /**
  * Page non éligible au cache aller-retour (no-store, écouteur unload) qui embarque une iframe vers `?cadre=` :
@@ -100,11 +102,13 @@ export function historiqueRoute(u: URL, req: IncomingMessage, res: ServerRespons
     return true;
   }
   if (p === '/hist-cadre') {
+    if (panne) { req.socket.destroy(); return true; }
     cadres++;
     res.setHeader('cache-control', 'no-store');
     res.end(cadrePage(cadres, u.searchParams.get('cadre') ?? '/hist-a'));
     return true;
   }
+  if (p === '/api/hist-panne') { panne = u.searchParams.get('on') === '1'; res.end('ok'); return true; }
   if (p === '/defilement-infini') { res.end(INFINI_PAGE); return true; }
   if (p === '/api/articles') {
     const n = Number(u.searchParams.get('page') ?? '0');
