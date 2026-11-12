@@ -19,6 +19,8 @@ read -r URL <&"${SITE[0]}"
 echo "# site de test : $URL"
 
 # 2. Serveur (premier plan, en tâche de fond pour la démo) et session
+# Mode attach facultatif : GRASP_CDP_URL=http://127.0.0.1:9222 pilote un navigateur CDP déjà lancé.
+if [[ -n "${GRASP_CDP_URL:-}" ]]; then grasp config set cdpUrl "$GRASP_CDP_URL" >/dev/null; fi
 grasp serve >"$DEMO/serve.log" 2>&1 &
 for _ in $(seq 100); do grasp status >/dev/null 2>&1 && break; sleep 0.1; done
 export GRASP_SESSION=$(grasp session create)

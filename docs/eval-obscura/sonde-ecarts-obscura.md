@@ -1,0 +1,31 @@
+# obscura
+- garde, clic vers /aide refusé (failRequest) : location=/aide titre="Inscription" h1="Inscription"
+- garde, redirection 302 vers example.com refusée : Page.navigate={"frameId":"page-1","loaderId":"page-1.3"} → location=http://example.com/
+- garde, window.open(_self) vers example.com refusé : location=http://127.0.0.1:45739/
+- requêtes refusées par la sonde : ["/aide","http://example.com/s.js"]
+- Fetch.enable { patterns: [] } puis navigation : load=Page.navigate en erreur après 30002 ms : Page.navigate: Network error: navigation exceeded 30000ms deadline, requestPaused en plus=1
+- Fetch.disable : ok
+- après Fetch.disable, navigation : load=true
+- alert("a") : événement=aucun, valeur="undefined" en 2002 ms
+- confirm("c") : événement=aucun, valeur="true" en 2001 ms
+- prompt("p", "x") : événement=aucun, valeur="null" en 2001 ms
+- consoleAPICalled args[1] : {"type":"object","className":"Object","description":"Object","objectId":"console-0-1"}
+- exceptionThrown : []
+- Log.entryAdded : []
+- Network.loadingFailed / responseReceived 404 : 0 / 2
+- document.title="Inscription" ; getTargetInfo.title="Inscription"
+- body.innerText (120 premiers car.) : "Accueil Aide\n\n\n\n\nInscription\n\n\nNom\nEmail\nVille\nPays\nJ'accepte les conditions\nValider\n\n\n\n\nEn attente\n\n\nAjouter en haut"
+- AX combobox : name="Pays" value=undefined props=["focusable"] enfants=undefined
+- AX textbox Email (focalisé) : props=["focusable=true","editable=true"]
+- AX options : []
+- AX nœuds : 60, ignorés : 0, sans backendDOMNodeId : 0
+- AX textbox Nom après saisie : value=undefined
+- Runtime.evaluate 1+1 description : "2.0"
+- navigation par clic de lien : location=/aide ; événements : lifecycleEvent, Runtime.executionContextsCleared, frameNavigated(parentId=-), domContentEventFired, loadEventFired, frameStoppedLoading
+- navigation par soumission de formulaire : location=/submit ; événements : lifecycleEvent, Runtime.executionContextsCleared, frameNavigated(parentId=-), domContentEventFired, loadEventFired, frameStoppedLoading
+- navigation par location.href : location=/aide ; événements : lifecycleEvent, Runtime.executionContextsCleared, frameNavigated(parentId=-), domContentEventFired, loadEventFired, frameStoppedLoading
+- navigation par pushState : location=/spa-x ; événements : navigatedWithinDocument
+- Page.frameStartedLoading (cumul) : 0
+- Page.frameRequestedNavigation (cumul) : 0
+- Page.navigatedWithinDocument (cumul) : 1
+- Runtime.executionContextDestroyed (cumul) : 0

@@ -1,0 +1,15 @@
+Accueil Aide
+Inscription
+Nom 
+Email 
+Ville 
+Pays 
+--
+France
+Madagascar
+ J'accepte les conditions
+Valider
+
+En attente
+
+Ajouter en haut

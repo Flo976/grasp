@@ -1,0 +1,149 @@
+ok	ok	--console sur une action bavarde : les lignes écartées (au-delà de 200) sont comptées, jamais tues
+ok	ok	--el : découpe exacte sur la boîte de l'élément, même hors écran (scrollIntoView), par CSS, ref ou text:
+ok	not ok	--el sur un élément plus haut que le viewport, loin dans le document : capturé en entier (pas 1 px)
+ok	not ok	--format jpeg|webp et --quality ; options invalides → 400
+ok	ok	--full : page entière (3100 px), haut bleu, cible rouge à sa place, pied vert
+ok	ok	--full sur une page plus large que le viewport : toute la largeur est rendue (pas de moitié blanche)
+ok	ok	--max-width : réduit l'échelle (moins de tokens image), proportions conservées, aussi sur la zone défilée
+ok	ok	--refs : refs dessinées sur les éléments interactifs visibles, retirées après, autorisé avec allowEval=false
+ok	ok	--snap-diff : 4000 caractères par défaut avec dernière ligne explicite ; --max l'élargit ; --scope le restreint
+ok	ok	--snap-diff attend la fin de la transition : pas d'état intermédiaire, refs aussitôt utilisables
+not ok	not ok	--snap-diff « (aucun changement) » : tel quel après un clic livré, mais signalé après un clic non livré
+ok	ok	CLI et run : snap --name-max N
+ok	ok	CLI eval : une expression qui renvoie undefined (el.click(), form.submit()) → « undefined », exécutée, code 0
+ok	ok	CLI press Enter --snap-diff dans une recherche SPA → diff des résultats (pas de snapshot complet)
+ok	ok	CLI text --scope <iframe> : jamais de sortie vide muette
+ok	ok	DOM qui ne se stabilise jamais : nav rend la main au plafond, avec une note
+ok	not ok	Enregistrer : aria-describedby, aria-errormessage, message non relié, validité native, role=alert, toast aria-hidden — tous dans le diff
+ok	not ok	Malt : message aria-hidden sous un champ sans aria-* → [invalide: …] sur le champ, dans le diff du fill et dans snap --scope
+ok	ok	action qui change de route (pushState, même document) : le rendu de la nouvelle vue est attendu
+ok	ok	allowConsole=false : lecture refusée (403), --console refusé, et Runtime.enable jamais appelé
+ok	ok	allowlist vide = tout bloqué, même le local
+ok	not ok	autocomplétion : l'option « Créer … » est rendue en entier, distincte des suggestions
+ok	ok	bouton sans nom près d'un compteur : sa ref ne change pas quand le compteur change
+ok	ok	boutons sans nom (croix de tags) : nommés par leur contexte ; refs stables après suppression d'un tag
+ok	ok	capture du viewport (défaut) : PNG aux dimensions du viewport, dimensions rapportées = dimensions réelles
+ok	ok	case à cocher / radio sans nom : nommée par le texte qui la SUIT ; croix de tag : texte qui précède
+not ok	not ok	check : entrée perdue → coche synthétique annoncée, état vérifié
+not ok	not ok	clic Playwright après défilement (page à iframe hors processus) : un seul clic, sur la cible, rien dans l'iframe, jamais rejoué
+not ok	not ok	clic Playwright sans aucun événement reçu par la page : 502, jamais rejoué (il a pu partir ailleurs)
+not ok	not ok	clic livré : OK sans note, événements de confiance, un seul clic
+ok	ok	clic sur un bouton sans effet alors que le formulaire est invalide : la note le dit (diff et sans diff)
+not ok	not ok	click --engine playwright : clic de confiance livré par Playwright, aucune note de repli
+ok	not ok	click --snap-diff qui change de document → snapshot complet, annoncé
+ok	not ok	click --snap-diff sur un lien routé (pushState) → diff, pas un snapshot complet
+ok	ok	click --snap-diff sur « Enregistrer » (fetch 700 ms puis DOM) → le diff contient la confirmation
+ok	ok	console --clear puis nav puis --level error : aucune ligne « plus ancienne » fantôme
+ok	ok	console : --console sur une action = seulement les entrées produites pendant l'action ; doublons ×N ; combinable avec --snap-diff
+ok	ok	console : jamais de corps de requête/réponse ni d'en-tête Authorization ; jetons masqués dans les URL
+ok	not ok	console : l'URL du cadre (champ frame) est masquée comme les autres, même origine et hors processus
+ok	ok	console : le tampon survit aux navigations, --since, --limit, --level, clear
+ok	not ok	console : les URL recopiées par Chrome dans les messages du domaine Log (CSP) sont masquées
+ok	not ok	console : niveaux, objet, exception, promesse rejetée, image 404, fetch hors allowlist, iframe
+ok	not ok	console : une iframe cross-origin (processus séparé, OOPIF) est aussi écoutée, et gardée
+ok	not ok	correction : l'erreur disparaît du diff ; formulaire valide : aucune note
+not ok	not ok	cycle de vie : connexion fermée après inactivité
+not ok	not ok	cycle de vie : la déconnexion de Playwright ne ferme ni le navigateur ni l'onglet ; reconnexion à la demande
+ABSENT	not ok	cycle de vie : une attente Playwright plus longue que le délai d'inactivité n'est pas coupée
+ok	not ok	cycle de vie : une déconnexion qui croise une reconnexion ne laisse aucune connexion Playwright orpheline
+ABSENT	not ok	dialogues : Playwright connecté ne ferme pas ceux des autres onglets (mode attach : onglets de l'utilisateur)
+ok	ok	défauts sûrs : eval, cookies, upload désactivés (403)
+not ok	not ok	délai de livraison configurable (limite inputDeliveryMs) : la non-livraison est détectée dans ce délai
+ok	ok	erreurs d'action : --shot-on-error joint le chemin d'une capture 0600 ; --console joint les entrées
+ok	not ok	erreurs explicites : ref inconnue, texte absent, CSS absent, option absente, mauvais type
+ok	not ok	fenêtre modale (showModal) : refs du fond « masquées par une fenêtre modale », jamais déplacées sur un homonyme
+ok	not ok	fenêtre modale aria-modal avec fond aria-hidden : même comportement
+not ok	not ok	fill "" (touche Suppr) : entrée perdue → saisie synthétique annoncée, valeur vérifiée
+not ok	not ok	fill livré : aucune note
+ok	ok	fill ordinaire : aucune note de remplacement
+ok	ok	fill remplace la valeur existante ; fill "" vide le champ
+ok	not ok	fill sur un champ remplacé par un nouveau nœud (autre rôle) : signalé, et l'ancienne ref vise le remplaçant focalisé
+ok	ok	fill sur un champ remplacé à l'identique : signalé (même ref), la ref reste utilisable
+ok	not ok	fill sur un contenteditable : espaces doubles (rendus en insécables) → pas de « TypeError: Illegal invocation »
+ok	not ok	fill sur un contenteditable : une seule ligne, puis vidage
+ok	not ok	fill sur un contenteditable riche : texte brut, paragraphes, aucun format de bloc hérité, pas d'exception
+not ok	not ok	fill, select, check, press, type --delay, hover via Playwright dans le document principal
+ok	not ok	fill/select/check/click via les 3 formes de sélecteur, vérifié par le contenu de la page
+ok	not ok	garde de navigation : un clic Playwright qui sort de l'allowlist est bloqué par le garde Fetch de Grasp
+ok	ok	garde runtime : un clic sur un lien externe est bloqué par le navigateur lui-même
+ok	ok	garde runtime : une iframe cross-origin (OOPIF) qui navigue elle-même hors allowlist est bloquée (console désactivée)
+ok	not ok	garde runtime : une redirection vers un domaine interdit est bloquée
+not ok	not ok	hover et type natifs (sans Playwright) : mêmes commandes, livraison vérifiée
+ok	not ok	iframe d'une autre origine (hors processus) : lire et agir dans le cadre avec frame=…
+ok	not ok	libellé répété (deux labels, aria-labelledby doublé) : nom dédupliqué, texte du label non répété
+ok	not ok	listes déroulantes : options du select natif (20 max, sélection marquée) et listbox ARIA tronquée
+ok	ok	long-polling (10 s) ouvert au chargement : nav < 2 s
+ok	ok	mode attach (Chrome de l'utilisateur) : onglet caché jamais ramené au premier plan, et c'est dit
+ok	not ok	moteur Playwright : click et fill gardent les notes formulaire invalide / champ invalide
+ok	ok	nav : challenge qui vérifie par le réseau puis fait location.replace → la vraie page est attendue
+ok	ok	nav : challenge à minuterie (aucune requête, 1,5 s puis location.replace) → la vraie page est attendue, dans le plafond
+ok	ok	nav : page ordinaire sans activité → pas d'attente supplémentaire
+ok	ok	nav : un gros contenu ajouté à 800 ms est attendu, même avec un carrousel qui tourne
+ok	ok	nav : un rendu qui dépend de requêtes enchaînées est attendu malgré les requêtes de fond
+ok	ok	nav attend le rendu : titre et contenu posés après le load sont là (pas de snapshot vide)
+ok	ok	nav sur une page aux requêtes de fond perpétuelles (DOM figé) : main rendue en < 2 s, note « requêtes de fond »
+ok	ok	nav sur une page à carrousel perpétuel : main rendue en < 1,5 s, sans note « DOM instable »
+ok	ok	nav vers une page à iframe d'une autre origine (OOPIF) : pas d'attente fantôme de la requête du cadre
+ok	not ok	nom propre répété (« Bora Bora ») : pas dédupliqué, text: le résout ; « Heures Heures » (deux labels) l'est toujours
+ok	ok	nœuds texte vides (espaces de largeur nulle) et puces de liste : aucune ligne ""
+not ok	not ok	onglet de la session en arrière-plan : clic Playwright ramène l'onglet au premier plan (pas 10 s d'attente puis 504)
+not ok	not ok	onglet en arrière-plan : action native → onglet ramené au premier plan, annoncé, rendu (rAF) observé dans le diff
+not ok	not ok	onglet qui reste caché après Page.bringToFront : note distincte, une seule tentative (et une seule attente) par document
+ok	ok	opt-in explicite : allowEval=true autorise eval
+ok	ok	page de connexion courte avec reCAPTCHA et « Veuillez patienter » : nav rapide, aucune note challenge
+not ok	not ok	playwright-core absent : --engine playwright → 501 « npm i playwright-core » ; repli configuré → note, puis synthétique
+ok	ok	polling de fond (fetch toutes les 300 ms) : click < 1,5 s et wait --idle réussit
+ok	ok	press : Entrée dans un champ soumet le formulaire
+not ok	not ok	press : touche sans effet par défaut et sans gestionnaire, non livrée → ERREUR
+not ok	not ok	press Enter : entrée perdue → touche synthétique, le formulaire est soumis (soumission implicite)
+ok	ok	press Enter dans une recherche SPA : pushState + requête → la main est rendue après les résultats
+not ok	not ok	press livré : OK sans note
+ok	not ok	radio, case à cocher et champ required d'un formulaire vierge : pas de [invalide] ; après soumission : oui
+ok	ok	rang décalé parmi plusieurs homonymes : le MÊME nœud DOM est retrouvé (pas de 409 inutile)
+ok	ok	re-rendu complet (nouveaux nœuds DOM, mêmes rôles et noms) : la ref reste valide
+ok	ok	ref disparue (rang décalé : un homonyme placé avant a été supprimé) : le même élément est retrouvé
+ok	ok	ref introuvable (nom changé) : 404 avec les 3 candidats les plus proches, au lieu de « refaites snap »
+ok	not ok	ref masquée par une modale : diagnostic exécuté dans le monde isolé (la page ne peut pas le fausser)
+ok	ok	ref remise sur une page précédente : jamais relocalisée sur le nouveau document (404 « refaites snap »)
+ok	ok	refs stables : un élément inséré en haut ne décale pas les refs existantes
+ok	not ok	relevé DOM des erreurs en échec : repli sur l'arbre d'accessibilité, les [invalide] ne sont pas effacés
+not ok	not ok	repli automatique (fallbackEngine=playwright) : clic natif non livré → rejoué via Playwright, annoncé, un seul clic
+ok	not ok	repli automatique : Playwright n'aide pas (entrée toujours perdue) → étage synthétique, les deux annoncés
+ok	not ok	repli automatique : élément pas encore visible (409 natif) → Playwright attend son actionnabilité et clique
+not ok	not ok	repli automatique sur la page à iframe : le rejeu Playwright ne part jamais dans l'iframe
+ok	ok	régression \#2 — détecter ≠ bloquer : navigation hors allowlist = 403 ET page non chargée
+ok	ok	schémas interdits : file:// et javascript: refusés
+ok	ok	screenshot --el : le bord gauche d'un élément flottant plus haut que le viewport n'est pas rogné
+ok	not ok	screenshot --el : élément dans le viewport à position fractionnaire — boîte entière (floor de x, ceil du bord droit)
+ok	not ok	select fermé : l'option choisie au-delà de la 20e apparaît, marquée [x]
+not ok	not ok	simulation fidèle : avec setIgnoreInputEvents, Input.dispatchMouseEvent répond OK mais la page ne reçoit rien
+ok	ok	snap : arbre compact de la page de test
+ok	ok	snap : budget en octets — la page de test tient sous 1 Ko
+ok	ok	snap : budget maxBytes respecté sur une grosse page
+ok	ok	snap : budget par défaut ramené à 12000 octets, troncature explicite ; --scope lit une zone hors budget
+ok	ok	snap : dernière ligne de résumé des nœuds masqués (liens sans nom, iframes non parcourues)
+ok	ok	snapshot : le titre est relu (navigation SPA, document.title modifié)
+ok	ok	snapshot : noms longs tronqués par « … » par défaut ; nameMax 0 = entier ; nameMax N
+ok	ok	snapshot sans nom transformable : aucun relevé de texte source
+ok	ok	text --scope : seulement la zone (CSS, puis ref)
+ok	ok	text --scope sur une iframe : même origine → son texte ; autre origine → message explicite ; zone vide → chaîne vide
+ok	ok	text : 4000 caractères par défaut, dernière ligne « … tronqué : N caractères restants », --max pour tout lire
+ok	ok	text-transform : le snapshot montre le texte source du DOM, pas le texte transformé
+ok	not ok	text-transform : refs identiques même si le relevé du texte source échoue ; text: accepte les deux formes
+ok	ok	text: ambigu → 409 avec les refs candidates
+ok	ok	text: introuvable : les noms proches sont proposés
+not ok	not ok	text: résolu sur un nœud texte : Playwright clique sur le texte, pas au centre du parent (lien voisin)
+ok	ok	text:checkbox 2 désigne la 2e case (pas le nœud texte, pas la 1re case)
+ok	not ok	type --snap-diff dans une autocomplétion (suggestions 250 ms + 500 ms après la frappe) → suggestions dans le diff
+not ok	not ok	type et press via Playwright vérifiés : touches perdues → 502, jamais un faux OK
+ok	not ok	téléchargements : brancher Playwright ne détourne pas le dossier de Grasp (noDefaults)
+ok	not ok	upload via Playwright : 403 sans allowUpload (avant toute connexion), fichier posé dans le cadre avec
+ok	ok	wait --idle : activité réseau lancée 150 ms après → attendue (réseau ET DOM), pas de conclusion prématurée
+ok	ok	wait --text survit à une navigation pendant l'attente
+ok	not ok	wait : --text, --sel (visible), --idle ; délai dépassé = 504 explicite ; une seule condition
+ok	ok	élément de la ref supprimé, 2 homonymes restants : 409 avec les candidats, aucun clic
+ok	ok	élément de la ref supprimé, UN homonyme restant (re-clic après coup) : refus 409, l'homonyme n'est pas cliqué
+not ok	not ok	étage (a) : entrée perdue puis livrée après Page.bringToFront + focus émulé — un seul clic, annoncé
+not ok	not ok	étage (b) : entrée native jamais livrée → clic synthétique dans le monde isolé, annoncé explicitement
+not ok	not ok	étage (b) autorisé même si allowEval=false (code fixe de Grasp, monde isolé)
+not ok	not ok	étage (c) : rien d'observable, même en synthétique → ERREUR, jamais de faux OK

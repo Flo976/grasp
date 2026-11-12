@@ -1544,9 +1544,9 @@ export class PageController {
     const url = cur?.url ?? 'about:blank';
     // Titre COURANT : nom de la racine de l'arbre (document.title, à jour après une route SPA), sans appel de plus.
     const root = nodes.find((n) => n.parentId === undefined);
-    let title: string;
-    if (root !== undefined && root.role?.value === 'RootWebArea') title = typeof root.name?.value === 'string' ? root.name.value : '';
-    else title = (await this.location()).title;
+    // Racine sans nom (moteurs CDP autres que Chrome, ex. Obscura ; ou page sans titre) : document.title relu.
+    const rootName = root !== undefined && root.role?.value === 'RootWebArea' && typeof root.name?.value === 'string' ? root.name.value : '';
+    const title = rootName !== '' ? rootName : (await this.location()).title;
     const snap = buildSnapshot(nodes, { url, title, maxBytes: opts.maxBytes ?? this.limits.snapMax, ...(opts.nameMax !== undefined ? { nameMax: opts.nameMax } : {}), ...(formErrors !== undefined ? { formErrors } : {}), ...(sourceTexts !== undefined ? { sourceTexts } : {}), ...(scopeBackendId !== undefined ? { scopeBackendId } : {}) });
     this.remember(snap);
     if (scope !== undefined && snap.scopeFound !== true) throw notFound(`la zone ${scope} n'a pas de nœud dans l'arbre d'accessibilité (élément masqué ou retiré ?)`);
