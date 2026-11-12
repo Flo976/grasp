@@ -505,7 +505,9 @@ esvv0:option "Madagascar" (dans ecgzh:combobox "Pays")
   complet est gardée : derrière une fenêtre modale ou avec une iframe non parcourue, « aucune correspondance » ne
   veut pas dire que la cible est absente de la page.
 - **Refusé, jamais ignoré** (400) : `--outline` avec `--interactive`, `find` avec un mode, `role`/`limit` sans
-  `find`, motif vide, expression invalide ; une zone `frame=…` (arbre ARIA de Playwright, sans refs).
+  `find`, motif vide, expression invalide ; une zone `frame=…` (arbre ARIA de Playwright, sans refs). La CLI refuse
+  aussi avant tout envoi : `find x --outline|--interactive|--markdown`, `snap|text --role|--limit` (message
+  `ERROR: …`, code 1, sans requête au bridge).
 - Partout : CLI, `GET /snap`, ligne de `grasp run` (`snap --outline`, `find "Valider" --role button`), outils MCP
   `snap` (`mode`) et `find`.
 

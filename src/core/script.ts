@@ -126,6 +126,11 @@ function engineOf(a: Args): { engine?: string } {
 
 /** --max et --scope de snap / text → paramètres de requête. */
 export function readQuery(a: Args): string {
+  // Options de find seules : sur snap ou text, elles ne filtreraient rien. Refusées, jamais ignorées
+  // (grasp run le dit déjà via checkRunFlags ; la CLI passe ici directement).
+  for (const k of ['role', 'limit'] as const) {
+    if (a.flags.has(k)) throw new ScriptError(`--${k} ne s'applique qu'à find (grasp find <texte|/regex/> --role r --max N)`);
+  }
   const q = new URLSearchParams();
   for (const k of ['max', 'scope'] as const) {
     const v = value(a, k);
@@ -162,6 +167,10 @@ export function readQuery(a: Args): string {
  */
 export function findQuery(a: Args): string {
   if (a.pos.length !== 1) throw new ScriptError(`usage : grasp find <texte|/regex/> [--role r] [--max N] [--scope <sél>]${a.pos.length > 1 ? ' — un seul motif (citez-le : find "Ajouter au panier")' : ''}`);
+  // Modes de lecture et format de text : sans effet sur find. Refusés, jamais ignorés (CLI comme run).
+  for (const k of ['outline', 'interactive', 'markdown'] as const) {
+    if (a.flags.has(k)) throw new ScriptError(`--${k} ne s'applique pas à find (find rend les lignes du snapshot complet qui correspondent ; --scope <ref> pour une zone)`);
+  }
   const q = new URLSearchParams({ find: a.pos[0]! });
   const role = value(a, 'role');
   if (role !== undefined) q.set('role', role);

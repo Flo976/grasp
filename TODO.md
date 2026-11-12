@@ -122,6 +122,8 @@ Lecture et recette
       `find <texte|/regex/> [--role] [--max]` (lignes trouvées, options de listes fermées comprises, conteneur
       joint) ; refs identiques au snapshot complet ; CLI, `GET /snap?mode=|find=`, run, MCP (`snap mode`, `find`).
       Mesuré sur `/portail` : complet 24 153 octets, outline 1 050, interactive 11 362, find 147.
+      Relecture : `find` garde la ligne `… élagué` (modale, iframes) ; la CLI refuse `find --outline|--interactive|
+      --markdown` et `snap|text --role|--limit` comme l'API et `grasp run`.
 - [ ] Lecture progressive : mesurer les gains sur des pages réelles ; volume des `banner`/`contentinfo` sans nom
       (non émis par le snapshot) ; `--role` par familles (`textbox` + `searchbox`) ?
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).

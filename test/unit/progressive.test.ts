@@ -188,3 +188,15 @@ test('find : la ligne « … élagué » reste (modale, iframes) — « aucune c
   assert.match(t3, /:button "Accepter"/);
   assert.match(t3, /… élagué : reste de la page masqué par la fenêtre modale/);
 });
+
+test('CLI seule (sans checkRunFlags) : options de lecture sans effet refusées, jamais ignorées', () => {
+  const cli = (...argv: string[]) => buildRequest(parseArgs(argv));
+  for (const m of ['--outline', '--interactive', '--markdown']) assert.throws(() => cli('find', 'x', m), new RegExp(`${m} ne s'applique pas à find`), m);
+  for (const [f, v] of [['--role', 'button'], ['--limit', '3']] as const) {
+    assert.throws(() => cli('snap', f, v), /ne s'applique qu'à find/, `snap ${f}`);
+    assert.throws(() => cli('text', f, v), /ne s'applique qu'à find/, `text ${f}`);
+  }
+  // Ce qui est valide passe toujours.
+  assert.equal(cli('find', 'x', '--role', 'button', '--max', '2').path, '/snap?find=x&role=button&limit=2');
+  assert.equal(cli('snap', '--outline', '--max', '900').path, '/snap?max=900&mode=outline');
+});
