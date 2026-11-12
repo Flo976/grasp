@@ -162,3 +162,17 @@ Image Docker
       dans `grasp run`.
 - [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
       (`aria-describedby` absent), etc. Utile en recette.
+
+## Aide pour agents
+
+- [x] **`grasp skill` et `grasp help --json`** : mode d'emploi pour un agent IA (format SKILL.md de Claude Code,
+      copie versionnée `skills/grasp/SKILL.md`) et description machine des commandes, options typées et outils
+      MCP, depuis un catalogue unique (`src/core/commands.ts`) ; `test/unit/commands.test.ts` le confronte au
+      parseur, à `main.ts`, à `run`, aux outils MCP et à SKILL.md. Reste : le catalogue double encore les données
+      du parseur (`VALUE_FLAGS`, `RUN_FLAGS`) au lieu de les produire — les dériver quand les branches en cours sur
+      `script.ts` seront intégrées ; `grasp help` (texte) reste rédigé à la main ; les instructions MCP
+      (`initialize`) ne sont pas encore tirées du même texte.
+- [x] **Test du catalogue durci** (relecture) : `RUN_FLAGS` exporté et comparé directement au catalogue, sondes
+      `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
+      ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
+      sans être décrite : rouge ; l'ancien test restait vert).

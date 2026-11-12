@@ -12,6 +12,7 @@ import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
 import { runMcp } from './mcp.js';
+import { commandHelp, helpJson, skillText } from './help.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
@@ -643,7 +644,16 @@ async function main(argv: string[]): Promise<number> {
       throw new CliError('usage : grasp daemon install | uninstall | status');
     }
     case 'help': case '--help': case '-h':
-      out(HELP);
+      // --json : description machine (catalogue src/core/commands.ts) ; help <commande> : sa fiche.
+      try {
+        if (json) out(JSON.stringify(helpJson(a.pos[0])));
+        else out(a.pos[0] !== undefined ? commandHelp(a.pos[0]) : HELP);
+      } catch (e) { throw new CliError((e as Error).message); }
+      return 0;
+    case 'skill':
+      // Mode d'emploi pour un agent IA (SKILL.md de Claude Code) ; skills/grasp/SKILL.md en est la copie.
+      if (a.pos.length > 0) throw new CliError('usage : grasp skill   (grasp skill > skills/grasp/SKILL.md)');
+      process.stdout.write(skillText());
       return 0;
     default:
       throw new CliError(`commande inconnue « ${a.cmd} » — grasp help`);
@@ -752,6 +762,8 @@ Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés 
                get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1
 Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
+Aide         help [commande] [--json]   --json : commandes, options et types, outils MCP (grasp-help/1)
+             skill                      mode d'emploi pour un agent IA (SKILL.md de Claude Code)
 
 Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider
              frame=<css de l'iframe> >> <css|text:…>   élément DANS une iframe (même d'une autre origine : TinyMCE,
