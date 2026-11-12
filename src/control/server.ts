@@ -109,7 +109,7 @@ export interface ControlPlaneOptions {
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -731,7 +731,10 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         let r: RunResult;
         let notice: string | undefined;
         try {
-          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }), optBool(body, 'continue') === true, ac.signal, () => { const n = notice; notice = undefined; return n; });
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }), optBool(body, 'continue') === true, ac.signal, {
+            report: optBool(body, 'report'),
+            takeNotice: () => { const n = notice; notice = undefined; return n; },
+          });
         } finally { res.off('close', onClose); }
         if (r.aborted === true) {
           const last = r.steps.at(-1);

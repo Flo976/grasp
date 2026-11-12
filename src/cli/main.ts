@@ -14,7 +14,7 @@ import { runDoctor } from './doctor.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
-import type { RunResult } from '../control/run.js';
+import { formatReport, type RunResult } from '../control/run.js';
 import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
 
 /**
@@ -175,7 +175,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  * stdout : « [n] commande → OK|ERROR: raison » puis la sortie utile ; stderr : notes numérotées et bilan.
  */
 async function runCmd(c: Client, a: Args): Promise<number> {
-  if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--json]');
+  if (a.pos.length > 1) throw new CliError('usage : grasp run [fichier|-] [--continue] [--report|--no-report] [--json]');
+  if (a.flags.has('report') && a.flags.has('no-report')) throw new CliError('--report et --no-report s\'excluent');
   const file = a.pos[0];
   let script: string;
   if (file === undefined || file === '-') {
@@ -185,13 +186,16 @@ async function runCmd(c: Client, a: Args): Promise<number> {
     try { script = readFileSync(file, 'utf8'); } catch (e) { throw new CliError(`impossible de lire ${file} : ${(e as Error).message}`); }
   }
   const t0 = Date.now();
-  const r = (await c.call('POST', '/run', { script, ...(a.flags.has('continue') ? { continue: true } : {}) }, 60 * 60_000)).json() as RunResult;
+  // Rapport : --report, --no-report, sinon décidé par le serveur (oui dès qu'une ligne est un expect).
+  const report = a.flags.has('report') ? { report: true } : a.flags.has('no-report') ? { report: false } : {};
+  const r = (await c.call('POST', '/run', { script, ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
     out(`[${st.n}] ${st.text} → ${st.ok ? 'OK' : `ERROR: ${st.error ?? 'échec'}`}`);
     if (st.output !== undefined) out(st.output);
     if (st.detail !== undefined) hint(`[${st.n}] note: ${st.detail}`);
   }
+  if (r.report !== undefined) out(formatReport(r.report));
   const failed = r.steps.filter((st) => !st.ok);
   const notRun = r.total - r.executed;
   hint(`${plural(r.total, 'commande', 'commandes')}, ${r.steps.length - failed.length} OK${failed.length > 0 ? `, ${failed.length} en échec` : ''}${notRun > 0 ? `, ${notRun} non exécutée${notRun > 1 ? 's' : ''}` : ''} (${Date.now() - t0} ms, un aller-retour)`);
@@ -252,6 +256,15 @@ async function stateCmd(c: Client, a: Args, paths: GraspPaths): Promise<void> {
     return;
   }
   throw new CliError('usage : grasp state export [fichier|-] [--origin http://hôte:port,…] | import <fichier|->');
+}
+
+/** grasp expect <assertion> … : OK sur stdout (code 0), sinon ERROR: expect: attendu … ; constaté : … (code 1). */
+async function expectCmd(c: Client, a: Args): Promise<void> {
+  const rq = buildRequest(a);
+  const j = (await c.call(rq.method, rq.path, rq.body, rq.timeoutMs)).json() as { waited: number; detail?: string };
+  if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
+  out('OK');
+  if (j.detail !== undefined) hint(`note: ${j.detail}`);
 }
 
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
@@ -445,6 +458,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'wait': await waitCmd(c, a); return 0;
+    case 'expect': await expectCmd(c, a); return 0;
     case 'run': return runCmd(c, a);
     case 'profiles': {
       const sub = a.pos[0];
@@ -612,6 +626,14 @@ Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, 
                n'est pas activé), seulement le DOM et les navigations
                traqueurs (blockTrackers, défaut true) : requêtes annulées avant de partir, jamais attendues ;
                « traqueurs bloqués : N requête(s) » sur stderr, détail dans console (source grasp)
+Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]     texte visible (contient)
+             expect url [~] <url> | title [~] <titre> [--regex]       égalité ; ~ = contient (citez-le : '~')
+             expect sel <sél> | no-sel <sél>                          élément visible (CSS) ou présent (ref, text:)
+             expect value <sél> [~] <valeur> [--regex]                valeur du champ
+             expect no-console-errors [--ignore <regex>] [--since <seq>]   depuis le début du document courant
+             expect no-form-errors                                    champs invalides, alertes
+               relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console et formulaire : immédiat) ;
+               échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
@@ -645,9 +667,11 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                           onglet en arrière-plan → ramené au premier plan (note)
              config fallbackEngine playwright : un clic natif non livré ou non actionnable (invisible, désactivé)
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
-Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN aller-retour (stdin par défaut)
+Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
                une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
-               hover type wait eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               hover type wait expect eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
+               erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)
                → ERROR, jamais ignorée ; arrêt au premier échec (--continue pour poursuivre) ; client coupé
                (Ctrl-C, délai de l'agent) → aucune étape de plus ne démarre (journal du serveur) ;

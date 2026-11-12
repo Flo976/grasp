@@ -22,9 +22,31 @@ export interface RunStep {
   error?: string;
   /** Réponse brute du bridge (--json). */
   result?: unknown;
+  /** Rapport de recette : capture prise juste après l'échec de l'étape. */
+  screenshot?: string;
   ms: number;
 }
-export interface RunResult { ok: boolean; total: number; executed: number; steps: RunStep[]; aborted?: boolean }
+export interface RunResult { ok: boolean; total: number; executed: number; steps: RunStep[]; aborted?: boolean; report?: RunReport }
+
+/**
+ * Rapport de recette (`--report`, ou dès qu'un script contient `expect`) : étapes et durées, erreurs console et
+ * requêtes en échec survenues PENDANT le run, erreurs de formulaire de la page finale, capture à chaque échec.
+ */
+export interface RunReport {
+  ok: boolean;
+  ms: number;
+  total: number;
+  steps: Array<{ n: number; line: number; text: string; ok: boolean; ms: number; error?: string; screenshot?: string }>;
+  notRun: Array<{ n: number; line: number; text: string }>;
+  /** Entrées de niveau error depuis le début du run : console/exceptions/CSP d'un côté, requêtes de l'autre. */
+  console: { since: number; errors: ConsoleEntry[]; requests: ConsoleEntry[]; omitted: number; note?: string } | { unavailable: string };
+  /** Champs invalides et alertes de la page finale (lignes de snapshot). */
+  forms: { items: string[] } | { unavailable: string };
+  page?: { url: string; title: string };
+}
+
+/** Captures prises par un même run (au-delà, l'échec est rapporté sans capture). */
+const MAX_REPORT_SHOTS = 5;
 
 /** Exécute une étape : réponse du bridge (JSON ou texte), ou erreur GraspError avec le statut HTTP. */
 export type StepExecutor = (rq: StepRequest) => Promise<unknown>;
@@ -52,9 +74,22 @@ export function compileScript(script: string): Array<{ src: ScriptLine; rq: Step
  * appelant qui ne verra jamais la réponse ne doit pas laisser des clics partir à l'aveugle. L'étape en cours
  * va à son terme (une action CDP ne s'interrompt pas proprement) ; `aborted` le signale.
  */
-export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal, takeNotice?: () => string | undefined): Promise<RunResult> {
+/**
+ * `opts.report` : rapport de recette (d'office avec `expect`) ; `opts.takeNotice` : note du control plane à joindre à
+ * l'étape qui vient de s'exécuter (navigateur recyclé juste avant).
+ */
+export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, cont: boolean, signal?: AbortSignal, opts: { report?: boolean | undefined; takeNotice?: (() => string | undefined) | undefined } = {}): Promise<RunResult> {
   const out: RunStep[] = [];
   let failed = false;
+  const wantReport = opts.report ?? steps.some((s) => s.rq.cmd === 'expect');
+  const tRun = Date.now();
+  // Début du run dans la console de l'onglet : seules les erreurs postérieures entrent au rapport.
+  let startSeq: number | undefined;
+  let consoleOff: string | undefined;
+  if (wantReport) {
+    try { startSeq = Number((await exec({ cmd: 'console', method: 'POST', path: '/console', body: { limit: 1 } }) as { seq: number }).seq); } catch (e) { consoleOff = (e as Error).message; }
+  }
+  let shots = 0;
   for (const [i, { src, rq }] of steps.entries()) {
     if (failed && !cont) break;
     if (signal?.aborted === true) return { ok: false, total: steps.length, executed: out.length, steps: out, aborted: true };
@@ -76,15 +111,102 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
       if (extra !== undefined) {
         step.result = extra;
         if (Array.isArray(extra.console) && extra.console.length > 0) step.output = (extra.console as ConsoleEntry[]).map(formatEntry).join('\n');
+        if (typeof extra.screenshot === 'string') step.screenshot = extra.screenshot;
+      }
+      // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
+      if (wantReport && step.screenshot === undefined && shots < MAX_REPORT_SHOTS) {
+        shots++;
+        try { step.screenshot = String((await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot?save=1' }) as { path: string }).path); } catch (se) { step.detail = `capture impossible : ${(se as Error).message}`; }
       }
     }
     // Note du control plane (navigateur recyclé avant l'étape) : en tête des notes de l'étape.
-    const notice = takeNotice?.();
+    const notice = opts.takeNotice?.();
     if (notice !== undefined) step.detail = step.detail !== undefined ? `${notice} ; ${step.detail}` : notice;
     step.ms = Date.now() - t0;
     out.push(step);
   }
-  return { ok: !failed, total: steps.length, executed: out.length, steps: out };
+  const r: RunResult = { ok: !failed, total: steps.length, executed: out.length, steps: out };
+  if (wantReport) r.report = await buildReport(r, steps, exec, tRun, startSeq, consoleOff);
+  return r;
+}
+
+const errMsg = (e: unknown) => (e as Error).message;
+
+async function buildReport(r: RunResult, steps: Array<{ src: ScriptLine; rq: StepRequest }>, exec: StepExecutor, t0: number, startSeq: number | undefined, consoleOff: string | undefined): Promise<RunReport> {
+  let con: RunReport['console'];
+  if (startSeq === undefined) con = { unavailable: consoleOff ?? 'console indisponible' };
+  else {
+    const read = (since: number) => exec({ cmd: 'console', method: 'POST', path: '/console', body: { since, level: 'error', limit: 200 } }) as Promise<{ entries: ConsoleEntry[]; omitted: number }>;
+    try {
+      let note: string | undefined;
+      let since = startSeq;
+      let c: { entries: ConsoleEntry[]; omitted: number };
+      try { c = await read(since); } catch (e) {
+        // Tampon recréé pendant le run (bascule de profil) : tout ce qu'il contient date du run.
+        if (!(e instanceof GraspError && e.status === 409)) throw e;
+        since = 0;
+        note = 'tampon console recréé pendant le run (bascule de profil) : relu depuis son début';
+        c = await read(0);
+      }
+      const errs = c.entries.filter((x) => x.source !== 'navigation' && x.level === 'error');
+      const isReq = (x: ConsoleEntry) => x.source === 'network' || x.source === 'grasp';
+      con = { since, errors: errs.filter((x) => !isReq(x)), requests: errs.filter(isReq), omitted: c.omitted, ...(note !== undefined ? { note } : {}) };
+    } catch (e) { con = { unavailable: errMsg(e) }; }
+  }
+  let forms: RunReport['forms'];
+  try {
+    await exec({ cmd: 'expect', method: 'POST', path: '/expect', body: { kind: 'no-form-errors' } });
+    forms = { items: [] };
+  } catch (e) {
+    const items = e instanceof GraspError && e.status === 417 ? (e.extra?.expect as { items?: unknown } | undefined)?.items : undefined;
+    forms = Array.isArray(items) ? { items: items.map(String) } : { unavailable: errMsg(e) };
+  }
+  let page: RunReport['page'];
+  try { const l = await exec({ cmd: 'location', method: 'GET', path: '/location' }) as { url: string; title: string }; page = { url: l.url, title: l.title }; } catch { page = undefined; }
+  return {
+    ok: r.ok, ms: Date.now() - t0, total: r.total,
+    steps: r.steps.map((s) => ({ n: s.n, line: s.line, text: s.text, ok: s.ok, ms: s.ms, ...(s.error !== undefined ? { error: s.error } : {}), ...(s.screenshot !== undefined ? { screenshot: s.screenshot } : {}) })),
+    notRun: steps.slice(r.executed).map((s, i) => ({ n: r.executed + i + 1, line: s.src.line, text: s.src.text })),
+    console: con, forms, ...(page !== undefined ? { page } : {}),
+  };
+}
+
+const cut = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…`);
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Rapport de recette en texte compact (stdout de `grasp run`). */
+export function formatReport(rep: RunReport): string {
+  const ko = rep.steps.filter((s) => !s.ok).length;
+  const L: string[] = [];
+  L.push(`== recette : ${rep.ok ? 'OK' : 'ÉCHEC'} — ${plural(rep.total, 'étape', 'étapes')} : ${rep.steps.length - ko} OK, ${ko} KO${rep.notRun.length > 0 ? `, ${rep.notRun.length} non exécutée${rep.notRun.length > 1 ? 's' : ''}` : ''} (${rep.ms} ms)`);
+  for (const s of rep.steps) {
+    L.push(`${s.ok ? 'OK' : 'KO'}  [${s.n}] ${cut(s.text, 100)} (${s.ms} ms)`);
+    if (!s.ok) {
+      L.push(`      ${s.error ?? 'échec'}`);
+      if (s.screenshot !== undefined) L.push(`      capture : ${s.screenshot}`);
+    }
+  }
+  for (const s of rep.notRun) L.push(`--  [${s.n}] ${cut(s.text, 100)} (non exécutée)`);
+  const c = rep.console;
+  if ('unavailable' in c) L.push(`console : non lue (${c.unavailable})`);
+  else {
+    L.push(c.errors.length === 0 ? 'console : aucune erreur pendant le run' : `console : ${plural(c.errors.length, 'erreur', 'erreurs')} pendant le run`);
+    for (const e of c.errors.slice(0, 20)) L.push(`  ${formatEntry(e)}`);
+    if (c.errors.length > 20) L.push(`  … et ${c.errors.length - 20} autre(s)`);
+    L.push(c.requests.length === 0 ? 'requêtes en échec : aucune' : `requêtes en échec : ${c.requests.length}`);
+    for (const e of c.requests.slice(0, 20)) L.push(`  ${formatEntry(e)}`);
+    if (c.requests.length > 20) L.push(`  … et ${c.requests.length - 20} autre(s)`);
+    if (c.omitted > 0) L.push(`  AVERTISSEMENT : ${c.omitted} entrée(s) plus ancienne(s) non lue(s) (200 au plus) — grasp console --since ${c.since} --level error --limit 1000`);
+    if (c.note !== undefined) L.push(`  note: ${c.note}`);
+  }
+  const f = rep.forms;
+  if ('unavailable' in f) L.push(`formulaire : non lu (${f.unavailable})`);
+  else {
+    L.push(f.items.length === 0 ? 'formulaire : aucune erreur' : `formulaire : ${plural(f.items.length, 'erreur', 'erreurs')}`);
+    for (const i of f.items.slice(0, 20)) L.push(`  ${i}`);
+  }
+  if (rep.page !== undefined) L.push(`page finale : ${rep.page.url} « ${rep.page.title} »`);
+  return L.join('\n');
 }
 
 interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number } }
@@ -114,6 +236,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
     case 'wait': return {};
+    case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {
       const p = j as { unchanged?: boolean; profile?: string; previous?: string | null };
       return { detail: p.unchanged === true ? `déjà sur le profil « ${p.profile} »` : `profil ${p.previous ?? '(éphémère)'} → ${p.profile} ; navigateur relancé, la page repart de about:blank` };
