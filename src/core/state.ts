@@ -10,6 +10,12 @@ export const STATE_FORMAT = 'grasp-state';
 export const STATE_VERSION = 1;
 /** Corps d'un import (et de la route qui le relaie) : le localStorage peut peser plusieurs Mo par origine. */
 export const STATE_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * Corps de `POST /run` : les fichiers de `state import` (STATE_MAX_BYTES au plus en tout, lus par la CLI) plus le
+ * script et l'enveloppe JSON, d'où la marge (la limite par défaut d'un corps, 4 Mo). La CLI vérifie le corps complet
+ * avant l'envoi : un run trop gros est refusé avec un message clair, jamais par un 413 du serveur.
+ */
+export const RUN_MAX_BYTES = STATE_MAX_BYTES + 4 * 1024 * 1024;
 
 export type SameSite = 'Strict' | 'Lax' | 'None';
 

@@ -488,11 +488,7 @@ const TOOLS: Tool[] = [
     props: { state: S('État au format JSON (texte).') },
     required: ['state'],
     async run(c, a) {
-      const raw = String(a.state);
-      if (Buffer.byteLength(raw) > STATE_MAX_BYTES) throw new ArgError(`state : ${STATE_MAX_BYTES} octets au plus`);
-      let state: unknown;
-      // Sans extrait : le texte peut contenir des jetons de session.
-      try { state = JSON.parse(raw); } catch { throw new ArgError('state : JSON invalide (format grasp-state v1 ou storageState Playwright attendu)'); }
+      const state = parseStateArg(String(a.state));
       const j = (await c.call('POST', '/state/import', { state })).json() as Record<string, unknown>;
       return text(['OK', ...stateImportNotes(j)].join('\n'));
     },
@@ -513,6 +509,16 @@ const TOOLS: Tool[] = [
     },
   },
 ];
+
+/**
+ * Argument `state` de l'outil state_import : borné à `max` octets (STATE_MAX_BYTES, comme la route), puis analysé.
+ * Message sans extrait : le texte peut contenir des jetons de session. `max` : paramètre pour les tests.
+ */
+export function parseStateArg(raw: string, max = STATE_MAX_BYTES): unknown {
+  const n = Buffer.byteLength(raw);
+  if (n > max) throw new ArgError(`state : ${n} octets (${max} au plus)`);
+  try { return JSON.parse(raw); } catch { throw new ArgError('state : JSON invalide (format grasp-state v1 ou storageState Playwright attendu)'); }
+}
 
 export function toolList(): Json[] {
   return TOOLS.map((t) => ({

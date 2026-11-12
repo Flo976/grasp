@@ -204,6 +204,8 @@ test('allowConsole=false : network, --network et expect request → 403 explicit
     const n = await c(['network']);
     assert.equal(n.code, 1);
     assert.match(n.stderr, /^ERROR: network: journal réseau indisponible : allowConsole=false, le domaine CDP Network n'est pas activé/m);
+    assert.match(n.stderr, /\(clé allowConsole\)\. .*décision de l'utilisateur humain/);
+    assert.doesNotMatch(n.stderr, /config set/);
     const a = await c(['click', 'text:Commander', '--network']);
     assert.equal(a.code, 1);
     assert.match(a.stderr, /journal réseau indisponible/);

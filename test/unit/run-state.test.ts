@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRequest, checkRunFlags, parseArgs, parseScript, splitLine } from '../../src/core/script.js';
 import { attachImports, compileScript, stateImportNotes } from '../../src/control/run.js';
-import { readRunImports } from '../../src/cli/runfiles.js';
+import { checkRunBody, readRunImports, runFilePath } from '../../src/cli/runfiles.js';
 import { asRunScript, commandOf, renderLine, type HistoryEntry } from '../../src/core/history.js';
-import { EVAL_REFUSAL } from '../../src/core/policy.js';
-import { toolList } from '../../src/cli/mcp.js';
+import { EVAL_REFUSAL, policyRefusal } from '../../src/core/policy.js';
+import { parseStateArg, toolList } from '../../src/cli/mcp.js';
 
 /** Retours du deuxième essai réel : state import dans run, refus d'eval sans incitation, outils MCP storage et state_import. */
 
@@ -108,4 +108,53 @@ test('MCP : outils storage (get|set|rm, local|session) et state_import (JSON en 
   assert.ok(imp, 'outil state_import absent');
   assert.deepEqual(Object.keys(imp.inputSchema.properties), ['state']);
   assert.match(imp.description, /sans eval/i);
+});
+
+test('runFilePath : ~ en tête développé (aucun shell sur une ligne de run), le reste relatif au répertoire courant', () => {
+  assert.equal(runFilePath('~/etat.json', '/rep', '/home/u'), '/home/u/etat.json');
+  assert.equal(runFilePath('~', '/rep', '/home/u'), '/home/u');
+  assert.equal(runFilePath('etats/a.json', '/rep', '/home/u'), '/rep/etats/a.json');
+  assert.equal(runFilePath('/abs/a.json', '/rep', '/home/u'), '/abs/a.json');
+  // Ni ~utilisateur ni variables d'environnement : pris tels quels (documenté).
+  assert.equal(runFilePath('~autre/a.json', '/rep', '/home/u'), '/rep/~autre/a.json');
+  assert.equal(runFilePath('$HOME/a.json', '/rep', '/home/u'), '/rep/$HOME/a.json');
+});
+
+test('readRunImports : ~/fichier lu dans le répertoire personnel ; limites par fichier et au total', () => {
+  const root = mkdtempSync(join(tmpdir(), 'grasp-imports-'));
+  try {
+    const home = join(root, 'maison');
+    mkdirSync(home);
+    const st = JSON.stringify({ format: 'grasp-state', version: 1, origins: [] });
+    writeFileSync(join(home, 'etat.json'), st);
+    assert.deepEqual(readRunImports('state import ~/etat.json\n', join(root, 'ailleurs'), undefined, home), { '~/etat.json': { path: join(home, 'etat.json'), state: JSON.parse(st) } });
+    writeFileSync(join(root, 'a.json'), st);
+    writeFileSync(join(root, 'b.json'), st);
+    const n = Buffer.byteLength(st);
+    // Chaque fichier passe seul, les deux ensemble dépassent : refus à la ligne du second.
+    assert.equal(Object.keys(readRunImports('state import a.json\nstate import b.json\n', root, 2 * n)).length, 2);
+    assert.throws(() => readRunImports('state import a.json\nstate import b.json\n', root, 2 * n - 1), /ligne 2 : state import b\.json : fichiers d'état trop gros pour un run \(\d+ octets au plus en tout\)/);
+    assert.throws(() => readRunImports('state import a.json\n', root, n - 1), /ligne 1 : state import a\.json : lecture impossible : \d+ octets/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('checkRunBody : corps complet mesuré avant l\'envoi (script et imports compris), refus clair au-delà', () => {
+  const body = { script: 'state import a.json', files: true, imports: { 'a.json': { path: '/a.json', state: { x: 'é' } } } };
+  const n = Buffer.byteLength(JSON.stringify(body));
+  checkRunBody(body, n);
+  assert.throws(() => checkRunBody(body, n - 1), new RegExp(`run trop gros : ${n} octets à envoyer \\(${n - 1} au plus, script et fichiers de state import compris\\)`));
+});
+
+test('MCP state_import : argument borné en octets, JSON invalide sans extrait', () => {
+  assert.deepEqual(parseStateArg('{"a":"é"}', 10), { a: 'é' });
+  assert.throws(() => parseStateArg('{"a":"é"}', 9), /state : 10 octets \(9 au plus\)/);
+  assert.throws(() => parseStateArg('{"jeton": SECRET', 1000), (e: Error) => /JSON invalide/.test(e.message) && !e.message.includes('SECRET'));
+});
+
+test('refus des autres clés de politique (allowCookies, allowUpload, allowConsole) : la clé nommée, jamais la commande qui la relâche', () => {
+  for (const key of ['allowCookies', 'allowUpload', 'allowConsole'] as const) {
+    const m = policyRefusal('x est désactivé', key);
+    assert.match(m, new RegExp(`^x est désactivé par la politique de Grasp \\(clé ${key}\\)\\. .*décision de l'utilisateur humain, pas de l'agent`));
+    assert.doesNotMatch(m, /config set|pour l'autoriser/);
+  }
 });

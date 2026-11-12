@@ -219,7 +219,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON ; dans run : state import <fichier> seulement', options: [], run: true, mcp: 'state_import', disabledByDefault: 'allowCookies',
     subcommands: [
       { name: 'export', usage: 'state export [fichier|-] [--origin http://hôte:port,…]', summary: 'exporte (fichier 0600 ; sans fichier : chemin sur stdout) ; commande isolée, pas dans run', options: ['origin'] },
-      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire courant ; pas de -) et par l\'outil MCP state_import (JSON en argument)' },
+      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire courant, ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
     ] },
   // Configuration
   { name: 'security', group: 'Configuration', usage: 'security', summary: 'politique telle que le garde l\'applique', options: [] },

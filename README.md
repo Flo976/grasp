@@ -307,7 +307,8 @@ Playwright (sans `format`) s'importe tel quel :
 hasCrossSiteAncestor}`) présent pour un cookie partitionné (CHIPS). Une `version` inconnue est refusée (400),
 jamais devinée ; un fichier invalide est refusé en entier, avant d'appliquer quoi que ce soit.
 
-- **Politique** : `allowCookies=false` (défaut) → 403 `… activez la clé allowCookies …`, aucun fichier écrit.
+- **Politique** : `allowCookies=false` (défaut) → 403 `… désactivés par la politique de Grasp (clé allowCookies). La
+  changer est une décision de l'utilisateur humain, pas de l'agent …`, aucun fichier écrit.
   **Allowlist** : seuls les cookies et origines qu'elle couvre sont exportés ou importés ; le reste est écarté
   et **listé** sur stderr (`note: N cookie(s) hors allowlist non exporté(s)`, `AVERTISSEMENT : non importé : …`).
   Un cookie de domaine `.exemple.com` relève de `*.exemple.com`. Cookies déjà expirés : non importés, signalés.
@@ -1137,9 +1138,13 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   (l'écriture a lieu après la réponse du serveur) ; elles restent toutes affichées, rien n'est jeté.
 - **`state import <fichier>`** : comme `screenshot -o` en écriture, le fichier est **lu par la CLI**, jamais par
   le serveur : chemin relatif au répertoire courant (ou absolu), comme la commande isolée ; `-` (stdin) refusé
-  dans un run. Tous les fichiers sont lus et analysés **avant l'envoi** : illisible, JSON invalide (message sans
-  extrait du fichier, qui peut contenir des jetons) ou plus de 64 Mo en tout → `ERROR: run: ligne N : state
-  import … — aucune commande exécutée`. Le contenu part dans le corps du run (`imports`) et l'étape passe par la
+  dans un run. **Aucun shell ne passe sur une ligne de run** : la CLI développe elle-même `~` en tête (`~` seul ou
+  `state import ~/etat.json`), mais ni `~utilisateur` ni les variables d'environnement (`$HOME/etat.json` est pris
+  à la lettre, relatif au répertoire courant). Tous les fichiers sont lus et analysés **avant l'envoi** :
+  illisible, JSON invalide (message sans extrait du fichier, qui peut contenir des jetons) ou plus de 64 Mo en
+  tout → `ERROR: run: ligne N : state import … — aucune commande exécutée`. Le corps complet du run (script,
+  fichiers, enveloppe JSON) est mesuré lui aussi avant l'envoi : au-delà de 68 Mo, limite du serveur pour
+  `POST /run`, `ERROR: run: run trop gros : … — aucune commande exécutée` (jamais un 413 du serveur). Le contenu part dans le corps du run (`imports`) et l'étape passe par la
   route `/state/import`, avec **les mêmes garde-fous** qu'en commande isolée (`allowCookies`, allowlist, origines
   écartées listées dans la note de l'étape). Aucune contrainte d'ordre n'est imposée (la commande isolée n'en a
   pas) ; placée **avant le premier `nav`**, elle pose le localStorage sans requête au site et le sessionStorage au
@@ -2305,7 +2310,11 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
   **ne dicte pas** la commande qui relâcherait la politique : il oriente vers ce qui se fait sans eval (`storage
   get|set`, `expect text|value|sel|a11y`, `find`, `snap`, `network`, `state import`) et présente `allowEval` comme
   une décision de l'utilisateur humain, pas de l'agent (un message « config set allowEval true pour l'autoriser »
-  poussait un agent à contourner son skill — retour du deuxième essai réel). Même texte en CLI, dans `run` et par MCP. Console : lecture **autorisée** (voir
+  poussait un agent à contourner son skill — retour du deuxième essai réel). Même texte en CLI, dans `run` et par MCP.
+  Les refus des autres clés (`allowCookies` pour `storage`, `state`, `cookies` ; `allowUpload` ; `allowConsole`
+  pour `console` et `network`) suivent la même règle : la clé est nommée, sa valeur présentée comme une décision
+  de l'utilisateur humain, jamais comme une commande `config set` à lancer — sinon l'agent qui suit le refus
+  d'`eval` vers `storage` ou `state import` retomberait sur l'incitation. Console : lecture **autorisée** (voir
   [Console](#console-du-navigateur) pour la décision et ses garanties), et avec elle le [journal
   réseau](#journal-réseau), sans corps ni en-têtes, sans option pour les afficher.
 - Allowlist par défaut : `127.0.0.1`, `localhost`, `[::1]`. `[]` explicite = **tout bloqué**

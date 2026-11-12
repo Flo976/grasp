@@ -135,7 +135,8 @@ test('CLI : allowConsole=false → console refusée (403) et signalée par `gras
     await runCli(t.env, ['session', 'create']);
     const r = await runCli(t.env, ['console']);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /^ERROR: console: .*allowConsole/m);
+    assert.match(r.stderr, /^ERROR: console: la console est désactivée par la politique de Grasp \(clé allowConsole\)/m);
+    assert.doesNotMatch(r.stderr, /config set/, 'la clé est nommée, la commande qui la relâche jamais dictée');
     assert.match((await runCli(t.env, ['security'])).stdout, /console\s*: désactivé/);
     assert.equal((await srv.api('GET', '/console')).status, 403);
   } finally { srv.proc.kill('SIGTERM'); await waitExit(srv.proc); t.cleanup(); }

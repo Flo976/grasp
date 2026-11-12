@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
-import { EVAL_REFUSAL, checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
+import { EVAL_REFUSAL, checkNavigation, policyRefusal, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
@@ -1374,7 +1374,7 @@ export class PageController {
   }
 
   private assertConsole(): void {
-    if (!this.policy.allowConsole) throw forbidden('la console est désactivée (grasp config set allowConsole true pour l\'autoriser)');
+    if (!this.policy.allowConsole) throw forbidden(policyRefusal('la console est désactivée', 'allowConsole'));
   }
 
   /** Lecture du journal réseau (403 si la politique l'interdit : sans console, aucun domaine Network). */
@@ -1388,7 +1388,7 @@ export class PageController {
    * 403 explicite, jamais un journal vide qui ferait croire qu'aucune requête n'est partie.
    */
   private assertNetwork(): void {
-    if (!this.policy.allowConsole) throw forbidden('journal réseau indisponible : allowConsole=false, le domaine CDP Network n\'est pas activé (grasp config set allowConsole true pour l\'autoriser)');
+    if (!this.policy.allowConsole) throw forbidden(policyRefusal('journal réseau indisponible : allowConsole=false, le domaine CDP Network n\'est pas activé ; console désactivée', 'allowConsole'));
   }
 
   private networkSince(seq: number): NetworkSlice {
@@ -3919,7 +3919,7 @@ export class PageController {
   }
 
   private stateAllowed(): void {
-    if (!this.policy.allowCookies) throw forbidden('l\'export et l\'import de l\'état (cookies, stockage local) sont désactivés : activez la clé allowCookies (grasp config set allowCookies true, puis redémarrez le serveur)');
+    if (!this.policy.allowCookies) throw forbidden(policyRefusal('l\'export et l\'import de l\'état (cookies, stockage Web) sont désactivés', 'allowCookies'));
   }
 
   /** Document d'un onglet d'état : servi VIDE par Grasp (aucune requête ne part), seulement pour l'origine visée. */
@@ -4118,7 +4118,7 @@ export class PageController {
   }
 
   async cookies(): Promise<unknown[]> {
-    if (!this.policy.allowCookies) throw forbidden('l\'accès aux cookies est désactivé (grasp config set allowCookies true)');
+    if (!this.policy.allowCookies) throw forbidden(policyRefusal('l\'accès aux cookies est désactivé', 'allowCookies'));
     const { cookies } = await this.s<{ cookies: unknown[] }>('Network.getCookies');
     return cookies;
   }
@@ -4143,7 +4143,7 @@ export class PageController {
 
   async upload(sel: string, files: string[], opts: { engine?: string | undefined } = {}): Promise<ActionResult> {
     // La politique d'abord, quel que soit le moteur : aucune connexion Playwright pour une action interdite.
-    if (!this.policy.allowUpload) throw forbidden('l\'upload est désactivé (grasp config set allowUpload true)');
+    if (!this.policy.allowUpload) throw forbidden(policyRefusal('l\'upload est désactivé', 'allowUpload'));
     for (const f of files) {
       if (!f.startsWith('/')) throw badRequest(`chemin absolu attendu : ${f}`);
       try { if (!statSync(f).isFile()) throw new Error(); } catch { throw badRequest(`fichier introuvable : ${f}`); }

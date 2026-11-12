@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { makeTestEnv } from '../helpers/env.js';
+import { RUN_MAX_BYTES } from '../../src/core/state.js';
 import { startServer, runCli, waitExit } from '../helpers/server.js';
 import { startTestSite } from '../helpers/testsite.js';
 import { resolvePaths } from '../../src/core/paths.js';
@@ -152,11 +153,29 @@ expect text "Brouillon : factice"
     assert.doesNotMatch(h.stdout, /hors-liste|localStorage|grasp-state/, 'contenu du fichier jamais recopié');
     // Commande isolée : même ligne rejouable ; reçu sur stdin : commenté, raison dite.
     await runCli(env, ['history', '--clear']);
-    assert.equal((await runCli(env, ['state', 'import', file])).code, 0);
+    // Chemin relatif : résolu par la CLI, l'historique garde le chemin absolu (rejouable depuis un autre répertoire).
+    assert.equal((await runCli(env, ['state', 'import', rel])).code, 0);
     assert.equal((await runCli(env, ['state', 'import', '-'], JSON.stringify({ format: 'grasp-state', version: 1 }))).code, 0);
     const h2 = (await runCli(env, ['history', '--as-run'])).stdout;
     assert.match(h2, new RegExp(`^state import ${file.replace(/[.]/g, '\\.')}$`, 'm'));
     assert.match(h2, /^# state import <fichier> +# #\d+ : contenu reçu sans fichier/m);
+    assert.ok(!h2.split('\n').includes(`state import ${rel}`), h2);
+
+    // ~/ en tête développé par la CLI (aucun shell ne passe sur une ligne de run) : HOME du test = t.root.
+    await runCli(env, ['history', '--clear']);
+    const tilde = await runCli(env, ['run', '--no-report'], 'state import ~/etat-recette.json\n');
+    assert.equal(tilde.code, 0, `${tilde.stdout}\n${tilde.stderr}`);
+    assert.ok((await runCli(env, ['history', '--as-run'])).stdout.split('\n').includes(`state import ${file}`));
+
+    // Fichier d'état de plus de 4 Mo (limite par défaut d'un corps) : le corps du run le porte jusqu'au bout.
+    const big = join(t.root, 'etat-gros.json');
+    writeFileSync(big, JSON.stringify({
+      format: 'grasp-state', version: 1,
+      origins: [{ origin: site.url, localStorage: [{ name: 'theme', value: 'gros' }] }, { origin: 'http://hors-liste.exemple', localStorage: [{ name: 'k', value: 'x'.repeat(5 * 1024 * 1024) }] }],
+    }), { mode: 0o600 });
+    const g = await runCli(env, ['run'], `state import ${big}\nnav ${site.url}/compte\nexpect text "Thème : gros"\n`);
+    assert.equal(g.code, 0, `${g.stdout}\n${g.stderr}`);
+    assert.match(g.stdout, /== recette : OK/);
 
     // Fichier illisible ou JSON invalide : refus AVANT toute exécution (la navigation de la ligne 1 n'a pas lieu).
     await runCli(env, ['history', '--clear']);
@@ -168,6 +187,14 @@ expect text "Brouillon : factice"
     assert.equal(bad.code, 1);
     assert.match(bad.stderr, /JSON invalide/);
     assert.doesNotMatch(bad.stderr, /SECRET/, 'aucun extrait du fichier');
+    assert.doesNotMatch((await runCli(env, ['history'])).stdout, /nav /, 'rien exécuté');
+    // Corps du run au-delà de la limite du serveur (ici un script énorme) : refus clair de la CLI avant l'envoi,
+    // jamais le 413 « corps de requête trop gros » du serveur.
+    const hugeScript = join(t.root, 'enorme.grasp');
+    writeFileSync(hugeScript, `nav ${site.url}/\n# ${'x'.repeat(RUN_MAX_BYTES)}\n`);
+    const huge = await runCli(env, ['run', hugeScript]);
+    assert.equal(huge.code, 1);
+    assert.match(huge.stderr, /^ERROR: run: run trop gros : \d+ octets à envoyer \(\d+ au plus, script et fichiers de state import compris\) — aucune commande exécutée$/m);
     assert.doesNotMatch((await runCli(env, ['history'])).stdout, /nav /, 'rien exécuté');
     // Formes refusées à l'analyse.
     assert.match((await runCli(env, ['run'], 'state import -\n')).stderr, /stdin n'est pas disponible dans run/);

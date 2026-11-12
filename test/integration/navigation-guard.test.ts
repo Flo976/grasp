@@ -40,8 +40,9 @@ test('schémas interdits : file:// et javascript: refusés', async () => {
 test('défauts sûrs : eval, cookies, upload désactivés (403)', async () => {
   await fx.page.navigate(`${site.url}/`);
   await assert.rejects(fx.page.evaluate('1+1'), (e: GraspError) => e.status === 403);
-  await assert.rejects(fx.page.cookies(), (e: GraspError) => e.status === 403);
-  await assert.rejects(fx.page.upload('#nom', ['/etc/hostname']), (e: GraspError) => e.status === 403);
+  // Refus qui nomment la clé sans dicter la commande qui relâcherait la politique (comme celui d'eval).
+  await assert.rejects(fx.page.cookies(), (e: GraspError) => e.status === 403 && /\(clé allowCookies\)/.test(e.message) && !/config set/.test(e.message));
+  await assert.rejects(fx.page.upload('#nom', ['/etc/hostname']), (e: GraspError) => e.status === 403 && /\(clé allowUpload\)/.test(e.message) && !/config set/.test(e.message));
 });
 
 test('allowlist vide = tout bloqué, même le local', async () => {

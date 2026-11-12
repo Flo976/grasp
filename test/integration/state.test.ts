@@ -103,7 +103,9 @@ test('state : refusé tant que allowCookies est désactivé (défaut) — messag
     const file = join(t.root, 'etat.json');
     const ex = await runCli(t.env, ['state', 'export', file]);
     assert.equal(ex.code, 1);
-    assert.match(ex.stderr, /^ERROR: state: .*désactivés : activez la clé allowCookies \(grasp config set allowCookies true/m);
+    // La clé est nommée, sa valeur présentée comme décision de l'utilisateur humain : jamais la commande qui la relâche.
+    assert.match(ex.stderr, /^ERROR: state: .*sont désactivés par la politique de Grasp \(clé allowCookies\)\. .*décision de l'utilisateur humain, pas de l'agent/m);
+    assert.doesNotMatch(ex.stderr, /config set/);
     assert.equal(existsSync(file), false);
     writeFileSync(file, JSON.stringify({ format: 'grasp-state', version: 1, cookies: [], origins: [] }));
     const im = await runCli(t.env, ['state', 'import', file]);

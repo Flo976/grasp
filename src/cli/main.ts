@@ -20,7 +20,7 @@ import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/co
 import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { formatNetEntries, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { checkRunOut, readRunImports, writeRunShots } from './runfiles.js';
+import { checkRunBody, checkRunOut, readRunImports, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
 import { parseArgs, buildRequest, consoleBody, findQuery, networkBody, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
 import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
@@ -233,10 +233,16 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   // files : la CLI écrit elle-même les captures de `screenshot -o` (chemins relatifs, sous --out-dir ou le répertoire courant).
   // Répertoire et chemins vérifiés AVANT l'envoi : rien ne s'exécute si une capture ne pourra pas être écrite.
   const dir = resolvePath(outDir ?? '.');
-  // state import <fichier> : lus ici (relatifs au répertoire courant), envoyés avec le script ; illisible = rien n'est exécuté.
-  let imports: ReturnType<typeof readRunImports>;
-  try { checkRunOut(script, dir); imports = readRunImports(script); } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
-  const r = (await c.call('POST', '/run', { script, files: true, ...(Object.keys(imports).length > 0 ? { imports } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report }, 60 * 60_000)).json() as RunResult;
+  // state import <fichier> : lus ici (relatifs au répertoire courant, ~/ développé), envoyés avec le script ;
+  // illisible, ou corps au-delà de la limite du serveur = rien n'est exécuté.
+  let body: Record<string, unknown>;
+  try {
+    checkRunOut(script, dir);
+    const imports = readRunImports(script);
+    body = { script, files: true, ...(Object.keys(imports).length > 0 ? { imports } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report };
+    checkRunBody(body);
+  } catch (e) { throw new CliError(`${(e as Error).message} — aucune commande exécutée`); }
+  const r = (await c.call('POST', '/run', body, 60 * 60_000)).json() as RunResult;
   writeRunShots(r, dir);
   if (a.flags.has('json')) { out(JSON.stringify(r)); return r.ok ? 0 : 1; }
   for (const st of r.steps) {
@@ -949,8 +955,9 @@ Scripts      run [fichier|-] [--continue] [--report|--no-report] [--out-dir rép
                click fill select check press hover type wait expect eval console network screenshot cookies storage
                state upload profile viewport tabs tab), commentaires #, guillemets à la shell ;
                screenshot -o <fichier relatif> : écrit par la CLI sous --out-dir (défaut : répertoire courant), 0600 ;
-               state import <fichier> : LU par la CLI (relatif au répertoire courant, pas de -) avant l'envoi,
-               mêmes garde-fous qu'en commande isolée (allowCookies, allowlist) ; state export : commande isolée ;
+               state import <fichier> : LU par la CLI avant l'envoi (relatif au répertoire courant, ~/ développé,
+               pas de $VAR ni de -), mêmes garde-fous qu'en commande isolée (allowCookies, allowlist) ;
+               state export : commande isolée ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)

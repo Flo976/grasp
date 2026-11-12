@@ -88,7 +88,7 @@ Script analysé en entier avant exécution (option inconnue = refus), arrêt au 
 rapport de recette d'office avec un `expect` (étapes, erreurs console, requêtes 4xx/5xx, formulaire, capture à chaque échec).
 Commandes de run : nav, back, forward, reload, scroll, snap, find, text, a11y, click, fill, select, check, press, hover, type, wait, expect, eval, console, network, screenshot, cookies, storage, state, upload, profile, viewport, tabs, tab.
 Session factice sans eval (exige allowCookies) : ligne `state import session.json` (fichier lu par la CLI, relatif au
-répertoire courant ; de préférence avant le premier `nav`) ou `storage set local <clé> <valeur>` sur la page, puis `nav`.
+répertoire courant, `~/` développé mais pas `$VAR` ; de préférence avant le premier `nav`) ou `storage set local <clé> <valeur>` sur la page, puis `nav`.
 
 - `expect text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible contient <texte>
 - `expect no-text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible ne contient pas <texte>
