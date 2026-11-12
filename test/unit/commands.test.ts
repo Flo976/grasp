@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS, GLOBAL_OPTIONS, OPTIONS, SELECTORS } from '../../src/core/commands.js';
 import { EXPECT_KINDS } from '../../src/core/expect.js';
-import { RUN_COMMANDS, VALUE_FLAGS, checkRunFlags, type Args } from '../../src/core/script.js';
+import { RUN_COMMANDS, RUN_FLAGS, VALUE_FLAGS, checkRunFlags, type Args } from '../../src/core/script.js';
 import { toolList } from '../../src/cli/mcp.js';
 import { helpJson, pkgVersion, skillText } from '../../src/cli/help.js';
 
@@ -51,17 +51,35 @@ test('catalogue : options à valeur = VALUE_FLAGS du parseur, aucune option orph
   assert.equal(new Set(COMMANDS.map((c) => c.name)).size, COMMANDS.length, 'commande décrite deux fois');
 });
 
-test('catalogue : commandes de run = RUN_COMMANDS, options de chaque ligne = celles que checkRunFlags admet', () => {
+test('catalogue : commandes de run = RUN_COMMANDS, options de chaque ligne = RUN_FLAGS (celles que checkRunFlags admet)', () => {
   assert.deepEqual(COMMANDS.filter((c) => c.run === true).map((c) => c.name).sort(), [...RUN_COMMANDS].sort());
+  assert.deepEqual(Object.keys(RUN_FLAGS).sort(), [...RUN_COMMANDS].sort(), 'RUN_FLAGS et RUN_COMMANDS doivent couvrir les mêmes commandes');
+  // Sondes : toutes les options connues du catalogue ET du parseur, pour qu'une option ajoutée à RUN_FLAGS
+  // sans être décrite dans le catalogue soit vue (la sonder sur les seules clés de OPTIONS ne la verrait pas).
+  const probes = new Set<string>([...Object.keys(OPTIONS), ...Object.values(RUN_FLAGS).flat()]);
   for (const cmd of RUN_COMMANDS) {
     const spec = COMMANDS.find((c) => c.name === cmd)!;
-    const accepted = Object.keys(OPTIONS).filter((o) => {
-      const a: Args = { cmd, pos: [], flags: new Map([[o, OPTIONS[o]!.type === 'boolean' ? true : '1']]) };
-      try { checkRunFlags(a); return true; } catch { return false; }
-    });
     // -o de screenshot : admis par checkRunFlags pour être refusé plus loin avec un message dédié (terminal seulement).
     const expected = [...spec.options, ...(cmd === 'screenshot' ? ['output'] : [])].sort();
-    assert.deepEqual(accepted.sort(), expected, `options de « ${cmd} » dans run`);
+    assert.deepEqual([...RUN_FLAGS[cmd]!].sort(), expected, `options de « ${cmd} » dans run (RUN_FLAGS de src/core/script.ts ≠ catalogue)`);
+    const accepted = [...probes].filter((o) => {
+      const a: Args = { cmd, pos: [], flags: new Map([[o, OPTIONS[o]?.type === 'boolean' ? true : '1']]) };
+      try { checkRunFlags(a); return true; } catch { return false; }
+    });
+    assert.deepEqual(accepted.sort(), expected, `options de « ${cmd} » que checkRunFlags admet`);
+  }
+});
+
+test('catalogue : chaque option lue par la CLI ou le parseur (flags.has/get) est décrite', () => {
+  const read = new Set<string>();
+  for (const f of ['src/cli/main.ts', 'src/core/script.ts']) {
+    for (const m of readFileSync(join(ROOT, f), 'utf8').matchAll(/flags\.(?:has|get)\('([a-z][a-z0-9-]*)'\)/g)) read.add(m[1]!);
+  }
+  assert.ok(read.size > 10, `lecture des options introuvable (${read.size}) : motif à revoir`);
+  const ref = referencedOptions();
+  for (const o of read) {
+    assert.ok(OPTIONS[o] !== undefined, `option --${o} lue par la CLI mais absente de OPTIONS (src/core/commands.ts)`);
+    assert.ok(ref.has(o), `option --${o} lue par la CLI mais rattachée à aucune commande du catalogue`);
   }
 });
 

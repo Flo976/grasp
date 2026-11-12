@@ -165,3 +165,7 @@ Image Docker
       du parseur (`VALUE_FLAGS`, `RUN_FLAGS`) au lieu de les produire — les dériver quand les branches en cours sur
       `script.ts` seront intégrées ; `grasp help` (texte) reste rédigé à la main ; les instructions MCP
       (`initialize`) ne sont pas encore tirées du même texte.
+- [x] **Test du catalogue durci** (relecture) : `RUN_FLAGS` exporté et comparé directement au catalogue, sondes
+      `checkRunFlags` sur l'union catalogue + parseur, et toute option lue par `flags.has/get('…')` dans `main.ts`
+      ou `script.ts` doit être décrite. Vérifié par mutation (option ajoutée à `RUN_FLAGS` ou lue par `main.ts`
+      sans être décrite : rouge ; l'ancien test restait vert).

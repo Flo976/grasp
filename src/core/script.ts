@@ -198,7 +198,7 @@ const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
-const RUN_FLAGS: Record<string, readonly string[]> = {
+export const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
   check: [...ACTION_FLAGS, 'uncheck'], type: [...ACTION_FLAGS, 'delay'],
   snap: ['max', 'scope', 'name-max'], text: ['max', 'scope', 'markdown'],

@@ -893,11 +893,14 @@ mkdir -p ~/.claude/skills/grasp && grasp skill > ~/.claude/skills/grasp/SKILL.md
 
 **Rester à jour** : le catalogue n'est pas lu par le parseur (qui reste la référence d'exécution), mais
 `test/unit/commands.test.ts` échoue dès qu'ils divergent : option à valeur du parseur (`VALUE_FLAGS`) absente ou
-mal typée, commande répartie par `main.ts` non décrite (ou l'inverse), options d'une ligne de `run` différentes de
-celles que `checkRunFlags` admet, commande de `run` ou outil MCP non rattaché, commande ou option absente de
-`grasp help`, et `skills/grasp/SKILL.md` différent de la sortie de `grasp skill`. Validé par mutation (option
-retirée, type changé, commande ajoutée à `main.ts`, commande retirée de `run`, SKILL.md modifié : chaque fois le
-test passe au rouge). Après un ajout : décrire la commande dans le catalogue, puis
+mal typée, commande répartie par `main.ts` non décrite (ou l'inverse), options d'une ligne de `run` (`RUN_FLAGS`
+de `script.ts`, comparé directement, et ce que `checkRunFlags` admet sur toutes les options connues du catalogue
+et du parseur) différentes de celles du catalogue, option lue par `main.ts` ou `script.ts` (`flags.has('…')`,
+`flags.get('…')`) absente du catalogue, commande de `run` ou outil MCP non rattaché, commande ou option absente
+de `grasp help`, et `skills/grasp/SKILL.md` différent de la sortie de `grasp skill`. Validé par mutation (option
+retirée, type changé, commande ajoutée à `main.ts`, commande retirée de `run`, option booléenne ajoutée à
+`RUN_FLAGS` ou lue par `main.ts` sans être décrite, SKILL.md modifié : chaque fois le test passe au rouge).
+Limite : une option lue autrement que par `flags.has`/`flags.get` avec un nom littéral n'est pas détectée. Après un ajout : décrire la commande dans le catalogue, puis
 `npm run build && node dist/src/cli/main.js skill > skills/grasp/SKILL.md`.
 
 ## Moteur Playwright de repli
