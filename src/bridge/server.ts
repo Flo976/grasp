@@ -84,6 +84,8 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           if (body.state === undefined) throw new GraspError(400, 'champ « state » (objet d\'état exporté) requis');
           return sendJson(res, 200, await page.importState(body.state));
         }
+        // Stockage Web de l'origine affichée (allowCookies), code fixe : voir PageController.storage.
+        case 'POST /storage': return sendJson(res, 200, await page.storage(str(body, 'op'), str(body, 'area'), str(body, 'key'), optStr(body, 'value')));
         case 'POST /upload': {
           const files = body.files;
           if (!Array.isArray(files) || !files.every((f) => typeof f === 'string')) throw new GraspError(400, 'champ « files » (tableau de chemins) requis');

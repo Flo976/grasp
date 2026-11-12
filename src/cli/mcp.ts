@@ -309,7 +309,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'run',
-    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
+    description: 'Exécute un script grasp run : plusieurs commandes en UN appel, une par ligne, même syntaxe que la CLI (nav, snap, text, click, fill, select, check, press, hover, type, wait, expect, eval, console, screenshot, cookies, storage, upload, profile), commentaires #, guillemets à la shell. Analysé en entier avant exécution ; arrêt au premier échec sauf continue=true. Recette : lignes `expect text|no-text|url|title|sel|no-sel|value|no-console-errors|no-form-errors …` ; avec un expect, rapport de recette joint d\'office (report=false pour l\'omettre).',
     props: { script: S('Le script, une commande par ligne.'), continue: B('Poursuivre après une étape en échec.'), report: B('Rapport de recette (étapes, erreurs console, requêtes en échec, formulaire, page finale) : d\'office avec un expect.') },
     required: ['script'],
     async run(c, a) {

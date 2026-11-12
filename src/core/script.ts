@@ -213,7 +213,7 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'storage', 'upload', 'profile'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
@@ -226,7 +226,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
   console: ['level', 'since', 'limit', 'clear'],
   // -o : fichier relatif, écrit par la CLI sous --out-dir (voir checkRunFile).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
-  upload: ['engine'], eval: [], cookies: [], profile: [],
+  upload: ['engine'], eval: [], cookies: [], storage: [], profile: [],
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
 };
 /** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
@@ -287,6 +287,7 @@ export function buildRequest(a: Args): StepRequest {
       return { cmd, method: 'GET', path: `/screenshot?${q}` };
     }
     case 'cookies': return { cmd, method: 'GET', path: '/cookies' };
+    case 'storage': return storageRequest(a);
     case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     case 'expect': return expectRequest(a);
@@ -294,6 +295,19 @@ export function buildRequest(a: Args): StepRequest {
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);
       throw new ScriptError(`commande inconnue « ${cmd} » (commandes de run : ${RUN_COMMANDS.join(', ')})`);
   }
+}
+
+export const STORAGE_USAGE = 'storage get|rm local|session <clé> | storage set local|session <clé> <valeur>';
+
+/** `storage get|set|rm local|session <clé> [valeur]` → POST /storage (stockage de l'origine affichée). */
+function storageRequest(a: Args): StepRequest {
+  const [op, area, key, ...rest] = a.pos;
+  const usage = () => new ScriptError(`usage : grasp ${STORAGE_USAGE}`);
+  if (op === undefined || area === undefined || key === undefined) throw usage();
+  if (op !== 'get' && op !== 'set' && op !== 'rm') throw new ScriptError(`storage : opération inconnue « ${op} » (get, set, rm)`);
+  if (area !== 'local' && area !== 'session') throw new ScriptError(`storage : stockage inconnu « ${area} » (local ou session)`);
+  if (op === 'set' ? rest.length !== 1 : rest.length !== 0) throw usage();
+  return { cmd: 'storage', method: 'POST', path: '/storage', body: { op, area, key, ...(op === 'set' ? { value: rest[0] } : {}) } };
 }
 
 /** Options de chaque assertion (toutes acceptent --shot-on-error). */

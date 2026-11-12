@@ -255,6 +255,14 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const w = losses({ omitted: c.omitted, dropped: c.dropped });
       return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
+    case 'storage': {
+      const st = j as { op?: string; area?: string; origin?: string; key?: string; value?: string | null; truncated?: number; existed?: boolean };
+      if ('value' in st) {
+        if (st.value === null) return { detail: `clé « ${st.key} » absente du ${st.area}Storage de ${st.origin}` };
+        return { output: st.value ?? '', ...(st.truncated !== undefined ? { detail: `AVERTISSEMENT : valeur tronquée (${st.truncated} caractères)` } : {}) };
+      }
+      return { detail: `${st.area}Storage de ${st.origin}${st.op === 'rm' && st.existed === false ? ` : clé « ${st.key} » déjà absente` : ''}` };
+    }
     case 'wait': return {};
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {

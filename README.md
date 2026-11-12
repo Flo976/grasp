@@ -553,6 +553,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
+| `storage get\|rm local\|session <clé>`, `storage set local\|session <clé> <valeur\|->` | Stockage Web de l'origine affichée, sans `eval`. Exige `allowCookies`. Voir [Session factice](#session-factice-sans-alloweval). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -685,7 +686,7 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
 
 - Entrée : un fichier (`grasp run script.grasp`), ou stdin (`grasp run`, `grasp run -`). Une commande par ligne,
   **même syntaxe que la CLI** : `nav snap text click fill select check press wait expect eval console screenshot
-  cookies upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
+  cookies storage upload profile`, avec leurs options. Guillemets **à la shell** (`'…'` littéral, `"…"` avec `\"`,
   `\ ` hors guillemets) : une expression `eval` qui contient des `'` va entre `"…"`, comme dans un terminal.
   Commentaire = `#` en début de ligne ou `#` isolé suivi d'un blanc ; un `#id` collé reste un sélecteur CSS
   (`click #valider` marche sans guillemets).
@@ -809,6 +810,61 @@ page finale : http://127.0.0.1:45955/boutique « Boutique »
 - Le verdict ne dépend que des étapes : une erreur console rapportée ne fait pas échouer le run ; pour qu'elle
   le fasse, `expect no-console-errors`. Exemple complet : `examples/recette.sh` (une recette qui passe, puis la
   même qui échoue sur une 500).
+
+#### Session factice sans `allowEval`
+
+Une application qui garde sa session dans le stockage Web (jeton, profil, préférences) se teste connectée sans
+passer par son formulaire et **sans activer `eval`** : `allowCookies` suffit (désactivé par défaut ; il couvre
+déjà l'export et l'import de l'[état](#état--export-et-import), mêmes données). Deux voies, toutes deux testées
+(`test/integration/storage.test.ts`), le résultat se vérifiant par le contenu de la page :
+
+1. **`grasp state import`, avant toute navigation** — le fichier ne contient que ce qu'on pose (ni `cookies`
+   ni `exportedAt` ne sont obligatoires) :
+
+   ```json
+   {
+     "format": "grasp-state", "version": 1,
+     "origins": [{ "origin": "http://127.0.0.1:8080",
+                   "localStorage": [{ "name": "auth", "value": "{\"jeton\":\"factice\",\"role\":\"admin\"}" }] }],
+     "sessionStorage": { "origin": "http://127.0.0.1:8080", "items": [{ "name": "panier", "value": "3" }] }
+   }
+   ```
+
+   ```bash
+   grasp config set allowCookies true && grasp stop && grasp serve   # une fois
+   grasp state import session-factice.json     # localStorage écrit par un onglet d'arrière-plan, sans requête au site
+   grasp nav http://127.0.0.1:8080/compte      # sessionStorage appliqué au premier document de l'origine
+   grasp expect text "Connecté"
+   ```
+
+   L'origine doit être dans l'allowlist (sinon écartée et signalée). Le fichier peut contenir un vrai jeton :
+   0600, comme un export.
+
+2. **`grasp storage`, page déjà ouverte sur l'origine** — utile au milieu d'un `grasp run` :
+
+   ```
+   grasp storage set local|session <clé> <valeur|->     # - : valeur lue sur stdin (hors de ps et de l'historique)
+   grasp storage get local|session <clé>               # valeur sur stdout ; clé absente → code 1
+   grasp storage rm  local|session <clé>
+   ```
+
+   ```bash
+   grasp run <<'FIN'
+   nav http://127.0.0.1:8080/connexion
+   storage set local auth '{"jeton":"factice","role":"admin"}'
+   nav http://127.0.0.1:8080/compte
+   expect text "Connecté"
+   FIN
+   ```
+
+   Porte sur l'**origine affichée** seulement (http(s), dans l'allowlist ; sur `about:blank` : refus 409 qui dit
+   de naviguer d'abord). Code **fixe** de Grasp exécuté dans le monde isolé (même stockage que la page, invisible
+   pour ses scripts) ; clé et valeur n'y entrent que sérialisées en JSON — rien n'est évalué, d'où l'indépendance
+   vis-à-vis d'`allowEval`. Clé de 1 à 1000 caractères ; `get` rend 4000 caractères au plus et annonce la
+   troncature. **Choix de la clé de politique** : `allowCookies` plutôt qu'une clé dédiée, parce que ce sont
+   exactement les données (jetons de session) qu'`allowCookies` expose déjà par `state export`/`import` ; une
+   quatrième clé n'ajouterait aucune protection et une incohérence possible. L'API HTTP : `POST /storage`
+   `{op, area, key, value?}` ; pas d'outil MCP dédié (la ligne passe par l'outil `run`).
 
 ## Serveur MCP
 
@@ -1600,7 +1656,7 @@ sans la présenter comme appliquée.
 | `windowsProfilesDir` | `%LOCALAPPDATA%\grasp\profiles` | Racine des profils de chrome.exe ([Mode Windows](#mode-windows-chromeexe-depuis-wsl2)) |
 | **Politique (gelée, appliquée par le garde)** | | |
 | `allowedDomains` | `127.0.0.1`, `localhost`, `[::1]` | Allowlist de navigation ; `[]` = tout bloqué, `*.x` = sous-domaines, `*` = tout |
-| `allowEval`, `allowDownload`, `allowUpload`, `allowCookies` | `false` | `eval`, téléchargements, upload, cookies (et [export/import de l'état](#état--export-et-import)) |
+| `allowEval`, `allowDownload`, `allowUpload`, `allowCookies` | `false` | `eval`, téléchargements, upload, cookies (et [export/import de l'état](#état--export-et-import), `storage`) |
 | `allowConsole` | `true` | Lecture de la [console](#console-du-navigateur) |
 | `allowPrivateNetwork` | `false` | Lève la [protection SSRF](#protection-ssrf) |
 | `blockTrackers` | `true` | [Blocage des traqueurs](#blocage-des-traqueurs) |

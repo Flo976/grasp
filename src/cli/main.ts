@@ -558,6 +558,24 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'cookies': out((await c.call('GET', '/cookies')).text()); return 0;
+    case 'storage': {
+      // `-` : valeur lue sur stdin (hors de `ps` et de l'historique du shell), sans le saut de ligne final.
+      const pos = a.pos[0] === 'set' && a.pos[3] === '-' ? [...a.pos.slice(0, 3), readFileSync(0, 'utf8').replace(/\r?\n$/, '')] : a.pos;
+      let rq;
+      try { rq = buildRequest({ ...a, pos }); } catch (e) { throw new CliError((e as Error).message); }
+      const j = (await c.call(rq.method, rq.path, rq.body)).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean };
+      if (json) { out(JSON.stringify(j)); return j.op === 'get' && j.value === null ? 1 : 0; }
+      const where = `${j.area}Storage de ${j.origin}`;
+      if (j.op === 'get') {
+        if (j.value === null || j.value === undefined) throw new CliError(`clé « ${j.key} » absente du ${where}`);
+        out(j.value);
+        if (j.truncated !== undefined) hint(`AVERTISSEMENT : valeur tronquée à ${j.value.length} caractères sur ${j.truncated}`);
+        return 0;
+      }
+      out('OK');
+      hint(j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : where);
+      return 0;
+    }
     case 'state': await stateCmd(c, a, paths); return 0;
     case 'upload': await action(); return 0;
     case 'security': {
@@ -726,6 +744,9 @@ Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés 
                atomiquement ; sans fichier : dans l'état de Grasp, CHEMIN sur stdout ; exige allowCookies ;
                rien hors allowlist
              state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine
+             storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->
+               stockage Web de l'origine AFFICHÉE (allowlist), code fixe sans eval ; exige allowCookies ;
+               get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1
 Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 

@@ -153,7 +153,9 @@ Image Docker
       désormais le filtre ; `--level error|warn` ne les rend plus.
 - [x] **URL « nullblank »** après une navigation vers about:blank (origin `null` concaténé) : `urlBase` (schéma,
       hôte, chemin) remplace `origin + pathname` dans `redactUrl` et la clé de fusion réseau.
-- [ ] **Poser une session factice sans `allowEval`** : `grasp state import` le permet déjà (documenter ce cas
-      d'usage dans la section Recette) ; envisager `grasp storage set local <clé> <valeur>`.
+- [x] **Poser une session factice sans `allowEval`** : cas d'usage `grasp state import` documenté dans la section
+      Recette (fichier minimal, testé) ; `grasp storage get|set|rm local|session <clé> [valeur|-]` sur l'origine
+      affichée, code fixe dans le monde isolé, soumis à `allowCookies` (mêmes données que l'export d'état), aussi
+      dans `grasp run`.
 - [ ] **`grasp a11y`** : lister les contrôles sans nom accessible, les messages d'erreur non reliés à leur champ
       (`aria-describedby` absent), etc. Utile en recette.
