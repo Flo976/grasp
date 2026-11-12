@@ -123,6 +123,9 @@ const CLI_VALUES: Record<string, { raw: string; value: unknown }> = {
   stableTimeoutMs: { raw: '0', value: 0 },
   inputDeliveryMs: { raw: '500', value: 500 },
   fallbackEngine: { raw: 'playwright', value: 'playwright' },
+  browserMaxRssMb: { raw: '800', value: 800 },
+  browserMaxAgeMin: { raw: '0.5', value: 0.5 },
+  maxSessions: { raw: '4', value: 4 },
 };
 
 test('régression #4 (CLI) — `config set` sur chaque clé publique : persiste (relecture du fichier) ou lève', async () => {

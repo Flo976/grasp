@@ -111,7 +111,7 @@ export function windowsChromeVersion(exePath: string, list: (dir: string) => str
   return `Google Chrome ${versions.at(-1)!}`;
 }
 
-const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
+export const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 /** Garde-fous : jamais le profil habituel de Chrome, jamais une racine de disque. */
 function assertKillable(winDir: string): void {
@@ -141,6 +141,9 @@ export function encodePowerShell(script: string): string {
 }
 
 const POWERSHELL = 'powershell.exe';
+
+/** Exécute un script PowerShell (encodé) et rend sa sortie standard ; code ≠ 0 = erreur. */
+export async function powershellOut(script: string, run: Runner = realRunner): Promise<string> { return powershell(script, run); }
 
 async function powershell(script: string, run: Runner): Promise<string> {
   const r = await run(POWERSHELL, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodePowerShell(script)], { timeoutMs: 60_000 });
