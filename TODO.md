@@ -128,6 +128,7 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `viewport.test.ts` (media query vérifiée par `text`), `viewport-cli.test.ts`, `unit/viewport.test.ts`. Relecture : reset d'un
       viewport à la taille de l'écran réel sans attente de 2 s ; `viewport` annoncé dans l'outil MCP `run`.
       Reste : test réel sur chrome.exe ; outil MCP dédié (aujourd'hui par `run`) ; UA Safari pour les appareils iOS.
+
 ## Pilotage
 
 - [x] **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action (CLI, API, `grasp run`, MCP) ;
@@ -138,6 +139,24 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       (seul `accept` le fait ; `cancel`, `Dismiss`… → refus), valeur en `--…` refusée (400).
       Dialogue ouvert pendant le `--snap-diff` d'après ou `post` : rapporté par l'action (relevé en dernier).
       Reste : dialogues d'une iframe hors processus non testés.
+## Historique et rejeu
+
+- [x] **`grasp history [--as-run] [--since]`** (branche `feat/historique-run`) : commandes de la session mémorisées
+      par le control plane (500, en mémoire), `--as-run` → script `grasp run` rejouable : refs → `text:<nom>`
+      (unique) ou CSS stable vérifié unique (attributs, ancêtre identifié, chemin positionnel en dernier recours),
+      lectures et échecs omis, mots de passe jamais conservés (ligne commentée), `--expect` sur l'état final.
+      Description de cible faite sur le snapshot de l'action (+0,2 ms / +16 ms mesurés). Test : exploration,
+      export, rejeu dans une nouvelle session, même `text` final.
+- [x] Relecture : sauts de ligne — un argument sur plusieurs lignes n'est jamais écrit dans le script (ligne
+      commentée), tout commentaire ramené à une ligne (une commande en échec ne peut plus y injecter une ligne).
+- [x] Relecture : actions concurrentes — description de cible liée à l'appel (AsyncLocalStorage), refusée par
+      le control plane si `given` diffère de la cible (saisie alors masquée).
+- [ ] Actions concurrentes d'une session : le groupe d'objets CDP `grasp` est libéré à la fin de chaque action,
+      l'autre peut échouer (« Could not find object with given id », vu 1 fois sur ~10 paires `fill`+`click`) ;
+      `notes`/`actTarget` sont aussi partagés. Sérialiser les actions par session, ou un groupe par action.
+- [ ] Remplacer le masque des mots de passe par `secret:NOM` quand les variables de secrets existeront.
+- [ ] Outil MCP `history` ; traduction des refs de `--scope` ; description sans snapshot séparé pour
+      `expect`/`wait --sel`/`upload` par ref.
 
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 

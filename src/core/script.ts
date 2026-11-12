@@ -330,7 +330,7 @@ function viewportRequest(a: Args): StepRequest {
 
 /** Commandes exécutables dans `grasp run`. */
 export const RUN_COMMANDS = ['nav', 'back', 'forward', 'reload', 'scroll', 'snap', 'find', 'text', 'a11y', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'network', 'screenshot', 'cookies', 'storage', 'upload', 'profile', 'viewport'] as const;
-const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
+const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run', 'history']);
 
 const NAV_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error'];
 const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'network', 'shot-on-error', 'engine', 'dialog'];

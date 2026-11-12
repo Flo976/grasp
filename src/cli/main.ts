@@ -312,6 +312,49 @@ async function expectCmd(c: Client, a: Args): Promise<void> {
   if (j.detail !== undefined) hint(`note: ${j.detail}`);
 }
 
+/**
+ * grasp history [--as-run [--expect] [-o fichier]] [--since <seq>] [--limit N] [--clear] : commandes de la session
+ * (control plane, en mémoire, 500 au plus) ; --as-run : script `grasp run` rejouable (fichier 0600 avec -o).
+ */
+async function historyCmd(c: Client, a: Args): Promise<void> {
+  const json = a.flags.has('json');
+  for (const k of ['since', 'limit', 'output'] as const) if (a.flags.get(k) === true) throw new CliError(`--${k} attend une valeur`);
+  if (a.pos.length > 0) throw new CliError(`argument inattendu « ${a.pos[0]} » — ${HISTORY_USAGE}`);
+  if (a.flags.has('clear')) {
+    const j = (await c.call('DELETE', '/history')).json() as { seq: number };
+    out(json ? JSON.stringify(j) : 'OK');
+    if (!json) hint(`historique vidé (seq courant : ${j.seq})`);
+    return;
+  }
+  const asRun = a.flags.has('as-run');
+  if (!asRun && (a.flags.has('expect') || a.flags.has('output'))) throw new CliError(`--expect et -o s'appliquent à --as-run — ${HISTORY_USAGE}`);
+  if (asRun && a.flags.has('limit')) throw new CliError(`--limit ne s'applique pas à --as-run (le script reprend toute la fenêtre ; --since <seq> la restreint) — ${HISTORY_USAGE}`);
+  const q = new URLSearchParams();
+  const since = a.flags.get('since');
+  if (typeof since === 'string') q.set('since', since);
+  const limit = a.flags.get('limit');
+  if (typeof limit === 'string') q.set('limit', limit);
+  if (asRun) q.set('asRun', '1');
+  if (asRun && a.flags.has('expect')) q.set('expect', '1');
+  const r = (await c.call('GET', `/history${q.size ? `?${q}` : ''}`)).json() as { script?: string; text?: string; seq: number; entries: unknown; omitted?: number; lost: number };
+  if (r.lost > 0) hint(`AVERTISSEMENT : ${r.lost} entrée(s) plus ancienne(s) oubliée(s) (500 au plus par session)`);
+  if (asRun) {
+    const file = a.flags.get('output');
+    if (typeof file === 'string' && file !== '-') {
+      writeOutput(file, Buffer.from(r.script ?? ''));
+      out(json ? JSON.stringify({ path: resolvePath(file), seq: r.seq, entries: r.entries }) : resolvePath(file));
+    } else out(json ? JSON.stringify(r) : r.script ?? '');
+    hint(`seq courant : ${r.seq} — rejouer : grasp run <fichier> ; suite : grasp history --as-run --since ${r.seq}`);
+    return;
+  }
+  if (json) { out(JSON.stringify(r)); return; }
+  if (r.text !== undefined && r.text !== '') out(r.text);
+  if ((r.omitted ?? 0) > 0) hint(`${r.omitted} entrée(s) plus ancienne(s) non affichée(s) — --limit N ou --since <seq>`);
+  hint(`seq courant : ${r.seq} — suite : grasp history --since ${r.seq}`);
+}
+
+const HISTORY_USAGE = 'usage : grasp history [--since <seq>] [--limit N] | --as-run [--expect] [--since <seq>] [-o fichier] | --clear';
+
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
   const r = await c.call('GET', path);
   const file = a.flags.get('output');
@@ -578,6 +621,7 @@ async function main(argv: string[]): Promise<number> {
     case 'wait': await waitCmd(c, a); return 0;
     case 'expect': await expectCmd(c, a); return 0;
     case 'run': return runCmd(c, a);
+    case 'history': await historyCmd(c, a); return 0;
     case 'profiles': {
       const sub = a.pos[0];
       if (sub === undefined || sub === 'list') {
@@ -810,6 +854,10 @@ Recette      expect text <texte> | no-text <texte> [--regex] [--scope <sél>]   
              expect a11y [--max N] [--scope <sél>]                    au plus N problèmes (grasp a11y), 0 par défaut
                relu jusqu'à --timeout (5000 ms ; 0 = une lecture ; console, formulaire et a11y : immédiat) ;
                échec → ERROR: expect: attendu … ; constaté : … (extrait borné), code 1 ; --shot-on-error : capture
+Historique   history [--since <seq>] [--limit N (50)] [--clear]   commandes de la session (500 au plus, en mémoire)
+             history --as-run [--expect] [--since <seq>] [-o f]   script grasp run rejouable : refs → text:<nom>
+               (nom unique) ou CSS stable vérifié unique ; lectures et échecs omis ; mots de passe masqués
+               (ligne commentée) ; --expect : url, titre et premier titre de l'état final
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée

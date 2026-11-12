@@ -75,7 +75,7 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
       const q = url.searchParams;
       const route = `${req.method} ${url.pathname}`;
       const body = req.method === 'POST' ? await readJson(req, url.pathname === '/state/import' ? STATE_MAX_BYTES : undefined) : {};
-      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog'), network: optBool(body, 'network') };
+      const opts = { snapDiff: optBool(body, 'snapDiff'), max: optInt(body.max, 'max'), scope: optStr(body, 'scope'), console: optBool(body, 'console'), shotOnError: optBool(body, 'shotOnError'), engine: optStr(body, 'engine'), dialog: optStr(body, 'dialog'), network: optBool(body, 'network'), describeTarget: optStr(body, 'describeTarget') };
       const scope = q.get('scope') ?? undefined;
       switch (route) {
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
@@ -135,6 +135,8 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           if (!Array.isArray(body.cookies)) throw new GraspError(400, 'champ « cookies » (tableau) requis');
           return sendJson(res, 200, { restored: await page.restoreCookies(body.cookies as SessionCookie[]) });
         }
+        // Historique : sélecteur durable de la cible, relevé avant l'action (route interne du control plane).
+        case 'POST /internal/durable': return sendJson(res, 200, await page.durableTarget(str(body, 'target')));
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());
