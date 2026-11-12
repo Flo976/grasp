@@ -103,6 +103,8 @@ limite la lecture à une zone.
 - 🧵 **Sessions parallèles et recyclage** : un Chrome par session, navigateur relancé au-delà de N Mo ou
   N minutes, plafond de sessions ([détails](#sessions-parallèles-et-recyclage)).
 - 🐳 **Image Docker** non-root, sandbox Chrome conservée ([détails](#docker)).
+- 📱 **Viewport émulé** : `grasp viewport 360x800 --mobile --touch` ou `--device iphone-se`, pour vérifier une mise en
+  page mobile ; snap, text et captures le reflètent ([détails](#viewport-et-émulation)).
 - 🔒 **Sécurité par défaut** : allowlist de navigation, protection SSRF ([détails](#protection-ssrf)), token,
   socket Unix ([détails](#sécurité)).
 
@@ -551,6 +553,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
+| `viewport [<LxH>\|<appareil>] [--mobile] [--dpr N] [--touch] [--mobile-ua]`, `viewport reset` | Viewport émulé de l'onglet (media queries, snap, text, captures) ; sans argument : réglage et mesures de la page. Voir [Viewport](#viewport-et-émulation). |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
@@ -991,8 +994,71 @@ grasp screenshot [-o f|-] [--full] [--el <sélecteur>] [--format png|jpeg|webp] 
   zone et en y faisant défiler la page (`Emulation.setDeviceMetricsOverride`, `scrollTo`, puis retour
   attendu et défilement restauré). Testé.
 - **Mode Windows et attach** : tout passe par CDP, le fichier est écrit côté Linux par le bridge.
+- **Viewport émulé** ([`grasp viewport`](#viewport-et-émulation)) : la capture est à sa taille et à sa densité
+  (360x740 à `dpr 2` → image 720×1480) ; l'agrandissement de `--full`/`--el` garde la densité et le mode mobile,
+  puis **revient au viewport émulé**, pas à celui du navigateur. Testé.
 - `GET /screenshot` sans `save=1` renvoie toujours le binaire (en-têtes `x-grasp-width`, `x-grasp-height`,
   `x-grasp-format`).
+
+## Viewport et émulation
+
+Retour d'essai réel : un défaut qui n'apparaît qu'à 360 px de large était invisible, Chrome headless rendant les
+pages à **780 × 493** (mesuré : `innerWidth` × `innerHeight` d'un onglet headless de Grasp, fenêtre par défaut).
+
+```
+grasp viewport 360x800 [--mobile] [--dpr N] [--touch] [--mobile-ua]
+grasp viewport iphone-se                  # ou --device iphone-se ; les options explicites priment
+grasp viewport                            # réglage courant et mesures lues dans la page
+grasp viewport reset                      # retour au viewport du navigateur
+grasp session create --viewport 360x800 --touch   # posé avant la première page
+```
+
+```
+$ grasp viewport 360x800 --touch
+360x800, tactile — page : 360x800, dpr 1, 5 point(s) tactile(s), pointeur coarse
+$ grasp text | head -1
+Mise en page mobile
+```
+
+- **Effet** : `Emulation.setDeviceMetricsOverride` (largeur et hauteur CSS, `screen.width/height` aux mêmes
+  valeurs), sur l'**onglet de la session** seulement. Les media queries, l'événement `resize`, l'arbre
+  d'accessibilité (un élément masqué par une media query sort du `snap`), `text` et les captures reflètent la
+  nouvelle taille. L'émulation survit aux navigations de l'onglet (testé).
+- **Sortie** : le réglage, puis ce que la page **mesure elle-même** dans le monde isolé de Grasp (`innerWidth`,
+  `innerHeight`, `devicePixelRatio`, `navigator.maxTouchPoints`, `pointer: coarse|fine|none`, UA mobile) : on
+  vérifie le résultat, pas la commande. `--json` : `{ok, viewport, description, measured, detail?}`.
+- **Options** : `--mobile` = mode mobile de Chrome (la balise `<meta name="viewport">` est appliquée ; sans elle,
+  la page se met en page sur 980 px CSS comme sur un téléphone — mesuré : `innerWidth` 980 en mode mobile sur une
+  page sans balise) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
+  `Emulation.setTouchEmulationEnabled` (5 points de contact ; mesuré : `(pointer: coarse)` vrai, alors qu'un onglet
+  headless répond `none` sans émulation). Les clics restent des événements souris CDP, vérifiés comme d'habitude
+  (testé sous émulation tactile). Tailles de 50 à 10 000 px ; toute valeur invalide → 400.
+- **User agent** (`--mobile-ua`, **opt-in**, jamais impliqué par un appareil) : `Mozilla/5.0 (Linux; Android 10; K)
+  … Chrome/<version majeure du navigateur>.0.0.0 Mobile Safari/537.36` (format réduit de Chrome) et les Client
+  Hints correspondants (`platform: Android`, `mobile: true`), pour un site qui sert un autre HTML aux mobiles. Il
+  vaut pour les **requêtes suivantes** : la page déjà chargée a été servie avec l'ancien, c'est dit en note
+  (rechargez avec `nav`). `reset` le retire. Ce n'est pas une empreinte d'appareil complète (voir les limites).
+- **Appareils** : `iphone-se` 375×667 dpr 2, `iphone-14` 390×844 dpr 3, `pixel-7` 412×915 dpr 2,625, `galaxy-s8`
+  360×740 dpr 4, `ipad-mini` 768×1024 dpr 2 (mobile et tactiles) ; `laptop` 1366×768 et `desktop` 1920×1080
+  (dpr 1, ni mobile ni tactiles). Dimensions et densités reprises de la liste d'appareils de Chrome DevTools.
+  `--max-width` sur une capture reste le moyen de borner une image prise à dpr 3 ou 4 (mesuré : 360×740 à dpr 4
+  → PNG 1440×2960, 57 Ko sur la page de test ; avec `--max-width 360`, 360×740, 9,6 Ko).
+- **Conservé** : le control plane retient le dernier viewport réussi (commande ou ligne de `grasp run`) et le
+  réapplique, avant toute navigation, au navigateur relancé par une **bascule de profil** ou un **recyclage**
+  (testé : page rechargée par le recyclage déjà à 360 px). `session list` et `GET /sessions` l'affichent.
+- **Coût** : la commande attend que la page voie la nouvelle taille puis la [stabilité](#attente-de-stabilité)
+  (une application peut re-rendre au redimensionnement) : 403 à 416 ms par réglage ou reset sur la page de test
+  (10 mesures, headless).
+- **Captures** : voir [Captures d'écran](#captures-décran) ; l'agrandissement temporaire de `--full` et `--el`
+  garde la densité et le mode mobile, et rend ensuite le viewport émulé (testé : mesures identiques avant et après).
+- **Mode attach** : réglage limité à l'onglet que Grasp ouvre (session CDP de sa cible) ; les onglets de
+  l'utilisateur gardent leur taille (testé sur un second onglet du même navigateur). L'onglet est fermé avec la
+  session, l'émulation avec lui.
+- **Mode Windows** (chrome.exe, fenêtré ou non) : mêmes appels CDP, la page est rendue à la taille émulée dans la
+  fenêtre existante, sans la redimensionner. Non testé sur chrome.exe (`GRASP_TEST_WINDOWS=1` non lancé pour
+  cette fonction).
+- **Script** : `viewport` est une commande de [`grasp run`](#grasp-run--plusieurs-commandes-en-un-appel) (mêmes
+  options ; une option inconnue refuse le script) ; le serveur MCP l'atteint par son outil `run`.
 
 ## Console du navigateur
 
@@ -1706,6 +1772,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - Console : les messages des workers (service workers, workers dédiés) ne sont pas capturés ; une requête
   annulée (navigation qui part, `AbortController`) n'est pas signalée ; les URL sont tronquées à 150
   caractères. Le tampon est perdu à la bascule de profil (le navigateur est relancé).
+- **Viewport émulé** : taille, densité, tactile et, sur demande, user agent ; pas le reste d'un appareil
+  (`navigator.platform`, polices, barre d'adresse rétractable, clavier virtuel, `orientationchange`) : c'est
+  l'émulation de DevTools, pas un téléphone. Le user agent mobile annonce Android quel que soit l'appareil choisi
+  (pas d'UA Safari pour `iphone-*`). Les `vh` changent pendant une capture `--full` (viewport agrandi), comme sans
+  émulation. Un clic du moteur Playwright de repli ne le défait pas (testé) ; le
+  reste de ses actions n'a pas été essayé sous émulation. Pas de clé de configuration pour un viewport par défaut : par session.
 - Captures : zone tronquée à 16 384 px de haut ou de large (limite de texture de Chrome, signalée) ; une
   page plus large que le viewport est capturée avec un viewport élargi, si bien qu'une mise en page fluide
   peut s'y redistribuer le temps de la capture ;

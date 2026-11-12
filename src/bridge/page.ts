@@ -15,6 +15,7 @@ import { fmtCandidate, nearest, type Candidate } from './match.js';
 import { TrackerList } from './trackers.js';
 import { STATE_FORMAT, STATE_VERSION, cookieAllowed, cookieOrigin, fromCdpCookie, normalizeOrigin, parseState, toCdpCookieParam, type CdpCookie, type GraspState, type StateItem } from '../core/state.js';
 import { MARKDOWN_FN, SCOPE_MARKDOWN_FN, markdownInPage } from './markdown.js';
+import { describeViewport, mobileUserAgent, type ViewportSpec } from '../core/viewport.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -62,6 +63,11 @@ export interface ShotOptions {
   maxWidth?: number | undefined;
   /** Dessine temporairement les refs du snapshot sur les éléments interactifs visibles. */
   refs?: boolean | undefined;
+}
+/** Viewport : réglage de Grasp (null = natif) et mesures lues dans la page. */
+export interface ViewportResult {
+  ok: true; viewport: ViewportSpec | null; description?: string; detail?: string;
+  measured?: { width: number; height: number; dpr: number; touchPoints: number; pointer: string; mobileUa: boolean };
 }
 export interface Shot { data: Buffer; width: number; height: number; format: ImageFormat; truncated?: boolean }
 export interface SavedShot { path: string; width: number; height: number; bytes: number; format: ImageFormat; truncated?: boolean }
@@ -719,6 +725,10 @@ export class PageController {
   private scratchWanted = 0;
   /** sessionStorage importé, en attente du premier document de son origine dans l'onglet. */
   private pendingSession: { origin: string; identifier: string } | undefined;
+  /** Viewport émulé de la session (grasp viewport), réappliqué après un agrandissement de capture ; undefined = natif. */
+  private vp: ViewportSpec | undefined;
+  /** Un user agent mobile a été posé sur l'onglet (à retirer au reset). */
+  private uaOverridden = false;
 
   private constructor(
     private readonly cdp: CdpClient,
@@ -727,7 +737,7 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined; resolve?: Resolver | undefined; proxyServer?: string | null | undefined }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined; resolve?: Resolver | undefined; proxyServer?: string | null | undefined; viewport?: ViewportSpec | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
     // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
@@ -747,6 +757,9 @@ export class PageController {
     pc.fallback = en.fallback ?? 'none';
     pc.pw = new PlaywrightEngine({ endpoint: en.devtoolsUrl, targetId, module: en.module, idleMs: en.idleMs ?? PW_IDLE_MS, isLocal: en.isLocal === true });
     await pc.init(opts.downloadDir);
+    // Viewport de la session (session create --viewport, ou conservé à travers une bascule / un recyclage) :
+    // posé avant toute navigation, la première page est rendue à cette taille.
+    if (opts.viewport !== undefined) await pc.setViewport(opts.viewport);
     return pc;
   }
 
@@ -2766,6 +2779,81 @@ export class PageController {
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
 
+  // ---------- Viewport émulé (grasp viewport) ----------
+
+  /** Paramètres de setDeviceMetricsOverride d'un viewport ; `size` : taille temporaire (capture agrandie). */
+  private static metricsOf(v: ViewportSpec, size?: { width: number; height: number }): Record<string, unknown> {
+    const width = size !== undefined ? size.width : v.width, height = size !== undefined ? size.height : v.height;
+    return {
+      width, height, deviceScaleFactor: v.dpr, mobile: v.mobile, screenWidth: v.width, screenHeight: v.height,
+      ...(v.mobile ? { screenOrientation: v.width <= v.height ? { type: 'portraitPrimary', angle: 0 } : { type: 'landscapePrimary', angle: 90 } } : {}),
+    };
+  }
+
+  /** Viewport émulé courant (undefined : celui du navigateur). */
+  get viewport(): ViewportSpec | undefined { return this.vp === undefined ? undefined : { ...this.vp }; }
+
+  /**
+   * Pose (ou retire, `null`) le viewport émulé de l'onglet : taille CSS, densité, mode mobile, tactile, user agent
+   * mobile sur demande. Limité à NOTRE onglet (session CDP de la cible) : en mode attach, les autres onglets de
+   * l'utilisateur ne sont pas touchés. Les overrides d'Emulation survivent aux navigations de l'onglet. Attend que
+   * la page voie la nouvelle taille, puis sa stabilité (une page peut re-rendre au redimensionnement), et renvoie
+   * ce que la page mesure elle-même.
+   */
+  async setViewport(spec: ViewportSpec | null): Promise<ViewportResult> {
+    const prev = this.vp;
+    if (spec === null) {
+      await this.s('Emulation.clearDeviceMetricsOverride');
+      await this.s('Emulation.setTouchEmulationEnabled', { enabled: false });
+      if (this.uaOverridden) { await this.s('Emulation.setUserAgentOverride', { userAgent: '' }); this.uaOverridden = false; }
+      this.vp = undefined;
+    } else {
+      await this.s('Emulation.setDeviceMetricsOverride', PageController.metricsOf(spec));
+      await this.s('Emulation.setTouchEmulationEnabled', spec.touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      if (spec.mobileUa) {
+        const { product } = await this.cdp.send<{ product: string }>('Browser.getVersion');
+        const { userAgent, major } = mobileUserAgent(product);
+        await this.s('Emulation.setUserAgentOverride', {
+          userAgent,
+          userAgentMetadata: { brands: [{ brand: 'Chromium', version: major }, { brand: 'Not.A/Brand', version: '99' }], platform: 'Android', platformVersion: '10', architecture: '', model: 'K', mobile: true },
+        });
+        this.uaOverridden = true;
+      } else if (this.uaOverridden) { await this.s('Emulation.setUserAgentOverride', { userAgent: '' }); this.uaOverridden = false; }
+      this.vp = { ...spec };
+    }
+    // L'override est appliqué par le moteur de rendu après la réponse de CDP : on attend que la page le voie
+    // (taille d'écran émulée, ou retour à l'écran réel), 2 s au plus.
+    const target = spec !== null ? spec : prev;
+    if (target !== undefined) {
+      const want = spec !== null;
+      for (let i = 0; i < 80; i++) {
+        const sc = await this.evalIsolated<number[]>('[screen.width, screen.height]').catch(() => undefined);
+        if (sc === undefined || (sc[0] === target.width && sc[1] === target.height) === want) break;
+        await sleep(25);
+      }
+    }
+    const stab = await this.waitStable();
+    const out = await this.viewportInfo();
+    const notes = [
+      ...(!stab.stable ? [PageController.unstableNote(stab)] : []),
+      ...(spec !== null && spec.mobileUa ? ['user agent mobile : effectif pour les requêtes suivantes ; la page déjà chargée a été servie avec l\'ancien (rechargez-la avec nav)'] : []),
+      ...(spec === null && prev !== undefined && prev.mobileUa ? ['user agent d\'origine rétabli pour les requêtes suivantes'] : []),
+    ];
+    return notes.length > 0 ? { ...out, detail: notes.join(' ; ') } : out;
+  }
+
+  /** Viewport courant : réglage de Grasp et ce que la page mesure (monde isolé : la page ne peut pas le fausser). */
+  async viewportInfo(): Promise<ViewportResult> {
+    const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string } | undefined>(
+      `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent })`,
+    ).catch(() => undefined);
+    return {
+      ok: true, viewport: this.vp === undefined ? null : { ...this.vp },
+      ...(this.vp !== undefined ? { description: describeViewport(this.vp) } : {}),
+      ...(m !== undefined ? { measured: { width: m.width, height: m.height, dpr: m.dpr, touchPoints: m.touchPoints, pointer: m.pointer, mobileUa: /\bMobile\b/.test(m.ua) } } : {}),
+    };
+  }
+
   /**
    * Capture : viewport (défaut), page entière (--full) ou boîte d'un élément (--el), mise à l'échelle
    * (--max-width), refs dessinées (--refs). Tout passe par CDP : marche à l'identique en mode
@@ -2828,7 +2916,9 @@ export class PageController {
     let data: string;
     try {
       if (expand && region !== undefined) {
-        await this.s('Emulation.setDeviceMetricsOverride', { width: Math.max(Math.ceil(m.cssLayoutViewport.clientWidth), Math.ceil(region.width)), height: Math.max(Math.ceil(viewport.height), Math.ceil(region.height)), deviceScaleFactor: 0, mobile: false });
+        const grown = { width: Math.max(Math.ceil(m.cssLayoutViewport.clientWidth), Math.ceil(region.width)), height: Math.max(Math.ceil(viewport.height), Math.ceil(region.height)) };
+        // Viewport émulé (grasp viewport) : même densité et même mode mobile pendant l'agrandissement.
+        await this.s('Emulation.setDeviceMetricsOverride', this.vp !== undefined ? PageController.metricsOf(this.vp, grown) : { ...grown, deviceScaleFactor: 0, mobile: false });
         if (elId !== undefined) {
           // Le viewport agrandi change la mise en page (barre de défilement, largeur) : un élément flottant
           // se décale. La boîte est relue APRÈS l'agrandissement (sinon : bord gauche rogné).
@@ -2849,7 +2939,9 @@ export class PageController {
       });
     } finally {
       if (expand) {
-        await this.s('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
+        // Retour au viewport émulé de la session s'il y en a un, sinon à celui du navigateur.
+        if (this.vp !== undefined) await this.s('Emulation.setDeviceMetricsOverride', PageController.metricsOf(this.vp)).catch(() => undefined);
+        else await this.s('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
         // Le retour à la taille d'origine est asynchrone : on l'attend avant de rendre la main
         // (sinon la mesure suivante, ou le défilement restauré, porteraient sur le viewport agrandi).
         for (let i = 0; i < 80; i++) {

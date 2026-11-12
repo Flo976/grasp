@@ -125,6 +125,7 @@ async function main(): Promise<void> {
     httpAuth: init.httpAuth,
     // Proxy effectif : la protection SSRF ne résout pas localement un nom que le proxy résoudra.
     proxyServer,
+    viewport: init.viewport,
   });
   // Les identifiants vivent désormais dans le PageController seul : on n'en garde aucune autre copie.
   delete init.httpAuth;
@@ -132,7 +133,7 @@ async function main(): Promise<void> {
   const c = info;
   const pc = page;
   server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
-    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() })));
+    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport(), ...(pc.viewport !== undefined ? { viewport: pc.viewport } : {}) })));
   if (existsSync(socketPath)) rmSync(socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const prev = process.umask(0o077);

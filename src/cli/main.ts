@@ -16,7 +16,8 @@ import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
+import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
+import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -333,7 +334,7 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
   throw new CliError(`le serveur (pid ${pid}) n'a pas répondu à SIGTERM en ${timeout} ms : SIGKILL envoyé, ${groups} groupe(s) Chrome tué(s), socket nettoyé`);
 }
 
-const SESSION_CREATE_USAGE = 'grasp session create [--profile <nom>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -]';
+const SESSION_CREATE_USAGE = 'grasp session create [--profile <nom>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -] [--viewport <LARGEURxHAUTEUR|appareil> [--mobile] [--dpr N] [--touch] [--mobile-ua]]';
 
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -443,7 +444,12 @@ async function main(argv: string[]): Promise<number> {
         // --http-auth - : identifiants lus sur stdin (un par ligne), absents de la ligne de commande (ps, historique).
         const httpAuth = auth === '-' ? (await readStdin()).split(/\r?\n/).filter((l) => l.trim() !== '') : typeof auth === 'string' ? [auth] : undefined;
         if (auth === '-' && httpAuth?.length === 0) throw new CliError('--http-auth - : aucun identifiant reçu sur stdin (utilisateur:motdepasse@hôte, un par ligne)');
+        // --viewport 360x800 [--mobile] [--dpr N] [--touch] [--mobile-ua] (ou --device <appareil>) : posé avant la première page.
+        const vpArg = a.flags.get('viewport');
+        if (vpArg === true) throw new CliError(`usage : ${SESSION_CREATE_USAGE}`);
+        const viewport = vpArg !== undefined || VIEWPORT_FLAGS.some((f) => a.flags.has(f)) ? viewportBody(a, vpArg) : undefined;
         const body = {
+          ...(viewport !== undefined ? { viewport } : {}),
           ...(typeof prof === 'string' ? { profile: prof } : {}),
           ...(typeof proxy === 'string' ? { proxyServer: proxy } : {}),
           ...(httpAuth !== undefined ? { httpAuth } : {}),
@@ -456,12 +462,13 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       if (sub === 'list') {
-        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string; proxyServer?: string | null; httpAuth?: Array<{ host: string }> }>;
+        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string; proxyServer?: string | null; httpAuth?: Array<{ host: string }>; viewport?: ViewportSpec | null }>;
         if (json) out(JSON.stringify(list));
         else if (list.length) {
           out(list.map((s) => [s.id, s.profile ?? '(éphémère)', s.createdAt,
             ...(s.proxyServer ? [`proxy ${s.proxyServer}`] : []),
             ...(s.httpAuth?.length ? [`auth HTTP ${s.httpAuth.map((h) => h.host).join(',')} (identifiants masqués)`] : []),
+            ...(s.viewport ? [`viewport ${describeViewport(s.viewport)}`] : []),
           ].join('\t')).join('\n'));
         }
         return 0;
@@ -538,6 +545,15 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'screenshot': await screenshot(c, a); return 0;
+    case 'viewport': {
+      const rq = buildRequest(a);
+      const r = await c.call(rq.method, rq.path, rq.body, rq.timeoutMs);
+      const j = r.json() as { detail?: string; viewport?: unknown; measured?: unknown };
+      if (json) { out(r.text()); return 0; }
+      if (typeof j.detail === 'string' && j.detail !== '') hint(`note: ${j.detail}`);
+      out(renderViewport(j));
+      return 0;
+    }
     case 'console': await consoleCmd(c, a); return 0;
     case 'pdf': await binary(c, a, '/pdf', 'pdf'); return 0;
     case 'eval': {
@@ -629,6 +645,7 @@ Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@h
                --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer
                --http-auth : identifiants HTTP basic confiés à cet hôte seulement (allowlist exigée), jamais écrits ;
                « - » les lit sur stdin, un par ligne (hors de ps et de l'historique)
+               --viewport 360x800 | iphone-se [--mobile] [--dpr N] [--touch] [--mobile-ua] : viewport émulé dès la 1re page
 Profils      profiles [--json]                       liste (* = profil de la session courante)
              profiles create <nom> [--use-when "…"]  profil vide (un --user-data-dir possédé par Grasp)
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
@@ -670,6 +687,12 @@ Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée
                --full page entière · --el découpe sur un élément · --max-width réduit l'échelle · --refs dessine les refs
+Viewport     ${VIEWPORT_USAGE}
+               taille CSS émulée de l'onglet (Emulation.setDeviceMetricsOverride) : media queries, snap, text et captures
+               la reflètent ; --mobile : mode mobile de Chrome (<meta viewport>, barres superposées) ; --dpr : densité ;
+               --touch : écran tactile (maxTouchPoints, pointer: coarse) ; --mobile-ua : user agent Android (opt-in) ;
+               sans argument : réglage et mesures lues dans la page ; reset : retour au viewport du navigateur ;
+               conservé à la bascule de profil et au recyclage ; aussi sur une ligne de run
 Console      console [--level error|warn|info|debug] [--since <seq>] [--limit N (50)] [--clear] [--json]
                « #seq niveau source texte (fichier:ligne) ×N » ; seq courant sur stderr pour le --since suivant
                --since > seq courant (tampon recréé) → erreur : reprenez avec --since 0 ; valeurs non entières → erreur
@@ -701,7 +724,7 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
 Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
                une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
-               hover type wait expect eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               hover type wait expect eval console screenshot cookies upload profile viewport), commentaires #, guillemets à la shell ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)

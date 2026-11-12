@@ -6,6 +6,7 @@ import type { Limits } from '../core/limits.js';
 import { checkSocketPath } from '../core/paths.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import type { HttpCredential } from '../core/remote.js';
+import type { ViewportSpec } from '../core/viewport.js';
 
 export interface BridgeInit {
   id: string;
@@ -29,6 +30,8 @@ export interface BridgeInit {
   proxyServer?: string;
   /** Identifiants HTTP basic de la session : transmis par le canal IPC seulement, jamais écrits. */
   httpAuth?: HttpCredential[] | undefined;
+  /** Viewport émulé de la session (session create --viewport, ou dernier `grasp viewport`), posé avant toute navigation. */
+  viewport?: ViewportSpec | undefined;
 }
 
 export interface BridgeHandle {

@@ -32,6 +32,7 @@ function minutes(m: number): string {
   return m >= 1 ? `${Number.isInteger(m) ? m : m.toFixed(1)} min` : `${Math.round(m * 60)} s`;
 }
 import { STATE_MAX_BYTES } from '../core/state.js';
+import { describeViewport, viewportSpecOf, type ViewportSpec } from '../core/viewport.js';
 
 export interface Session {
   id: string;
@@ -68,6 +69,8 @@ export interface Session {
 export interface SessionOptions {
   proxyServer?: string;
   httpAuth: HttpCredential[];
+  /** Viewport émulé : celui de session create --viewport, puis du dernier `grasp viewport` réussi (réappliqué au relancement). */
+  viewport?: ViewportSpec;
 }
 
 /**
@@ -95,7 +98,20 @@ export function sessionOptionsOf(body: Record<string, unknown>, policy: Readonly
       out.httpAuth.push(c);
     }
   }
+  // Viewport (session create --viewport) : validé ici, avant tout lancement ; applicable aussi en mode attach (notre onglet seulement).
+  if (body.viewport !== undefined && body.viewport !== null) out.viewport = viewportSpecOf(body.viewport);
   return out;
+}
+
+/**
+ * Réponse réussie de POST /viewport (commande isolée ou étape de run) : le control plane retient le viewport de la
+ * session pour le réappliquer après une bascule de profil ou un recyclage du navigateur.
+ */
+export function rememberViewport(s: { options: SessionOptions }, result: unknown): void {
+  if (result === null || typeof result !== 'object' || !('viewport' in result)) return;
+  const v = (result as { viewport: unknown }).viewport;
+  if (v === null) delete s.options.viewport;
+  else if (typeof v === 'object') s.options.viewport = v as ViewportSpec;
 }
 
 export interface ControlPlaneOptions {
@@ -127,7 +143,7 @@ export function checkListen(listen: string | undefined, transport: 'unix' | 'tcp
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect', '/viewport']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -300,6 +316,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       fallbackEngine: config.fallbackEngine,
       ...(s.options.proxyServer !== undefined ? { proxyServer: s.options.proxyServer } : {}),
       ...(s.options.httpAuth.length > 0 ? { httpAuth: s.options.httpAuth } : {}),
+      ...(s.options.viewport !== undefined ? { viewport: s.options.viewport } : {}),
     }, {
       log,
       onExit: (code) => {
@@ -359,6 +376,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         ...(profile !== undefined ? [`profil ${profile}`] : []),
         ...(options.proxyServer !== undefined ? [`proxy ${options.proxyServer}`] : []),
         ...(options.httpAuth.length > 0 ? [`authentification HTTP pour ${options.httpAuth.map(credentialLabel).join(', ')}`] : []),
+        ...(options.viewport !== undefined ? [`viewport ${describeViewport(options.viewport)}`] : []),
       ];
       log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${extra.map((x) => `, ${x}`).join('')})`);
       return { session: s, profileCreated: p?.created === true };
@@ -652,7 +670,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       } catch { /* texte brut */ }
       throw new GraspError(r.status, msg, extra);
     }
-    return isJson ? r.json() : r.text();
+    const out = isJson ? r.json() : r.text();
+    if (rq.method === 'POST' && rq.path === '/viewport') rememberViewport(s, out);
+    return out;
   }
 
   async function proxy(s: Session, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -667,6 +687,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     // En-têtes x-grasp-* du bridge (dimensions d'une capture) transmis tels quels.
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(r.headers)) if (k.startsWith('x-grasp-') && typeof v === 'string') extra[k] = v;
+    if (req.method === 'POST' && url.pathname === '/viewport' && r.status === 200) { try { rememberViewport(s, r.json()); } catch { /* réponse illisible : rien retenu */ } }
     res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': r.body.length });
     res.end(r.body);
   }
@@ -684,7 +705,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (route === 'GET /sessions') {
         return sendJson(res, 200, [...sessions.values()].map((s) => ({
           id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir,
-          proxyServer: s.options.proxyServer ?? null, httpAuth: maskCredentials(s.options.httpAuth),
+          proxyServer: s.options.proxyServer ?? null, httpAuth: maskCredentials(s.options.httpAuth), ...(s.options.viewport !== undefined ? { viewport: s.options.viewport } : {}),
           browserStartedAt: new Date(s.browserStartedAt).toISOString(), recycles: s.recycles,
           ...(s.memory !== undefined ? { memoryMb: s.memory.mb, memoryMetric: s.memory.metric } : {}),
         })));

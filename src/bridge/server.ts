@@ -4,6 +4,7 @@ import { readJson, sendBuffer, sendError, sendJson, str, optStr, optBool, optInt
 import { isLevel, type ConsoleLevel } from '../core/console.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 import { expectSpecOf } from '../core/expect.js';
+import { viewportSpecOf } from '../core/viewport.js';
 import type { PageController, SessionCookie, ShotOptions } from './page.js';
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
@@ -64,6 +65,15 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           if (optFlag(q.get('save'), 'save')) return sendJson(res, 200, await page.saveShot(shotOptions(q)));
           const s = await page.capture(shotOptions(q));
           return sendBuffer(res, 200, MIME[s.format]!, s.data, { 'x-grasp-width': String(s.width), 'x-grasp-height': String(s.height), 'x-grasp-format': s.format, ...(s.truncated === true ? { 'x-grasp-truncated': '1' } : {}) });
+        }
+        // Viewport émulé de l'onglet : { reset: true } le retire ; sinon spécification validée (core/viewport.ts).
+        case 'GET /viewport': return sendJson(res, 200, await page.viewportInfo());
+        case 'POST /viewport': {
+          if (body.reset === true) {
+            if (Object.keys(body).length > 1) throw new GraspError(400, 'viewport : reset ne se combine avec aucune autre option');
+            return sendJson(res, 200, await page.setViewport(null));
+          }
+          return sendJson(res, 200, await page.setViewport(viewportSpecOf(body)));
         }
         case 'GET /console':
           return sendJson(res, 200, await page.consoleQuery({ level: level(q.get('level')), since: optCount(q.get('since'), 'since'), limit: optInt(q.get('limit'), 'limit'), clear: optFlag(q.get('clear'), 'clear') }));

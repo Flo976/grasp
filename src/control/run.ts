@@ -1,5 +1,6 @@
 import { GraspError } from '../core/errors.js';
 import { formatEntry, type ConsoleEntry } from '../core/console.js';
+import { renderViewport } from '../core/viewport.js';
 import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
@@ -236,6 +237,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
     case 'wait': return {};
+    case 'viewport': return { output: renderViewport(j), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {
       const p = j as { unchanged?: boolean; profile?: string; previous?: string | null };

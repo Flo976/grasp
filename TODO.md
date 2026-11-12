@@ -96,6 +96,16 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).
 
+## Retours d'essais réels
+
+- [x] **Viewport et émulation** (branche `feat/viewport`) : impossible de tester un défaut mobile à 360 px (headless
+      rendu à 780 × 493). Fait : `grasp viewport 360x800 [--mobile] [--dpr N] [--touch] [--mobile-ua]`, `viewport
+      reset`, lecture des mesures de la page, appareils (`iphone-se`, `pixel-7`…), `session create --viewport`,
+      ligne de `run` ; onglet de la session seulement (attach compris) ; retenu par le control plane et réappliqué
+      à la bascule de profil et au recyclage ; captures `--full`/`--el` qui reviennent au viewport émulé. Tests :
+      `viewport.test.ts` (media query vérifiée par `text`), `viewport-cli.test.ts`, `unit/viewport.test.ts`.
+      Reste : test réel sur chrome.exe ; outil MCP dédié (aujourd'hui par `run`) ; UA Safari pour les appareils iOS.
+
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)
 
 Sécurité du garde
