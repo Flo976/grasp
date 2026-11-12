@@ -23,6 +23,11 @@ export interface ResolvedConfig {
    * elle n'exécute rien. false : rien n'est capturé et Runtime.enable n'est jamais appelé (non détectable par la page).
    */
   allowConsole: boolean;
+  /**
+   * Blocage des requêtes vers les serveurs de publicité et de traçage (liste de Peter Lowe embarquée). Activé
+   * par défaut : un agent lit la page, ces requêtes n'y ajoutent rien et allongent l'attente de stabilité.
+   */
+  blockTrackers: boolean;
   transport: 'unix' | 'tcp';
   port: number;
   /** Mode attach : URL DevTools d'un navigateur déjà ouvert (ex. Chrome Windows depuis WSL2). Grasp ne le lance ni ne le tue. */
@@ -58,6 +63,7 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   allowUpload: false,
   allowCookies: false,
   allowConsole: true,
+  blockTrackers: true,
   transport: 'unix',
   port: 7319,
   cdpUrl: null,
@@ -130,6 +136,7 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
   allowUpload: bool,
   allowCookies: bool,
   allowConsole: bool,
+  blockTrackers: { ...bool, help: 'true|false : bloque les requêtes vers les ~3 500 domaines de publicité et de traçage de la liste de Peter Lowe (défaut true)' },
   transport: {
     check: (v): v is 'unix' | 'tcp' => v === 'unix' || v === 'tcp',
     parse(raw) { if (raw !== 'unix' && raw !== 'tcp') throw new Error('unix|tcp attendu'); return raw; },
@@ -184,6 +191,7 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     allowUpload: pick('allowUpload'),
     allowCookies: pick('allowCookies'),
     allowConsole: pick('allowConsole'),
+    blockTrackers: pick('blockTrackers'),
     transport: pick('transport'),
     port: pick('port'),
     cdpUrl: pick('cdpUrl'),

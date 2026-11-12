@@ -84,7 +84,7 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
   return { ok: !failed, total: steps.length, executed: out.length, steps: out };
 }
 
-interface ActionJson { diff?: string; detail?: string; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number } }
+interface ActionJson { diff?: string; detail?: string; trackersBlocked?: number; console?: { entries: ConsoleEntry[]; seq: number; since?: number; omitted?: number; dropped?: number } }
 
 /** Pertes de console jamais tues (mêmes messages que la commande isolée). */
 function losses(c: { since?: number | undefined; omitted?: number | undefined; dropped?: number | undefined }): string[] {
@@ -121,6 +121,7 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       const parts: string[] = [];
       if (a.diff !== undefined) parts.push(a.diff);
       const notes: string[] = a.detail !== undefined ? [a.detail] : [];
+      if (typeof a.trackersBlocked === 'number' && a.trackersBlocked > 0) notes.push(`traqueurs bloqués : ${a.trackersBlocked} requête(s)`);
       if (a.console !== undefined) {
         if (a.console.entries.length > 0) parts.push(a.console.entries.map(formatEntry).join('\n'));
         notes.push(...losses(a.console), `console : ${a.console.entries.length === 0 ? 'aucune nouvelle entrée, ' : ''}seq courant ${a.console.seq}`);

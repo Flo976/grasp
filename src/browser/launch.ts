@@ -21,6 +21,8 @@ export interface ChromeArgsInput {
   shmBytes: number | null;
   /** Port DevTools choisi par Grasp (freeLocalPort). */
   port: number;
+  /** Arguments ajoutés tels quels avant l'URL de départ (tests : --host-resolver-rules). */
+  extraArgs?: readonly string[] | undefined;
 }
 
 function assertPort(port: number): void {
@@ -62,6 +64,7 @@ export function buildChromeArgs(input: ChromeArgsInput): { args: string[]; warni
     args.push('--disable-dev-shm-usage');
     warnings.push(`/dev/shm ne fait que ${Math.round(input.shmBytes / 1024 / 1024)} Mo (< 256 Mo) : Chrome crasherait en boucle. --disable-dev-shm-usage ajouté. Remédiation : docker run --shm-size=1g.`);
   }
+  if (input.extraArgs !== undefined) args.push(...input.extraArgs);
   args.push('about:blank');
   return { args: mergeDisableFeatures(args, ALWAYS_DISABLED_FEATURES), warnings };
 }
@@ -109,6 +112,8 @@ export interface LaunchOptions {
   startTimeoutMs?: number;
   /** Choix du port DevTools (défaut : freeLocalPort). Injectable pour les tests de course. */
   pickPort?: () => Promise<number>;
+  /** Arguments Chrome supplémentaires (Chrome Linux seulement). */
+  extraArgs?: readonly string[];
 }
 
 export interface ChromeProcess {
@@ -387,7 +392,7 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
   const env = opts.env ?? process.env;
   const version = await chromeVersion(opts.browser.path);
   assertSupportedVersion(version);
-  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize() };
+  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize(), extraArgs: opts.extraArgs };
   // Avertissements (sandbox, /dev/shm) : une seule fois, pas à chaque essai de port.
   for (const w of buildChromeArgs({ ...common, port: 1 }).warnings) opts.onWarning?.(w);
 

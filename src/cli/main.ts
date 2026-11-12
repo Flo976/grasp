@@ -63,9 +63,10 @@ class Client {
 
 /** Rend le résultat d'une action mutante : OK (ou le diff si --snap-diff), puis la console si --console. */
 function renderAction(r: HttpResult, a: Args): void {
-  const j = r.json() as { diff?: string; detail?: string; console?: ActionConsole };
+  const j = r.json() as { diff?: string; detail?: string; console?: ActionConsole; trackersBlocked?: number };
   if (a.flags.has('json')) { out(JSON.stringify(j)); return; }
   if (j.detail) hint(`note: ${j.detail}`);
+  if (typeof j.trackersBlocked === 'number' && j.trackersBlocked > 0) hint(`traqueurs bloqués : ${j.trackersBlocked} requête(s) (grasp console pour le détail)`);
   out(j.diff !== undefined ? j.diff : 'OK');
   if (j.console !== undefined) {
     if (j.console.entries.length > 0) out(j.console.entries.map(formatEntry).join('\n'));
@@ -266,6 +267,7 @@ function renderSecurity(rep: any): string {
     `upload     : ${onoff(p.allowUpload)}`,
     `cookies    : ${onoff(p.allowCookies)}`,
     `console    : ${p.allowConsole ? 'AUTORISÉ (lecture seule ; Runtime.enable actif)' : 'désactivé'}`,
+    `traqueurs  : ${p.blockTrackers === true ? 'bloqués (liste de Peter Lowe)' : p.blockTrackers === false ? 'non bloqués' : 'inconnu (serveur antérieur)'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
     `transport  : ${rep.transport}`,
     `sessions   : ${Object.keys(rep.bridges).length}`,
@@ -507,6 +509,8 @@ Attente      wait [--text T | --sel S | --idle] [--timeout ms]   texte visible, 
                réseau : requêtes du document principal seulement ; > 1,2 s en vol (2,5 s si lancée par l'action) =
                long-polling, ignorée ; polling régulier ignoré ; allowConsole=false : AUCUNE attente réseau (Network
                n'est pas activé), seulement le DOM et les navigations
+               traqueurs (blockTrackers, défaut true) : requêtes annulées avant de partir, jamais attendues ;
+               « traqueurs bloqués : N requête(s) » sur stderr, détail dans console (source grasp)
 Captures     screenshot [-o f|-] [--full] [--el <sél>] [--format png|jpeg|webp] [--quality N] [--max-width N] [--refs]
                sans -o : fichier 0600 dans l'état de Grasp, CHEMIN sur stdout (--json : path, width, height, bytes, format)
                -o f : toujours 0600 (fichier existant remplacé, lien symbolique jamais suivi) ; au-delà de 16384 px : tronquée, signalée

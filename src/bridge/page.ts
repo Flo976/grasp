@@ -9,6 +9,7 @@ import { buildSnapshot, diffSnapshots, INTERACTIVE, type AXNode, type FormErrors
 import { parseKey } from './keys.js';
 import { ACTION_GRACE_MS, ACTION_REQUEST_MS, ACTION_WINDOW_MS, DEFAULT_LIMITS, LONG_REQUEST_MS, STABLE_QUIET_MS, truncateText, type Limits } from '../core/limits.js';
 import { fmtCandidate, nearest, type Candidate } from './match.js';
+import { TrackerList } from './trackers.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -42,7 +43,8 @@ export interface EngineConfig {
  * (200 au plus sont jointes), `dropped` = entrées tombées du tampon circulaire. Jamais de perte silencieuse.
  */
 export interface ConsoleSlice { entries: ConsoleEntry[]; seq: number; since: number; omitted: number; dropped: number }
-export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice }
+/** `trackersBlocked` : requêtes vers des traqueurs annulées pendant l'action (absent si aucune). */
+export interface ActionResult { ok: true; diff?: string; detail?: string; console?: ConsoleSlice; trackersBlocked?: number }
 export interface Blocked { url: string; reason: string; at: number }
 
 export interface ShotOptions {
@@ -603,6 +605,12 @@ export class PageController {
   private readonly requests = new Map<string, { method: string; url: string }>();
   /** Requêtes réseau annulées par le garde : déjà signalées comme « bloqué par Grasp ». */
   private readonly blockedNet = new Set<string>();
+  /** Liste de traqueurs (blockTrackers=true), sinon undefined : aucun motif Fetch au-delà des documents. */
+  private trackers: TrackerList | undefined;
+  /** Requêtes vers des traqueurs annulées dans cet onglet (cumul, jamais remis à zéro). */
+  trackersBlocked = 0;
+  /** Domaine de la liste qui couvre le document principal courant (page ouverte exprès sur un tel domaine). */
+  private topTracker: string | undefined;
   /** Contextes d'exécution → cadre, pour signaler les messages venant d'une iframe. */
   private readonly contexts = new Map<string, string>();
   private readonly frames = new Map<string, string>();
@@ -662,6 +670,8 @@ export class PageController {
     if (targetId === undefined) targetId = (await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' })).targetId;
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
     const pc = new PageController(cdp, sessionId, targetId, policy);
+    // Liste illisible : la session échoue (jamais un blocage annoncé mais inactif).
+    if (policy.blockTrackers) pc.trackers = TrackerList.embedded();
     pc.foreign = opts.newTab === true;
     pc.capturesDir = opts.capturesDir;
     if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
@@ -1065,15 +1075,49 @@ export class PageController {
     return new GraspError(base.status, msg, extra);
   }
 
-  /** Interception de toutes les requêtes de document (navigation, redirection, iframe). */
+  /**
+   * Interception de toutes les requêtes de document (navigation, redirection, iframe) et, si blockTrackers,
+   * des requêtes de tout type vers un domaine de la liste de traqueurs (préfiltre par motif, voir trackers.ts).
+   */
   private guard(sessionId: string): Promise<unknown> {
-    return this.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] }, sessionId);
+    const patterns: object[] = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
+    if (this.trackers !== undefined) patterns.push(...this.trackers.fetchPatterns());
+    return this.cdp.send('Fetch.enable', { patterns }, sessionId);
+  }
+
+  /**
+   * Domaine de la liste de traqueurs visé par une requête, sinon undefined. Le document principal de l'onglet
+   * n'est jamais bloqué à ce titre : y naviguer est un choix explicite, que seule l'allowlist arbitre ; ses
+   * propres ressources (même domaine de la liste : favicon, scripts) non plus.
+   */
+  private trackerOf(url: string, type: unknown, frameId: unknown, sessionId: string | undefined): string | undefined {
+    if (this.trackers === undefined) return undefined;
+    if (type === 'Document' && sessionId === this.sessionId && frameId === this.mainFrameId) return undefined;
+    const d = this.trackers.matchUrl(url);
+    return d !== undefined && d === this.topTracker ? undefined : d;
   }
 
   private async onEvent(e: CdpEvent): Promise<void> {
     try {
       if (e.method === 'Fetch.requestPaused') {
         const url: string = e.params.request.url;
+        const tracker = this.trackerOf(url, e.params.resourceType, e.params.frameId, e.sessionId);
+        if (tracker !== undefined) {
+          this.trackersBlocked++;
+          if (this.policy.allowConsole) {
+            if (typeof e.params.networkId === 'string') this.blockedNet.add(e.params.networkId);
+            // Hôte seul (pas l'URL) : les répétitions consécutives se fusionnent (×N) dans la console.
+            this.log({ level: 'info', source: 'grasp', text: `traqueur bloqué : ${new URL(url).hostname} (liste ${tracker})`, blocked: true });
+          }
+          // net::ERR_BLOCKED_BY_CLIENT pour la page, comme un bloqueur de publicité : aucune requête ne part.
+          await this.cdp.send('Fetch.failRequest', { requestId: e.params.requestId, errorReason: 'BlockedByClient' }, e.sessionId);
+          return;
+        }
+        // Préfiltre des traqueurs : faux positif d'un motif (sous-ressource), relâché sans autre contrôle.
+        if (e.params.resourceType !== 'Document') {
+          await this.cdp.send('Fetch.continueRequest', { requestId: e.params.requestId }, e.sessionId);
+          return;
+        }
         const v = checkUrl(this.policy.allowedDomains, url);
         if (v.allowed) {
           await this.cdp.send('Fetch.continueRequest', { requestId: e.params.requestId }, e.sessionId);
@@ -1120,6 +1164,9 @@ export class PageController {
         case 'Network.requestWillBeSent': {
           const url = String(e.params.request?.url ?? '');
           if (!TRACKED_REQUESTS.has(String(e.params.type)) || /^(data|blob):/.test(url)) break;
+          // Requête vers un traqueur : annulée par le garde avant de partir, elle n'est jamais attendue (ni une
+          // « réaction » de la page à une action). Son requestWillBeSent peut précéder Fetch.requestPaused.
+          if (this.trackerOf(url, e.params.type, e.params.frameId, e.sessionId) !== undefined) break;
           // Requêtes d'un autre cadre (document d'une iframe, ses XHR) : le contenu des cadres n'entre pas dans
           // le snapshot, et la fin du document d'une iframe hors processus arrive sur une autre session.
           if (typeof e.params.frameId === 'string' && e.params.frameId !== this.mainFrameId) break;
@@ -1135,6 +1182,7 @@ export class PageController {
         case 'Page.frameNavigated':
           if (e.params.frame?.parentId === undefined) {
             this.navCount++; this.docGen++; this.isoCtx = undefined;
+            this.topTracker = this.trackers?.matchUrl(String(e.params.frame?.url ?? ''));
             // Nouveau document : les requêtes de l'ancien sont mortes (leur fin n'est pas toujours rapportée),
             // et son historique de polling ne vaut plus.
             const now = Date.now();
@@ -1211,11 +1259,13 @@ export class PageController {
   async nav(url: string, opts: ActionOptions = {}): Promise<ActionResult & { url: string; title: string }> {
     if (opts.console === true) this.assertConsole();
     const seq = this.consoleBuf.seq;
+    const trk0 = this.trackersBlocked;
     try {
       const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
       const doc0 = this.docGen;
       const { loc, stab } = await this.navigateStable(url);
       const out: ActionResult & { url: string; title: string } = { ok: true, ...loc };
+      if (this.trackersBlocked > trk0) out.trackersBlocked = this.trackersBlocked - trk0;
       if (!stab.stable) out.detail = PageController.unstableNote(stab);
       else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
       else if (stab.background === true) out.detail = BACKGROUND_NOTE;
@@ -1915,6 +1965,7 @@ export class PageController {
     const t0 = Date.now();
     const nav0 = this.navCount;
     const loads0 = this.loadStarts;
+    const trk0 = this.trackersBlocked;
     const actionNotes: string[] = [];
     this.notes = actionNotes;
     this.undelivered = false;
@@ -1937,6 +1988,7 @@ export class PageController {
       // toutes ses requêtes comptent (comme `nav`), pas seulement celles de la fenêtre de l'action.
       const stab = opts.snapDiff === true || reacted() ? await this.waitStable(this.limits.stableTimeoutMs, this.docGen !== doc0 ? { since: t0 } : win) : undefined;
       const res: ActionResult = { ok: true };
+      if (this.trackersBlocked > trk0) res.trackersBlocked = this.trackersBlocked - trk0;
       // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
       const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
       const notes = [detail, ...actionNotes, replaced, this.lastDialog !== null ? `dialogue fermé — ${this.lastDialog}` : undefined, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');

@@ -86,6 +86,8 @@ limite la lecture à une zone.
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
+- 🚫 **Traqueurs bloqués** (liste de Peter Lowe, ~3 500 domaines) : pages plus légères, attente plus courte
+  ([détails](#blocage-des-traqueurs)).
 - 🔒 **Sécurité par défaut** : allowlist de navigation, token, socket Unix ([détails](#sécurité)).
 
 ## 🛠️ Stack
@@ -419,7 +421,9 @@ est vide, le titre aussi, et un `--snap-diff` saisit le DOM en pleine transition
   Deux cas rendent la main plus tôt, avec une note courte : `animations continues ignorées` (après 1 s, seules
   de petites mutations répétées — carrousel, compteur) et `requêtes de fond ignorées` (DOM calme depuis 1 s
   alors que seules des requêtes continuent — mesures d'audience, publicités). Une requête partie pendant une
-  action (« Enregistrer ») reste attendue jusqu'à sa réponse (2,5 s au plus).
+  action (« Enregistrer ») reste attendue jusqu'à sa réponse (2,5 s au plus). Une requête vers un
+  **traqueur bloqué** n'est jamais attendue, ni comptée comme réaction à une action
+  ([Blocage des traqueurs](#blocage-des-traqueurs)).
 - **`--snap-diff`** : même attente avant le snapshot « après ». Une action **qui fait réagir la page** —
   navigation, route `pushState` d'une application monopage, requête réseau partie pendant l'action ou dans
   les 400 ms qui suivent (XHR d'un « Enregistrer », suggestions d'une autocomplétion), ou enchaînée à l'une
@@ -728,7 +732,7 @@ croissant, jamais remis à zéro), qui survit aux navigations (repère `navigati
 | `console` | `console.*` : niveau, arguments en aperçu compact (`{code: 42, detail: "…", nested: {…}}`, `%s %d %o %c`), `fichier:ligne` depuis la pile |
 | `exception` | exceptions non rattrapées et promesses rejetées : message et pile courte (3 appels) |
 | `network` | requêtes en échec (`Network.loadingFailed` : `net::ERR_…`, CORS, blocage) et réponses HTTP ≥ 400 : méthode, URL tronquée, code |
-| `grasp` | requêtes **bloquées par le garde de navigation** de Grasp (`blocked: true`) |
+| `grasp` | requêtes **bloquées par le garde de navigation** de Grasp (`blocked: true`), et requêtes vers un traqueur (`info`, `traqueur bloqué : hôte (liste domaine)`) |
 | `security`, `deprecation`, `intervention`, `violation`, `javascript`… | domaine `Log` : CSP, contenu mixte, dépréciations, interventions |
 
 Les iframes, y compris hors processus (OOPIF), sont écoutées (`[iframe]`). Les messages réseau
@@ -765,6 +769,41 @@ seq courant : 12 — suite : grasp console --since 12        (stderr)
 - **`allowConsole=false`** : `console` et `--console` → 403, et Grasp n'appelle **jamais** `Runtime.enable`,
   `Log.enable` ni `Network.enable` (vérifié par espion CDP). `Runtime.enable` est un vecteur connu de
   détection de l'automatisation par les protections anti-bot ; à couper sur les sites qui y sont sensibles.
+
+## Blocage des traqueurs
+
+Par défaut (`blockTrackers=true`), les requêtes vers les serveurs de publicité et de traçage de la
+**liste de Peter Lowe** (~3 500 domaines, ceux d'Obscura) sont annulées **dans le navigateur, avant de
+partir** : la page reçoit `net::ERR_BLOCKED_BY_CLIENT`, comme avec un bloqueur de publicité. Un domaine de
+la liste bloque aussi ses sous-domaines (`doubleclick.net` → `ad.doubleclick.net`), jamais un quasi-homonyme
+(`xdoubleclick.net`) ni un parent.
+
+- **Mécanisme** : le garde `Fetch` qui intercepte déjà les documents reçoit en plus un motif par domaine
+  (`*://*doubleclick.net?*`, tous types de ressources) : le navigateur ne suspend que les requêtes qui
+  ressemblent à un traqueur, le bridge vérifie l'hôte exact et annule (`Fetch.failRequest`, `BlockedByClient`)
+  ou relâche un faux positif du motif. Choisi plutôt que `Network.setBlockedURLs`, qui exige le domaine
+  `Network` : le blocage marche donc aussi avec `allowConsole=false`, sans `Network.enable`. Il couvre l'onglet,
+  ses iframes (y compris hors processus) et ses popups, comme le garde de navigation ; en mode attach, seulement
+  l'onglet de Grasp. Coût mesuré : ≈ 0,3 ms par requête côté navigateur (page de 400 images : +110 ms).
+- **Attente de stabilité** : une requête bloquée n'est ni attendue ni prise pour une réaction à une action
+  (testé : un clic qui lance une mesure d'audience bloquée rend la main en ≈ 140 ms, ≈ 500 ms si la requête
+  était comptée).
+- **Compteur** : `trackersBlocked` dans la réponse de `nav` et des actions (absent si aucune), et sur stderr
+  `traqueurs bloqués : 4 requête(s) (grasp console pour le détail)` ; dans `grasp run`, en note de l'étape.
+  Avec la console, une entrée `info` par requête (`traqueur bloqué : ad.doubleclick.net (liste
+  doubleclick.net)`, l'hôte seul, fusionné `×N`), sans doublon « erreur réseau ». `grasp security` affiche
+  l'état (`traqueurs  : bloqués (liste de Peter Lowe)`).
+- **Exceptions** : la navigation du document principal n'est jamais bloquée à ce titre (seule l'allowlist
+  l'arbitre), et une page ouverte exprès sur un domaine de la liste charge ses propres ressources.
+- **Défaut — décision** : activé. Un agent lit la page ; ces requêtes n'y ajoutent rien, rallongent le
+  chargement et l'attente de stabilité, et signalent la navigation de l'agent à des tiers. Un site qui
+  dépendrait d'un de ces domaines pour s'afficher se débloque par `grasp config set blockTrackers false`.
+- **Liste** : `data/pgl-domains.txt`, embarquée (aucun téléchargement à l'exécution), lue au démarrage du
+  bridge ; illisible ou vide → la session ne démarre pas, jamais un blocage annoncé mais inactif. Source,
+  date et conditions en tête du fichier. La liste n'a pas de licence formelle ; son auteur écrit
+  *« Feel free to combine this list with yours or lists from other sites and put it up on the web »*
+  ([pgl.yoyo.org/adservers](https://pgl.yoyo.org/adservers/)). Elle n'est **pas** couverte par la licence
+  MIT de Grasp. Idée reprise d'Obscura (Apache-2.0), qui embarque la même liste ; aucun code repris.
 
 ## API HTTP (control plane)
 
@@ -901,7 +940,8 @@ grasp security                            # politique telle que le garde l'appli
 ```
 
 Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
-`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
+`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `blockTrackers` (blocage des
+traqueurs, `true` par défaut, voir [Blocage des traqueurs](#blocage-des-traqueurs)), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
 déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
 
@@ -982,6 +1022,10 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
 - **Port DevTools** : la preuve d'identité repose sur l'annonce `DevTools listening on …` du stderr de
   Chrome ; si une enveloppe détourne entièrement ce stderr, Grasp accepte la réponse du port (libre au
   lancement) tant que son processus vit.
+- **Blocage des traqueurs** : par domaine seulement (pas de règles d'URL à la manière d'EasyList : un traqueur
+  servi depuis le domaine du site passe) ; les requêtes des workers (service workers, workers dédiés)
+  échappent au garde `Fetch` de l'onglet ; la liste embarquée vieillit (mise à jour à la main, voir l'en-tête
+  de `data/pgl-domains.txt`).
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
   par Grasp…]`) lorsqu'il échoue, sans le bloquer.

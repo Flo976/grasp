@@ -12,19 +12,19 @@ import type { Limits } from '../../src/core/limits.js';
 export interface PageFixture { page: PageController; chrome: ChromeProcess; cdp: CdpClient; capturesDir: string; downloadDir: string; close(): Promise<void> }
 
 /** Moteur Playwright du bridge : module chargé (défaut playwright-core) et délai d'inactivité. */
-export interface EngineFixture { module?: string; idleMs?: number }
+export interface EngineFixture { module?: string; idleMs?: number; chromeArgs?: readonly string[] }
 
 export async function openPage(config: ConfigFile = { allowedDomains: ['127.0.0.1'] }, limits?: Partial<Limits>, engine: EngineFixture = {}): Promise<PageFixture> {
   const dir = mkdtempSync(join(tmpdir(), 'gr-page-'));
   const browser = discoverChrome(process.env, realProbe, process.env.HOME ?? '/');
-  const chrome = await launchChrome({ browser, userDataDir: dir, headless: true });
+  const chrome = await launchChrome({ browser, userDataDir: dir, headless: true, ...(engine.chromeArgs !== undefined ? { extraArgs: engine.chromeArgs } : {}) });
   const cdp = await CdpClient.connect(chrome.wsUrl);
   const capturesDir = join(dir, 'captures');
   const downloadDir = join(dir, 'dl');
   const cfg = resolveConfig(config);
   const page = await PageController.attach(cdp, effectivePolicy(cfg), {
     downloadDir, capturesDir, ...(limits !== undefined ? { limits } : {}),
-    engine: { devtoolsUrl: chrome.wsUrl, fallback: cfg.fallbackEngine, isLocal: true, ...engine },
+    engine: { devtoolsUrl: chrome.wsUrl, fallback: cfg.fallbackEngine, isLocal: true, ...(engine.module !== undefined ? { module: engine.module } : {}), ...(engine.idleMs !== undefined ? { idleMs: engine.idleMs } : {}) },
   });
   return {
     page, chrome, cdp, capturesDir, downloadDir,

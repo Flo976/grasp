@@ -12,6 +12,8 @@ export interface EffectivePolicy {
   allowCookies: boolean;
   /** Lecture console (tampon du bridge). false : aucune capture, Runtime/Log/Network jamais activés pour elle. */
   allowConsole: boolean;
+  /** Requêtes vers les domaines de la liste de traqueurs embarquée : annulées dans le navigateur (garde Fetch). */
+  blockTrackers: boolean;
   /** Le blocage n'est pas configurable : détecter ≠ bloquer, on bloque toujours. */
   navigation: 'enforce';
   tokenRequired: true;
@@ -25,6 +27,7 @@ export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> 
     allowUpload: cfg.allowUpload,
     allowCookies: cfg.allowCookies,
     allowConsole: cfg.allowConsole,
+    blockTrackers: cfg.blockTrackers,
     navigation: 'enforce' as const,
     tokenRequired: true as const,
   });

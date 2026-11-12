@@ -644,6 +644,27 @@ if (location.search.includes('rendu=1')) {
 }
 </script></body></html>`;
 
+/**
+ * Traqueurs : la page (servie sur 127.0.0.1) charge un pixel, un script, un fetch et une iframe vers des domaines
+ * de la liste de Peter Lowe (doubleclick.net, google-analytics.com et leurs sous-domaines), et une image vers un
+ * quasi-homonyme hors liste (xdoubleclick.net). Le test mappe ces hôtes sur 127.0.0.1 (--host-resolver-rules) :
+ * une requête non bloquée arrive ici (/trk/…, réponse lente de 1,5 s), une requête bloquée jamais.
+ */
+export const TRAQUEURS_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Traqueurs</title>
+<script src="http://www.google-analytics.com:PORT/trk/analytics.js" async></script></head><body>
+<h1>Article</h1>
+<p id="etat">Contenu</p>
+<img src="http://ad.doubleclick.net:PORT/trk/pixel.gif" alt="">
+<img src="http://xdoubleclick.net:PORT/presque/pixel.gif" alt="">
+<iframe src="http://ad.doubleclick.net:PORT/trk/cadre" title="pub"></iframe>
+<button id="mesure" onclick="fetch('http://stats.doubleclick.net:' + location.port + '/trk/clic', { mode: 'no-cors' }).catch(() => {})">Mesurer</button>
+<script>
+fetch('http://doubleclick.net:' + location.port + '/trk/collect', { mode: 'no-cors' }).catch(() => {});
+fetch('/api/data').then(() => { document.getElementById('etat').textContent = 'Contenu chargé'; });
+</script>
+</body></html>`;
+
 export interface TestSite { url: string; server: Server; hits: string[]; close(): Promise<void> }
 
 /** Petit site local servant la page de test. Aucun site externe dans la suite. */
@@ -704,6 +725,9 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/remplace') { res.end(REMPLACE_PAGE); return; }
     if (u.pathname === '/carrousel') { res.end(CARROUSEL_PAGE); return; }
     if (u.pathname === '/fond-reseau') { res.end(FOND_RESEAU_PAGE); return; }
+    if (u.pathname === '/traqueurs') { res.end(TRAQUEURS_PAGE.replaceAll('PORT', String((server.address() as AddressInfo).port))); return; }
+    if (u.pathname.startsWith('/trk/')) { res.setHeader('content-type', 'text/plain'); setTimeout(() => res.end(''), 1500); return; }
+    if (u.pathname.startsWith('/presque/')) { res.setHeader('content-type', 'text/plain'); res.end(''); return; }
     if (u.pathname.startsWith('/fond/')) { setTimeout(() => res.end('{}'), 60); return; }
     if (u.pathname === '/livres') { res.end(LIVRES_PAGE); return; }
     if (u.pathname === '/console-spa') { res.end(CONSOLE_SPA_PAGE); return; }
