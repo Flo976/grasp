@@ -42,6 +42,8 @@ WORKDIR /opt/grasp
 COPY --from=build /src/package.json ./
 COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/dist/src ./dist/src
+# Liste de traqueurs (blockTrackers, activé par défaut) : lue par le bridge à côté de dist/ (data/pgl-domains.txt).
+COPY data ./data
 # Scénario de bout en bout et son site de test (≈ 30 ko) : `docker run … --entrypoint bash grasp examples/e2e.sh`.
 COPY --from=build /src/dist/test/helpers/testsite.js ./dist/test/helpers/
 COPY examples ./examples
