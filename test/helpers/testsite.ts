@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { historiqueRoute } from './testsite-historique.js';
+import { PORTAIL_PAGE } from './portail.js';
 
 export const FORM_PAGE = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Inscription</title></head>
@@ -930,6 +931,7 @@ export async function startTestSite(): Promise<TestSite> {
     if (u.pathname === '/snap-v3') { res.end(SNAP_V3_PAGE); return; }
     if (u.pathname === '/radios') { res.end(RADIOS_PAGE); return; }
     if (u.pathname === '/modale') { res.end(MODALE_PAGE); return; }
+    if (u.pathname === '/portail') { res.end(PORTAIL_PAGE); return; }
     if (u.pathname === '/cadre-texte') { res.end('<!doctype html><title>Cadre</title><p>Contenu du cadre</p>'); return; }
     if (u.pathname === '/big') {
       const items = Array.from({ length: 2000 }, (_, i) => `<li><a href="/p${i}">Produit numéro ${i}</a></li>`).join('');

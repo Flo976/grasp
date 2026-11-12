@@ -261,8 +261,24 @@ const TOOLS: Tool[] = [
   {
     name: 'snap', readOnly: true,
     description: 'Snapshot de l\'arbre d\'accessibilité : une ligne par nœud « ref:rôle "nom" [états] ». Les refs (e5k2) sont stables et servent de sélecteur aux actions. Budget 12 000 octets par défaut, troncature annoncée en dernière ligne.',
-    props: { max: I('Budget en octets.', 1), scope: S('Zone : ref, CSS ou text: (refs identiques à celles du snapshot complet) ; frame=<css> pour l\'arbre ARIA d\'une iframe (sans refs).'), nameMax: I('Longueur maximale des noms (défaut 80) ; 0 = noms entiers.') },
-    async run(c, a) { return text((await send(c, buildRequest(toArgs('snap', a, [])))).text()); },
+    props: {
+      max: I('Budget en octets.', 1), scope: S('Zone : ref, CSS ou text: (refs identiques à celles du snapshot complet) ; frame=<css> pour l\'arbre ARIA d\'une iframe (sans refs).'), nameMax: I('Longueur maximale des noms (défaut 80) ; 0 = noms entiers.'),
+      mode: S('Lecture partielle, mêmes refs : outline = repères et titres seulement (avec le volume de chaque repère), pour s\'orienter avant un snap ciblé (scope) ; interactive = éléments actionnables et champs avec leurs conteneurs et titres.', { enum: ['outline', 'interactive'] }),
+    },
+    async run(c, a) {
+      const { mode, ...rest } = a;
+      return text((await send(c, buildRequest(toArgs('snap', typeof mode === 'string' ? { ...rest, [mode]: true } : rest, [])))).text());
+    },
+  },
+  {
+    name: 'find', readOnly: true,
+    description: 'Cherche dans le snapshot : renvoie seulement les lignes qui correspondent (nom entier, valeur, texte ; sans casse ni accents, ou /regex/), avec leur ref (identique au snapshot complet) et leur conteneur. Moins coûteux qu\'un snap complet pour retrouver un bouton, un champ ou une option.',
+    props: {
+      pattern: S('Texte cherché, ou /expression régulière/drapeaux (i, m, s, u).'), role: S('Rôle(s) retenu(s), séparés par des virgules (button, link, textbox, option, heading, text = texte brut…).'),
+      max: I('Nombre maximal de lignes (défaut 30, 500 au plus).', 1), scope: S('Zone : ref, CSS ou text:.'), nameMax: I('Longueur maximale des noms (défaut 80) ; 0 = noms entiers.'),
+    },
+    required: ['pattern'],
+    async run(c, a) { return text((await send(c, buildRequest(toArgs('find', a, ['pattern'])))).text()); },
   },
   {
     name: 'text', readOnly: true,
@@ -418,6 +434,7 @@ class RpcError extends Error {
 }
 
 const INSTRUCTIONS = `Grasp pilote un vrai Chrome par l'arbre d'accessibilité.
+Page longue : snap mode=outline pour s'orienter, puis snap scope=<ref> ou find (lignes trouvées seulement, mêmes refs).
 Boucle type : nav → snap (refs e5k2) → click/fill/select/check avec snapDiff=true (le diff montre l'effet) → text pour vérifier le résultat dans la page.
 Sélecteurs : ref de snap, CSS (#id) ou text:Libellé. Sélecteur ambigu ou ref disparue : erreur avec les refs candidates, refaites snap.
 Plusieurs étapes connues d'avance : outil run (un seul appel). screenshot renvoie un chemin de fichier.`;

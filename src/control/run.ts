@@ -243,7 +243,7 @@ function losses(c: { since?: number | undefined; omitted?: number | undefined; d
 function render(cmd: string, result: unknown): { output?: string; detail?: string } {
   const j = (typeof result === 'object' && result !== null ? result : {}) as Record<string, unknown>;
   switch (cmd) {
-    case 'snap': case 'text': {
+    case 'snap': case 'find': case 'text': {
       const t = typeof result === 'string' ? result.replace(/\n$/, '') : '';
       return t === '' && cmd === 'text' ? { detail: 'aucun texte visible' } : { output: t };
     }

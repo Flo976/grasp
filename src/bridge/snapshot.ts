@@ -99,6 +99,49 @@ export interface SnapshotOptions {
    * Défaut : NAME_MAX pour les noms, TEXT_MAX pour les textes et régions annoncées. Les refs n'en dépendent pas.
    */
   nameMax?: number;
+  /**
+   * Lecture partielle (tout l'arbre est parcouru : refs identiques au snapshot complet, seules les lignes
+   * rendues changent). `outline` : repères (landmarks) et titres ; `interactive` : éléments actionnables et
+   * champs, avec leurs conteneurs et titres de contexte.
+   */
+  mode?: SnapMode;
+  /** Recherche (`find`) : seules les lignes qui correspondent, avec leur conteneur de contexte. */
+  find?: FindSpec;
+}
+
+export type SnapMode = 'outline' | 'interactive';
+export const SNAP_MODES: readonly SnapMode[] = ['outline', 'interactive'];
+
+/** Recherche dans le snapshot : motif compilé (`compileFind`), rôles admis (`text` = texte brut), nombre maximal de lignes. */
+export interface FindSpec { pattern: FindPattern; roles?: string[]; limit?: number }
+export interface FindPattern { label: string; test(s: string): boolean }
+
+/** Nombre de correspondances rendues par défaut, et plafond de `--max`. */
+export const FIND_LIMIT = 30;
+export const FIND_LIMIT_MAX = 500;
+/** Longueur de texte au-delà de laquelle une expression régulière n'est pas appliquée (le reste est ignoré). */
+const FIND_HAY_MAX = 2000;
+
+/** Minuscules, sans accents : « Écrire » trouve « ecrire ». */
+const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+/**
+ * Motif de `find` : `/expr/drapeaux` = expression régulière (drapeaux i, m, s, u ; g et y refusés : ils
+ * rendraient `test` dépendant de l'appel précédent) ; sinon texte cherché tel quel, sans casse ni accents,
+ * blancs normalisés. Lève une Error au message lisible (motif vide, expression invalide).
+ */
+export function compileFind(raw: string): FindPattern {
+  const m = /^\/(.+)\/([a-z]*)$/s.exec(raw);
+  if (m) {
+    const flags = m[2]!;
+    if (/[^imsu]/.test(flags)) throw new Error(`find : drapeau d'expression régulière non admis « ${flags} » (i, m, s, u)`);
+    let re: RegExp;
+    try { re = new RegExp(m[1]!, flags.includes('u') ? flags : `${flags}u`); } catch (e) { throw new Error(`find : expression régulière invalide (${(e as Error).message})`); }
+    return { label: raw, test: (s) => re.test(s.slice(0, FIND_HAY_MAX)) };
+  }
+  const t = fold(norm(raw));
+  if (t === '') throw new Error('find : motif vide (texte, ou /expression/)');
+  return { label: `« ${norm(raw)} »`, test: (s) => fold(s).includes(t) };
 }
 
 /** Longueur par défaut d'un nom rendu (lien, bouton…) et d'une ligne de texte brut. */
@@ -134,6 +177,29 @@ const NEXT_LABEL_ROLES = new Set(['checkbox', 'radio', 'switch']);
 const POPUP_ROLES = new Set(['MenuListPopup', 'listbox', 'tree', 'grid', 'dialog', 'group', 'option']);
 /** Raisons Chrome d'un nœud masqué par une modale, un fond aria-hidden ou inerte. */
 const MASKED_REASONS = new Set(['activeModalDialog', 'ariaHiddenElement', 'ariaHiddenSubtree', 'inertElement', 'inertSubtree']);
+/** Repères (landmarks) : rendus par `snap --outline` avec le volume de leur contenu. */
+const LANDMARK_ROLES = new Set(['banner', 'navigation', 'main', 'contentinfo', 'complementary', 'search', 'form', 'region', 'dialog', 'alertdialog']);
+/** Conteneurs qui situent un élément actionnable (`snap --interactive`, contexte d'une ligne de `find`). */
+const CONTEXT_CONTAINERS = new Set([...LANDMARK_ROLES, 'group', 'radiogroup', 'row', 'article', 'listitem', 'menu', 'menubar', 'toolbar', 'tablist', 'tabpanel', 'table', 'grid', 'treegrid', 'tree']);
+
+/**
+ * Ligne produite par le parcours, avant rendu. `parent` : indice de la ligne de l'ancêtre émis le plus proche
+ * (-1 : aucun) ; `kind` : nœud avec ref, texte brut, ou ligne annexe (options d'une liste, alerte hors arbre).
+ */
+interface OutLine {
+  depth: number;
+  line: string;
+  parent: number;
+  kind: 'node' | 'text' | 'extra';
+  role?: string;
+  level?: number;
+  /** Texte cherché par `find` : nom entier (non tronqué), nom brut s'il diffère, valeur, contexte, message d'erreur. */
+  hay?: string;
+  /** `ref:rôle "nom"` court, pour situer une correspondance de `find`. */
+  short?: string;
+  /** Nom rendu (nœud avec ref). */
+  name?: string;
+}
 
 const listOf = <T>(xs: T[] | undefined): T[] => (xs === undefined ? [] : xs);
 const str = (v: AXValue | undefined): string => (v?.value === undefined || v.value === null ? '' : String(v.value));
@@ -335,7 +401,9 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   const meta = new Map<string, RefMeta>();
   const texts: string[] = [];
   const textNodes: Array<{ text: string; backendNodeId: number }> = [];
-  const out: Array<{ depth: number; line: string }> = [];
+  const out: OutLine[] = [];
+  /** Options résolubles mais non rendues (liste fermée, au-delà du budget) : `find` les trouve quand même. */
+  const hiddenOptions: OutLine[] = [];
   const occurrences = new Map<string, number>();
   const scoped = opts.scopeBackendId !== undefined;
   let scopeFound = false;
@@ -377,11 +445,15 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     }
   };
   /** Ref résoluble mais non rendue (option au-delà du budget, select fermé). */
-  const register = (n: AXNode, role: string, name: string, zone: string) => {
+  const register = (n: AXNode, role: string, name: string, zone: string, findParent?: number) => {
     const raw = rawOf(n);
     const ref = makeRef(role, raw, zone);
     if (n.backendDOMNodeId !== undefined) refs.set(ref, n.backendDOMNodeId);
     meta.set(ref, raw !== name ? { role, name, alt: raw } : { role, name });
+    // Option d'une liste dans la zone : `find` doit la trouver même si elle n'a pas de ligne à elle.
+    if (findParent !== undefined && opts.find !== undefined && name !== '') {
+      hiddenOptions.push({ depth: 0, line: `${ref}:${role} ${quote(name, nameMax)}${hasProp(n, 'selected', true) ? ' [x]' : ''}`, parent: findParent, kind: 'node', role, hay: raw !== name ? `${name} ${raw}` : name });
+    }
   };
 
   /**
@@ -449,11 +521,13 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
   /** Options d'une liste : rendues jusqu'à OPTIONS_MAX (les sélectionnées toujours), les autres comptées. */
   interface OptionBudget { shown: number; hidden: number }
 
-  const walk = (node: AXNode, depth: number, ancestorNames: string[], inScopeAbove: boolean, zoneAbove: string, budget?: OptionBudget) => {
+  const walk = (node: AXNode, depth: number, ancestorNames: string[], inScopeAbove: boolean, zoneAbove: string, pIdx: number, budget?: OptionBudget) => {
     const role = str(node.role);
     const name = nameOf(node);
     const zone = isModal(node) ? '\u0002modale' : zoneAbove;
     let emitted = false;
+    // Indice de la ligne de ce nœud (s'il est émis dans la zone) : parent des lignes de ses descendants.
+    let myIdx = pIdx;
     // Région annoncée sans nom : son texte sur sa ligne (la ref reste celle du rôle seul).
     let live = '';
     // Racine de la zone : les profondeurs repartent de 0 sous elle.
@@ -469,7 +543,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
           if (node.backendDOMNodeId !== undefined) textNodes.push({ text, backendNodeId: node.backendDOMNodeId });
           if (inScope) {
             texts.push(text);
-            out.push({ depth, line: quote(text, textMax) });
+            out.push({ depth, line: quote(text, textMax), parent: pIdx, kind: 'text', role: 'text', hay: text });
           }
         }
         return; // InlineTextBox enfants : inutiles
@@ -477,7 +551,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       // Option au-delà du budget de sa liste : résoluble, pas rendue.
       if (role === 'option' && budget !== undefined) {
         if (budget.shown >= OPTIONS_MAX && !hasProp(node, 'selected', true)) {
-          register(node, role, name, zone);
+          register(node, role, name, zone, inScope ? pIdx : undefined);
           budget.hidden++;
           return;
         }
@@ -511,7 +585,10 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
         meta.set(ref, { role, name, ...(raw !== name && raw !== '' ? { alt: raw } : {}), ...(cx.follows ? { near: cx.text } : {}) });
         if (inScope) {
           entries.set(ref, line);
-          out.push({ depth, line });
+          myIdx = out.length;
+          const lv = node.properties?.find((p) => p.name === 'level')?.value.value;
+          const hay = [shown, raw !== shown ? raw : '', val, cx.text, err ?? ''].filter((x) => x !== '').join(' ');
+          out.push({ depth, line, parent: pIdx, kind: 'node', role, ...(typeof lv === 'number' ? { level: lv } : {}), hay, name: shown, short: `${ref}:${role}${shown ? ` ${quote(shown, 40)}` : ''}` });
         }
         emitted = true;
       }
@@ -524,12 +601,12 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       // <select> fermé : ses options sur une ligne compacte (sélection marquée), refs résolubles.
       if (!hasProp(node, 'expanded', true)) {
         const opts: Array<{ text: string; selected: boolean }> = [];
-        collectOptions(node, zone, opts);
+        collectOptions(node, zone, opts, inScope ? myIdx : undefined);
         if (emitted && inScope && opts.length > 0) {
           // Les OPTIONS_MAX premières, plus toute option choisie au-delà (marquée [x]) ; le reste compté.
           const shownOpts = opts.filter((o, i) => i < OPTIONS_MAX || o.selected);
           const more = opts.length - shownOpts.length;
-          out.push({ depth: nextDepth, line: `options : ${shownOpts.map((o) => o.text).join(' | ')}${more > 0 ? ` | … +${more}` : ''}` });
+          out.push({ depth: nextDepth, line: `options : ${shownOpts.map((o) => o.text).join(' | ')}${more > 0 ? ` | … +${more}` : ''}`, parent: myIdx, kind: 'extra' });
         }
         return;
       }
@@ -537,9 +614,9 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
       const b: OptionBudget = { shown: 0, hidden: 0 };
       for (const id of listOf(node.childIds)) {
         const c = byId.get(id);
-        if (c && POPUP_ROLES.has(str(c.role))) walk(c, nextDepth, nextNames, inScope, zone, str(c.role) === 'listbox' ? undefined : b);
+        if (c && POPUP_ROLES.has(str(c.role))) walk(c, nextDepth, nextNames, inScope, zone, myIdx, str(c.role) === 'listbox' ? undefined : b);
       }
-      if (b.hidden > 0 && emitted && inScope) out.push({ depth: nextDepth, line: `… +${b.hidden} options` });
+      if (b.hidden > 0 && emitted && inScope) out.push({ depth: nextDepth, line: `… +${b.hidden} options`, parent: myIdx, kind: 'extra' });
       return;
     }
     // Le texte interne d'un champ (sa valeur) est déjà rendu par `=valeur` : on ne descend pas.
@@ -547,28 +624,28 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     const own = role === 'listbox' ? { shown: 0, hidden: 0 } : undefined;
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
-      if (c) walk(c, nextDepth, nextNames, inScope, zone, own ?? budget);
+      if (c) walk(c, nextDepth, nextNames, inScope, zone, myIdx, own ?? budget);
     }
-    if (own !== undefined && own.hidden > 0 && inScope) out.push({ depth: nextDepth, line: `… +${own.hidden} options` });
+    if (own !== undefined && own.hidden > 0 && inScope) out.push({ depth: nextDepth, line: `… +${own.hidden} options`, parent: myIdx, kind: 'extra' });
   };
 
-  const collectOptions = (node: AXNode, zone: string, acc: Array<{ text: string; selected: boolean }>) => {
+  const collectOptions = (node: AXNode, zone: string, acc: Array<{ text: string; selected: boolean }>, findParent: number | undefined) => {
     for (const id of listOf(node.childIds)) {
       const c = byId.get(id);
       if (!c) continue;
       const role = str(c.role);
       if (role === 'option' && !c.ignored) {
         const name = nameOf(c);
-        register(c, role, name, zone);
+        register(c, role, name, zone, findParent);
         const selected = hasProp(c, 'selected', true);
         acc.push({ text: `${quote(name, 40)}${selected ? ' [x]' : ''}`, selected });
       }
-      collectOptions(c, zone, acc);
+      collectOptions(c, zone, acc, findParent);
     }
   };
 
 
-  if (root) walk(root, 0, [], false, '');
+  if (root) walk(root, 0, [], false, '', -1);
   // Messages d'erreur hors de l'arbre d'accessibilité (aria-hidden), rattachés à aucun champ.
   const alertSeen = new Map<string, number>();
   for (const a of listOf(opts.formErrors?.alerts)) {
@@ -576,7 +653,7 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     const k = alertSeen.get(line) ?? 0;
     alertSeen.set(line, k + 1);
     entries.set(`\u0000${line}\u0000${k}`, line);
-    out.push({ depth: 0, line });
+    out.push({ depth: 0, line, parent: -1, kind: 'extra', role: 'alerte', hay: a });
   }
 
   const header = `page ${quote(opts.title, 80)} ${opts.url}`;
@@ -585,25 +662,176 @@ export function buildSnapshot(nodes: AXNode[], opts: SnapshotOptions): Snapshot 
     iframes > 0 ? `${iframes} iframe${iframes > 1 ? 's' : ''} non parcourue${iframes > 1 ? 's' : ''}` : '',
     modal !== undefined ? `reste de la page masqué par la fenêtre modale${modal ? ` ${quote(modal, 60)}` : ''}` : '',
   ].filter((x) => x !== '');
-  const summary = pruned.length > 0 ? `… élagué : ${pruned.join(', ')}` : undefined;
+  const elague = pruned.length > 0 ? `… élagué : ${pruned.join(', ')}` : undefined;
+  // Lecture partielle : lignes retenues, et dernière ligne qui dit ce qui manque.
+  const view = opts.find !== undefined ? findView(out, hiddenOptions, opts.find) : opts.mode !== undefined ? modeView(out, opts.mode) : { body: out, partial: undefined };
+  // L'élagage reste aussi pour find : « aucune correspondance » derrière une modale ou avec une iframe non parcourue
+  // ne veut pas dire « absent de la page ».
+  const finals = [elague, view.partial].filter((x): x is string => x !== undefined);
   const lines = [header];
   let bytes = Buffer.byteLength(header);
-  // Place réservée aux lignes finales (élagage, troncature) : le budget est respecté avec elles.
-  const reserve = (summary !== undefined ? Buffer.byteLength(summary) + 1 : 0) + 160;
+  // Place réservée aux lignes finales (élagage, lecture partielle, troncature) : le budget est respecté avec elles.
+  const reserve = finals.reduce((n, f) => n + Buffer.byteLength(f) + 1, 0) + 160;
   let omitted = 0;
   let rest = 0;
-  for (const { depth, line } of out) {
+  for (const { depth, line } of view.body) {
     const l = ' '.repeat(depth) + line;
     const b = Buffer.byteLength(l) + 1;
     if (omitted > 0 || bytes + b > maxBytes - reserve) { omitted++; rest += l.length + 1; continue; }
     lines.push(l);
     bytes += b;
   }
-  if (summary !== undefined) lines.push(summary);
+  lines.push(...finals);
   if (omitted > 0) lines.push(truncationLine(rest, ` (${omitted} nœuds omis)`));
   // Le document (RootWebArea) porte aussi `focused` quand la page a le focus : on veut l'élément.
   const focused = nodes.filter((n) => !n.ignored && n.backendDOMNodeId !== undefined && str(n.role) !== 'RootWebArea' && hasProp(n, 'focused', true)).pop()?.backendDOMNodeId;
   return { url: opts.url, title: opts.title, text: lines.join('\n'), refs, entries, texts, meta, textNodes, invalid, ...(scoped ? { scopeFound } : {}), ...(modal !== undefined ? { modal } : {}), ...(focused !== undefined ? { focused } : {}) };
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : one}`;
+
+/** Indices des lignes ancêtres d'une ligne, de la plus proche à la plus lointaine. */
+function ancestors(out: OutLine[], i: number): number[] {
+  const acc: number[] = [];
+  for (let p = out[i]!.parent; p >= 0; p = out[p]!.parent) acc.push(p);
+  return acc;
+}
+
+/** Lignes retenues, ré-indentées : la profondeur est le nombre d'ancêtres retenus. */
+function keptLines(out: OutLine[], kept: boolean[], render: (i: number) => string): Array<{ depth: number; line: string }> {
+  const depthOf: number[] = [];
+  const body: Array<{ depth: number; line: string }> = [];
+  out.forEach((o, i) => {
+    depthOf[i] = o.parent < 0 ? 0 : depthOf[o.parent]! + (kept[o.parent] === true ? 1 : 0);
+    if (kept[i] === true) body.push({ depth: depthOf[i]!, line: render(i) });
+  });
+  return body;
+}
+
+/** `--outline` : titres de même niveau sous un même parent rendus au-delà de ce nombre (le reste compté). */
+const OUTLINE_SIBLINGS = 8;
+/** Structures dont `--outline` donne le volume : repères, plus tableaux (souvent la plus grosse part d'une page). */
+const OUTLINE_VOLUME = new Set([...LANDMARK_ROLES, 'table', 'grid', 'treegrid']);
+
+const isNode = (o: OutLine, roles: Set<string>) => o.kind === 'node' && o.role !== undefined && roles.has(o.role);
+/** Retenu par `--interactive` pour lui-même : élément actionnable, région d'alerte, ligne `alerte` hors arbre. */
+const isAction = (o: OutLine) => isNode(o, INTERACTIVE) || (o.kind === 'node' && o.role === 'alert') || o.role === 'alerte';
+
+/**
+ * `--outline` : repères et titres (régions d'alerte et lignes `alerte` aussi : une erreur affichée oriente),
+ * chaque repère suivi du volume de son contenu dans le snapshot complet (lignes, éléments actionnables), pour
+ * choisir une zone (`snap --scope <ref>`). `--interactive` : éléments actionnables et champs (avec les options
+ * d'une liste), leurs conteneurs (repères, groupes, lignes de tableau, dialogues…) et les titres sous lesquels
+ * ils apparaissent dans le même repère ; le texte brut est omis.
+ */
+function modeView(out: OutLine[], mode: SnapMode): { body: Array<{ depth: number; line: string }>; partial: string } {
+  const kept = out.map(() => false);
+  let render = (i: number) => out[i]!.line;
+  if (mode === 'outline') {
+    const lines = new Map<number, number>();
+    const actions = new Map<number, number>();
+    const isHeading = (o: OutLine) => o.kind === 'node' && o.role === 'heading';
+    out.forEach((o, i) => {
+      if (isNode(o, OUTLINE_VOLUME) || (o.kind === 'node' && o.role === 'alert') || o.role === 'alerte') kept[i] = true;
+      if (isNode(o, OUTLINE_VOLUME)) lines.set(i, 0);
+    });
+    // Titres de même niveau sous une même ligne retenue (fiches d'un catalogue, chacune dans son article) : les
+    // premiers, puis un compte. Un titre ne contient pas de titre : ses ancêtres retenus sont déjà connus.
+    const keyOf = (i: number) => `${ancestors(out, i).find((a) => kept[a] === true) ?? -1}\u0000${out[i]!.level ?? 0}`;
+    const total = new Map<string, number>();
+    out.forEach((o, i) => { if (isHeading(o)) total.set(keyOf(i), (total.get(keyOf(i)) ?? 0) + 1); });
+    const seen = new Map<string, number>();
+    const collapsed = new Map<number, string>();
+    out.forEach((o, i) => {
+      if (!isHeading(o)) return;
+      const k = keyOf(i);
+      const n = (seen.get(k) ?? 0) + 1;
+      seen.set(k, n);
+      if (n > OUTLINE_SIBLINGS + 1) return;
+      kept[i] = true;
+      if (n === OUTLINE_SIBLINGS + 1) collapsed.set(i, `… +${total.get(k)! - OUTLINE_SIBLINGS} titres de niveau ${o.level ?? '?'} (find --role heading pour les lister)`);
+    });
+    if (lines.size > 0) {
+      out.forEach((o, i) => {
+        for (const a of ancestors(out, i)) {
+          if (!lines.has(a)) continue;
+          lines.set(a, lines.get(a)! + 1);
+          if (isNode(o, INTERACTIVE)) actions.set(a, (actions.get(a) ?? 0) + 1);
+        }
+      });
+    }
+    render = (i) => collapsed.get(i) ?? (lines.has(i) ? `${out[i]!.line} — ${plural(lines.get(i)!, 'ligne', 'lignes')}, ${plural(actions.get(i) ?? 0, 'actionnable', 'actionnables')}` : out[i]!.line);
+  } else {
+    // Titres ouverts (niveau, indice, repère englobant) : un élément actionnable retient ceux de son repère.
+    const open: Array<{ level: number; i: number; landmark: number }> = [];
+    const landmarkOf = (i: number) => ancestors(out, i).find((a) => isNode(out[a]!, LANDMARK_ROLES)) ?? -1;
+    out.forEach((o, i) => {
+      if (o.kind === 'node' && o.role === 'heading') {
+        const lv = o.level ?? 7;
+        while (open.length > 0 && open[open.length - 1]!.level >= lv) open.pop();
+        open.push({ level: lv, i, landmark: landmarkOf(i) });
+        return;
+      }
+      const action = isAction(o);
+      // Ligne annexe (options d'une liste) : suit sa liste.
+      if (!action && !(o.kind === 'extra' && o.parent >= 0 && kept[o.parent] === true)) return;
+      kept[i] = true;
+      if (!action) return;
+      const anc = ancestors(out, i);
+      for (const a of anc) if (isNode(out[a]!, CONTEXT_CONTAINERS)) kept[a] = true;
+      const inside = new Set(anc);
+      for (const h of open) if (h.landmark < 0 || inside.has(h.landmark)) kept[h.i] = true;
+    });
+    // Titre qui répète le nom de son conteneur retenu (fiche produit nommée par son titre) : redondant.
+    out.forEach((o, i) => {
+      if (!kept[i] || o.role !== 'heading') return;
+      const box = ancestors(out, i).find((a) => kept[a] === true);
+      if (box !== undefined && out[box]!.name !== undefined && out[box]!.name === o.name) kept[i] = false;
+    });
+  }
+  const body = keptLines(out, kept, render);
+  const total = out.length;
+  const partial = body.length === 0
+    ? `… lecture partielle (--${mode}) : aucune ligne retenue sur ${total} (${mode === 'outline' ? 'ni repère ni titre : snap --interactive, ou snap' : 'aucun élément actionnable : snap --outline, ou snap'})`
+    : `… lecture partielle (--${mode}) : ${body.length} lignes sur ${total} — snap --scope <ref> pour une zone, snap pour tout`;
+  return { body, partial };
+}
+
+/**
+ * `find` : lignes dont le nom (entier, pas la version tronquée), la valeur, le contexte ou le texte correspond,
+ * options de listes fermées comprises, dans l'ordre du document. Chacune est suivie du conteneur ou de l'élément
+ * qui la situe (`(dans e4k2:row "Ada Lovelace")`), sans indentation. Au plus `limit` lignes ; le reste compté.
+ */
+function findView(out: OutLine[], hidden: OutLine[], spec: FindSpec): { body: Array<{ depth: number; line: string }>; partial?: string } {
+  const roles = spec.roles?.map((r) => r.toLowerCase());
+  const limit = spec.limit ?? FIND_LIMIT;
+  // Options sans ligne rangées juste après leur liste : l'ordre du document est gardé.
+  const after = new Map<number, OutLine[]>();
+  for (const h of hidden) {
+    const list = after.get(h.parent);
+    if (list === undefined) after.set(h.parent, [h]); else list.push(h);
+  }
+  const ordered: OutLine[] = [...listOf(after.get(-1))];
+  out.forEach((o, i) => { ordered.push(o, ...listOf(after.get(i))); });
+  const context = (o: OutLine): string => {
+    for (let p = o.parent; p >= 0; p = out[p]!.parent) {
+      const a = out[p]!;
+      if (a.short !== undefined && (isNode(a, CONTEXT_CONTAINERS) || isNode(a, INTERACTIVE) || isNode(a, LIVE_ROLES))) return ` (dans ${a.short})`;
+    }
+    return '';
+  };
+  const hits: Array<{ depth: number; line: string }> = [];
+  let count = 0;
+  for (const o of ordered) {
+    if (o.hay === undefined || o.role === undefined) continue;
+    if (roles !== undefined && !roles.includes(o.role.toLowerCase())) continue;
+    if (!spec.pattern.test(o.hay)) continue;
+    count++;
+    if (hits.length < limit) hits.push({ depth: 0, line: `${o.line}${context(o)}` });
+  }
+  const head = `find ${spec.pattern.label}${roles !== undefined ? ` --role ${roles.join(',')}` : ''} : ${count === 0 ? 'aucune correspondance' : plural(count, 'correspondance', 'correspondances')}`;
+  const more = count - hits.length;
+  return { body: [{ depth: 0, line: head }, ...hits], ...(more > 0 ? { partial: `… ${plural(more, 'autre correspondance', 'autres correspondances')} — --max N pour en voir plus, --role / --scope pour affiner` } : {}) };
 }
 
 /** Diff ref par ref. Navigation : renvoie le nouveau snapshot complet. */
