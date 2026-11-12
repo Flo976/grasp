@@ -362,3 +362,24 @@ Suites de l'intégration :
 - [ ] `history --as-run` sous frontières actives : script seulement neutralisé (un nom accessible qui imite le
       marqueur devient `[marqueur imité]` et ne se rejoue plus) ; acceptable, à documenter si cela gêne.
 - [ ] `grasp skill` : 12 962 octets (borne 14 000) ; au-delà, passer les commandes rares dans `grasp help`.
+
+## Retours du deuxième essai réel (recette Dexyu en v2, 12/11/2026 — 39/42 OK, sans eval, 360x800 --mobile)
+
+- [ ] **`state import` dans `run`** : « commande inconnue » dans un run, alors que le README (l. 118) le donne
+  comme alternative à `storage set`. L'implémenter dans `run` (avant toute navigation), ou corriger la doc.
+- [ ] **`storage set --origin <url>`** : sur about:blank, `storage set` est refusé (il faut d'abord naviguer).
+  Poser la valeur pour une origine avant le premier chargement, comme `state import`.
+- [ ] **Refus d'`eval` sans inciter à relâcher la politique** : le message suggère `grasp config set allowEval
+  true`, ce qui pousse un agent à contourner le skill. Proposer plutôt les alternatives (`storage`, `expect`, `find`).
+- [ ] **Vérifier sans eval qu'un élément est coupé ou hors viewport** : `expect in-viewport <sél>` /
+  `expect not-clipped <sél>`, ou boîtes englobantes en option de `snap`/`find` (une image alt="" n'est pas dans
+  l'arbre a11y).
+- [ ] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
+  (« pas de meta viewport → largeur de mise en page 980 »).
+- [ ] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
+  des étapes KO restent dans state/grasp/captures/.
+- [ ] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
+- [ ] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
+  une fois par origine suffit.
+- [ ] **Doc `console --level error`** : dire qu'il inclut les erreurs réseau, et préciser si
+  `expect no-console-errors` les compte.
