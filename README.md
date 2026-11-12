@@ -1136,7 +1136,8 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   0600, mêmes contrôles de chemin ; `-2`, `-3`… si une capture nommée du run porte déjà ce nom), et le rapport
   (`capture : <chemin final>`), le message de `--shot-on-error` et `--json` (`screenshot`) citent le chemin
   écrit ; rien ne va dans `captures/` de l'état de Grasp. 20 captures `--shot-on-error` et 5 captures de rapport
-  au plus par run. Écriture impossible : note de l'étape (`capture d'échec non écrite : …`), jamais en silence.
+  au plus par run ; au-delà, chaque étape KO sans capture porte la note `capture omise : N captures d'échec au
+  plus par run` — avec ou sans `--out-dir` (testé). Écriture impossible : note de l'étape (`capture d'échec non écrite : …`), jamais en silence.
   Sans `--out-dir`, inchangé : fichier 0600 dans l'état de Grasp, chemin cité.
 - **Rapport de recette** en fin de run : `--report`, ou d'office dès qu'une ligne est un `expect` (`--no-report`
   pour s'en passer). Voir [Recette](#recette--expect-et-rapport-de-run).
@@ -1870,7 +1871,8 @@ Mise en page mobile
   la page se met en page sur 980 px CSS comme sur un téléphone — mesuré : `innerWidth` 980 en mode mobile sur une
   page sans balise ; `grasp viewport` l'annonce alors par une note, `note: pas de <meta name=viewport> dans la
   page : Chrome la met en page sur 980 px de large … — comportement normal en --mobile, pas un échec du viewport`,
-  en commande isolée, dans `run` et en MCP ; aucune note quand la page a la balise — testé) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
+  en commande isolée, dans `run` et en MCP ; aucune note quand la page a la balise, ni sur `about:blank` d'une
+  session neuve, avant toute navigation — testé) ; `--dpr N` (0,5 à 5) = `devicePixelRatio`, absent = celui du navigateur ; `--touch` =
   `Emulation.setTouchEmulationEnabled` (5 points de contact ; mesuré : `(pointer: coarse)` vrai, alors qu'un onglet
   headless répond `none` sans émulation). Les clics restent des événements souris CDP, vérifiés comme d'habitude
   (testé sous émulation tactile). Tailles de 50 à 10 000 px ; toute valeur invalide → 400.

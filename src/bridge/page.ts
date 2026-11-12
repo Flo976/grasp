@@ -3713,12 +3713,14 @@ export class PageController {
    * Viewport courant : réglage de Grasp et ce que la page mesure (monde isolé : la page ne peut pas le fausser).
    * En mode mobile, une page SANS <meta name=viewport> est mise en page sur 980 px par Chrome (comme tout navigateur
    * mobile) : la largeur mesurée diffère alors du viewport demandé ; une note le dit — ce n'est pas un échec.
+   * Pas de note hors page http(s) (about:blank d'une session neuve) : rien n'y est à mettre en page.
    */
   async viewportInfo(): Promise<ViewportResult> {
-    const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string; meta: boolean } | undefined>(
-      `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent, meta: document.querySelector('meta[name="viewport" i]') !== null })`,
+    const m = await this.evalIsolated<{ width: number; height: number; dpr: number; touchPoints: number; pointer: string; ua: string; meta: boolean; web: boolean } | undefined>(
+      `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, touchPoints: navigator.maxTouchPoints, pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : matchMedia('(pointer: fine)').matches ? 'fine' : 'none', ua: navigator.userAgent, meta: document.querySelector('meta[name="viewport" i]') !== null, web: /^https?:$/.test(location.protocol) })`,
     ).catch(() => undefined);
-    const noMeta = this.vp !== undefined && this.vp.mobile && m !== undefined && !m.meta;
+    // Page web seulement : sur about:blank (session neuve, avant toute navigation), la note serait du bruit.
+    const noMeta = this.vp !== undefined && this.vp.mobile && m !== undefined && !m.meta && m.web;
     return {
       ok: true, viewport: this.vp === undefined ? null : { ...this.vp },
       ...(this.vp !== undefined ? { description: describeViewport(this.vp) } : {}),

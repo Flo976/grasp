@@ -196,6 +196,10 @@ click '#nexistepas' --shot-on-error
   assert.equal(res.steps[0]!.screenshot, join(outDir, 'echec-etape-1.png'));
   assert.equal(res.steps[0]!.failShot, undefined);
   assert.ok(j.stdout.length < 4000, `sortie bornée : ${j.stdout.length} octets`);
+  // API HTTP (ou MCP) : clientShots sans files → refus explicite, aucune étape exécutée.
+  const api = await srv.api('POST', '/run', { script: `click '#nexistepas' --shot-on-error`, clientShots: true }, { 'x-grasp-session': env.GRASP_SESSION! });
+  assert.equal(api.status, 400);
+  assert.match(api.json().error, /clientShots n'est disponible qu'avec files/);
   // Sans --out-dir : capture dans l'état de Grasp, comme avant.
   const sans = await runCli(env, ['run'], `expect text "Texte introuvable" --timeout 0\n`);
   assert.match(sans.stdout, new RegExp(`capture : ${esc(capDir)}/grasp-\\S+\\.png$`, 'm'), sans.stdout);

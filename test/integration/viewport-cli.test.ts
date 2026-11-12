@@ -94,6 +94,11 @@ test('viewport --mobile : note explicite quand la page n\'a pas de <meta name=vi
     const env = { ...t.env, GRASP_SESSION: id };
     const ok = async (args: string[], input?: string) => { const r = await runCli(env, args, input); assert.equal(r.code, 0, `${args.join(' ')} : ${r.stderr}`); return r; };
 
+    // Session neuve, about:blank : pas de note meta viewport (rien n'est encore chargé).
+    const vierge = await ok(['viewport']);
+    assert.doesNotMatch(vierge.stderr, /meta name=viewport/, vierge.stderr);
+    assert.equal(JSON.parse((await ok(['viewport', '--json'])).stdout).detail, undefined);
+
     // Page avec <meta name=viewport> : largeur mesurée = viewport, aucune note.
     await ok(['nav', `${site.url}/viewport`]);
     const avec = await ok(['viewport']);

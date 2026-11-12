@@ -172,3 +172,15 @@ test('grasp skill : mode d\'emploi complet, borné, identique à skills/grasp/SK
   assert.equal(file, r.stdout, 'skills/grasp/SKILL.md diverge de `grasp skill` : régénérez-le (npm run build && node dist/src/cli/main.js skill > skills/grasp/SKILL.md)');
   assert.equal(grasp('skill', 'en-trop').status, 1);
 });
+
+test('storage --origin : l\'argument affiché (help, help --json, skill) est celui de l\'usage, une seule origine, pas une liste', () => {
+  const storage = COMMANDS.find((c) => c.name === 'storage')!;
+  const arg = OPTIONS.origin!.arg!;
+  assert.doesNotMatch(arg, /[,…]/, `--origin <${arg}> annonce une liste alors que storage n'accepte qu'une origine`);
+  for (const u of [storage.usage, ...(storage.subcommands ?? []).map((s) => s.usage)]) {
+    for (const m of u.matchAll(/--origin <([^>]+)>/g)) assert.equal(m[1], arg, `usage « ${u} »`);
+  }
+  // state export garde la mention de liste (usage et description).
+  assert.match(COMMANDS.find((c) => c.name === 'state')!.subcommands!.find((s) => s.name === 'export')!.usage, /--origin http:\/\/hôte:port,…/);
+  assert.match(OPTIONS.origin!.description, /state export : .*virgules/);
+});

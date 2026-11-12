@@ -378,10 +378,11 @@ Suites de l'intégration :
   l'arbre a11y).
 - [x] **`viewport` sans `<meta viewport>`** : « page : 981x1744 » ressemble à un échec ; ajouter une note
   (« pas de meta viewport → largeur de mise en page 980 »). — Fait : note en `--mobile` quand la page n'a pas la
-  balise (CLI, run, MCP), aucune sinon.
+  balise (CLI, run, MCP), aucune sinon ni sur about:blank.
 - [x] **Captures d'échec de `run` dans `--out-dir`** : seuls les `screenshot -o` y vont, les captures automatiques
   des étapes KO restent dans state/grasp/captures/. — Fait : avec `--out-dir`, `echec-etape-<n>.png` écrit par la
-  CLI (mêmes contrôles que `-o`), chemin final dans le rapport, le message et `--json`.
+  CLI (mêmes contrôles que `-o`), chemin final dans le rapport, le message et `--json` ; plafond annoncé par
+  `capture omise : …`, avec ou sans `--out-dir`.
 - [ ] **Outil MCP `storage`** : sans lui, un agent en `grasp mcp` ne peut pas poser une session sans eval.
 - [x] **Note `storage` dédoublonnée dans `run`** : « note: localStorage de … » répétée à chaque `storage set` ;
   une fois par origine suffit. — Fait : une fois par origine et par stockage dans un même run.

@@ -169,10 +169,14 @@ export async function runScript(steps: Array<{ src: ScriptLine; rq: StepRequest 
             }
           }
         }
-      } else if (wantReport && step.screenshot === undefined && shots < MAX_REPORT_SHOTS) {
+      } else if (wantReport && step.screenshot === undefined) {
         // Rapport : capture de l'état au moment de l'échec (chemin seulement), pas à la fin du run.
-        shots++;
-        try { step.screenshot = String((await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot?save=1' }) as { path: string }).path); } catch (se) { step.detail = `capture impossible : ${(se as Error).message}`; }
+        // Plafond atteint : même note qu'avec --out-dir, une capture manquante n'est jamais tue.
+        if (shots >= MAX_REPORT_SHOTS) step.detail = `capture omise : ${MAX_REPORT_SHOTS} captures d'échec au plus par run`;
+        else {
+          shots++;
+          try { step.screenshot = String((await exec({ cmd: 'screenshot', method: 'GET', path: '/screenshot?save=1' }) as { path: string }).path); } catch (se) { step.detail = `capture impossible : ${(se as Error).message}`; }
+        }
       }
     }
     // Note du control plane (navigateur recyclé avant l'étape) : en tête des notes de l'étape.

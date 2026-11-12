@@ -64,7 +64,8 @@ export const OPTIONS: Record<string, OptionSpec> = {
   'use-when': { type: 'string', arg: 'texte', description: 'quand utiliser ce profil (affiché par profiles)' },
   'profile-directory': { type: 'string', arg: 'nom', description: 'profil à importer dans le répertoire de données (« Profile 9 »)' },
   'skip-locked': { type: 'boolean', description: 'ignorer les fichiers verrouillés (Chrome ouvert)' },
-  'origin': { type: 'string', arg: 'http://hôte:port,…', description: 'state export : origines dont le stockage est exporté ; storage : l\'origine visée (une seule), même avant son premier chargement' },
+  // arg neutre : storage n'accepte qu'une origine ; state export en accepte plusieurs (dit dans la description et son usage).
+  'origin': { type: 'string', arg: 'url', description: 'storage : l\'origine visée (une seule), même avant son premier chargement ; state export : origines dont le stockage est exporté, séparées par des virgules (http://hôte:port,…)' },
   'tcp': { type: 'boolean', description: 'écoute TCP (127.0.0.1) au lieu du socket Unix' },
   'port': { type: 'integer', arg: 'N', description: 'port TCP' },
   'listen': { type: 'string', arg: 'IP', description: 'adresse d\'écoute hors 127.0.0.1 (conteneur ; token exigé)' },
