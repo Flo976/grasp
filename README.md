@@ -88,7 +88,7 @@ limite la lecture à une zone.
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
-- 🔒 **Sécurité par défaut** : allowlist de navigation, token, socket Unix ([détails](#sécurité)).
+- 🔒 **Sécurité par défaut** : allowlist de navigation, protection SSRF, token, socket Unix ([détails](#sécurité)).
 
 ## 🛠️ Stack
 
@@ -994,6 +994,59 @@ par un fichier partiel…) et on vérifie que le test passe au rouge.
   à chaque démarrage. Aucun proxy, aucune règle de résolution par défaut ; quand il y en a, l'allowlist porte
   sur le nom demandé. Identifiants HTTP basic : par session, en mémoire, jamais affichés
   (voir [Tester un serveur distant](#tester-un-serveur-distant)).
+- **Protection SSRF** : un nom admis par l'allowlist qui mène à une adresse privée ou réservée est refusé
+  (voir ci-dessous). Opt-out explicite : `allowPrivateNetwork=true`.
+
+### Protection SSRF
+
+L'allowlist dit quels **noms** sont admis ; elle ne dit rien de l'**adresse** à laquelle ils mènent. Un
+`*.exemple.com` dont un sous-domaine résout vers `169.254.169.254` (métadonnées cloud) ou `10.0.0.5` ferait
+de l'agent un relais vers le réseau interne. Par défaut (`allowPrivateNetwork=false`), Grasp refuse donc, en
+plus de l'allowlist :
+
+| Cible | Verdict |
+|---|---|
+| Hôte **littéral** inscrit **tel quel** dans l'allowlist (`127.0.0.1`, `localhost`, `[::1]`, `10.0.0.1`, `app.localhost`) | permis : sa cible est connue sans DNS, l'inscrire, c'est y consentir. Le défaut et l'usage tunnel (`ssh -L` vers `localhost`) sont inchangés. |
+| Littéral privé admis seulement par un joker (`*`, `*.localhost`) : `http://169.254.169.254/`, `http://[::ffff:127.0.0.1]/`, `http://2130706433/` | **refusé**, sans DNS |
+| Nom (même inscrit exactement) dont **une** des adresses résolues est privée ou réservée | **refusé** |
+| Nom dont la résolution échoue (ou expire, 3 s) | **refusé** (fail-closed) |
+| Nom résolvant uniquement en public | permis |
+
+Plages refusées (classification reprise du crate `obscura-ssrf` d'[Obscura](https://github.com/h4ckf0r0day/obscura),
+Apache-2.0, réécrite dans `src/core/ssrf.ts`) : `0.0.0.0/8`, `10/8`, `127/8`, `169.254/16`, `172.16/12`,
+`192.168/16`, `100.64/10` (CGNAT), `198.18/15`, `192.0.0/24`, `192.88.99/24`, documentation, multicast,
+`240/4` ; IPv6 `::`, `::1`, `fc00::/7` (ULA), `fe80::/10`, `fec0::/10`, `ff00::/8`, documentation, et toute
+IPv4 encapsulée (mappée `::ffff:`, compatible, NAT64 `64:ff9b::/96`, 6to4, Teredo) jugée sur son IPv4.
+
+**Où c'est vérifié.** Au pré-contrôle de `/navigate` (403 avant tout appel CDP) **et** dans le garde `Fetch`
+du navigateur, à chaque requête de document (redirections, liens, iframes, popups) : Grasp résout le nom
+lui-même (`getaddrinfo`, comme le système) avant de laisser partir la requête.
+
+**DNS rebinding : ce qui est faisable, et ce qui ne l'est pas.** Le garde `Fetch` met la requête en pause
+**avant** que Chrome ne résolve le nom ; Chrome résout ensuite **lui-même** (son propre cache, voire DNS sur
+HTTPS), et CDP n'offre aucun moyen d'imposer l'adresse que Grasp a vérifiée. Un serveur DNS hostile qui
+répond « public » à Grasp puis « 127.0.0.1 » à Chrome passe donc ce premier contrôle. Seconde ligne : quand
+la réponse du document arrive, Grasp lit l'adresse à laquelle Chrome s'est **réellement** connecté
+(`Network.responseReceived.remoteIPAddress`) ; si elle est privée, le cadre est renvoyé sur `about:blank`,
+`nav` répond 403 (`DNS rebinding`) et la console journalise le blocage. **La requête GET est alors déjà
+partie** : la lecture est protégée, pas l'effet de bord côté serveur. Cette seconde ligne exige le domaine
+`Network`, actif avec la console (`allowConsole=true`, le défaut).
+
+**Accès distant (tunnel, proxy).** Les réglages de [Tester un serveur distant](#tester-un-serveur-distant)
+changent la route, donc ce que la protection peut juger :
+
+| Route vers le nom demandé | Ce que la protection SSRF juge |
+|---|---|
+| Règle `MAP` de `hostResolverRules` qui couvre le nom (`MAP site.exemple.com 127.0.0.1:8443`, derrière un `ssh -L`) | la **cible de la règle**, choisie par l'utilisateur : adresse IP, `localhost` ou `~NOTFOUND` → admise comme un littéral inscrit, sans DNS ; nom → résolu et jugé comme tout nom. Le nom demandé n'est **jamais** résolu par le DNS système, et le contrôle anti-rebinding ne s'applique pas à une cible littérale. Un `EXCLUDE` qui couvre le nom l'emporte, comme dans Chrome. |
+| Proxy `http`, `https` ou `socks5` (`proxyServer`, ou `--proxy` de la session), nom hors `proxyBypassList` | **rien côté adresse** : le proxy résout le nom de son côté ; Grasp ne le résout pas localement et saute le contrôle anti-rebinding (`remoteIPAddress` est celle du proxy). L'allowlist sur le nom, les littéraux et `*.localhost` restent jugés. **La protection SSRF ne couvre pas ce que le proxy résout** : un nom admis qui mène, vu du rebond, au réseau interne du rebond sera servi. |
+| Proxy `socks4` (Chrome résout lui-même), nom de `proxyBypassList`, ou pas de proxy | contrôle complet ci-dessus |
+
+| Test | Mutation qui le fait passer au rouge |
+|---|---|
+| `ssrf.test.ts` (unitaire) : plages IPv4/IPv6, formes encapsulées, verdicts | classification sans déballage des IPv4 mappées ; protection absente |
+| `ssrf.test.ts` (intégration, vrai Chrome, `--host-resolver-rules` + résolveur injecté) : pré-contrôle, redirection, `*.localhost`, rebinding, opt-out | garde runtime limité à l'allowlist ; second contrôle `remoteIPAddress` absent ; joker pris pour une inscription explicite |
+| `remote-access.test.ts` (intégration, vrai Chrome) : nom mappé sur 127.0.0.1 servi ; même nom sans règle, résolu en privé → 403 ; nom servi à travers un proxy SOCKS5 local | règle MAP ignorée par le garde (nom résolu par le DNS système) ; proxy ignoré (résolution locale, rebinding sur l'adresse du proxy) |
+| `security.test.ts` (bout en bout, `grasp serve`) : `app.localhost` admis par `*.localhost` → 403, rien n'atteint le service ; `allowPrivateNetwork=true` → même URL servie | protection absente |
 
 ### Surface d'exposition Linux
 
@@ -1073,7 +1126,8 @@ grasp security                            # politique telle que le garde l'appli
 ```
 
 Clés : `chromePath`, `headless`, `allowedDomains`, `allowEval`, `allowDownload`, `allowUpload`,
-`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
+`allowCookies`, `allowConsole` (lecture console, `true` par défaut), `allowPrivateNetwork` (protection SSRF levée,
+`false` par défaut, voir [Protection SSRF](#protection-ssrf)), `transport` (`unix`|`tcp`), `port`, `cdpUrl` (mode attach : piloter un navigateur
 déjà lancé, jamais tué par Grasp), `windowsProfilesDir` (racine des profils de chrome.exe), `proxyServer`,
 `proxyBypassList`, `hostResolverRules`, `ignoreCertErrorsFor` (voir [Tester un serveur distant](#tester-un-serveur-distant)). Une modification prend effet au redémarrage du
 serveur ; d'ici là, `grasp security` la signale sans la présenter comme appliquée.
@@ -1161,6 +1215,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   visible dans `ps` le temps de l'appel : préférez `--http-auth -`. Un seul `--http-auth` en ligne de commande
   (plusieurs : une ligne chacun sur stdin, ou l'API). Identifiants fournis sur défi d'un document ; une
   sous-ressource d'un autre hôte protégé n'en reçoit pas. Pas d'authentification auprès d'un proxy.
+- **Protection SSRF** : voir [ses limites](#protection-ssrf) : rebinding DNS détecté **après** la requête
+  (lecture protégée, pas l'effet de bord), et seulement avec `allowConsole=true` ; un `fetch()` ou une image
+  de la page vers une IP privée n'est pas bloqué (le garde ne couvre que les documents). `allowedDomains=["*"]`
+  n'admet plus les adresses locales : inscrivez-les telles quelles (`127.0.0.1`…) ou levez la protection.
+  Un nom privé inscrit exactement (`intranet.corp`) est refusé lui aussi : seul `allowPrivateNetwork=true` le
+  permet, pour tous les noms à la fois. Derrière un proxy, le nom est résolu par le proxy : la protection SSRF ne le couvre pas (voir [Accès distant](#protection-ssrf)).
 - **Le garde ne couvre que les documents** (navigations, iframes, popups). Un `fetch()`, une image ou un
   script vers un hôte hors allowlist part quand même ; la console le signale (`[hors allowlist : non bloqué
   par Grasp…]`) lorsqu'il échoue, sans le bloquer.

@@ -104,6 +104,52 @@ test('proxyServer HTTP : même chose par un proxy http://', async () => {
   } finally { await fx.close(); await proxy.close(); }
 });
 
+// ---------- Protection SSRF × accès distant ----------
+
+/** Résolveur DNS du garde : journalise les noms demandés ; `10.0.0.5` pour tout nom (réseau interne). */
+function privateDns(): { asked: string[]; resolve: (h: string) => Promise<string[]> } {
+  const asked: string[] = [];
+  return { asked, resolve: async (h) => { asked.push(h); return ['10.0.0.5']; } };
+}
+
+test('SSRF × hostResolverRules : un nom mappé sur 127.0.0.1 est un choix de l\'utilisateur (admis, jamais résolu par le DNS)', async () => {
+  const dns = privateDns();
+  const fx = await openPage({ allowedDomains: ['site.exemple.test'], hostResolverRules: [`MAP site.exemple.test 127.0.0.1:${httpPort}`] }, undefined, {}, { resolve: dns.resolve });
+  try {
+    const r = await fx.page.navigate('http://site.exemple.test/');
+    assert.equal(r.title, 'Vhost site.exemple.test');
+    assert.deepEqual(dns.asked, [], 'le nom mappé ne passe pas par le DNS système');
+    assert.equal(fx.page.lastBlocked(), null, 'pas de faux DNS rebinding sur la cible 127.0.0.1 de la règle');
+  } finally { await fx.close(); }
+});
+
+test('SSRF × hostResolverRules : le même nom SANS règle MAP, résolu en privé, est refusé', async () => {
+  const dns = privateDns();
+  // Réseau simulé (ignoré de la politique) : Chrome joindrait le service local, le DNS du garde dit 10.0.0.5.
+  const fx = await openPage({ allowedDomains: ['site.exemple.test'] }, undefined, {}, { chromeArgs: [`--host-resolver-rules=MAP site.exemple.test 127.0.0.1:${httpPort}`], resolve: dns.resolve });
+  try {
+    const before = hits.length;
+    await assert.rejects(fx.page.navigate('http://site.exemple.test/'), (e: GraspError) => e.status === 403 && /10\.0\.0\.5/.test(e.message) && /SSRF/.test(e.message));
+    assert.equal(hits.length, before, 'aucune requête n\'est partie');
+    assert.deepEqual(dns.asked, ['site.exemple.test']);
+  } finally { await fx.close(); }
+});
+
+test('SSRF × proxyServer SOCKS5 : le nom n\'est pas résolu localement, la page est servie (rebinding non appliqué à l\'adresse du proxy)', async () => {
+  const dns = privateDns();
+  const proxy = await startSocks5Proxy(() => ({ host: '127.0.0.1', port: httpPort }));
+  const fx = await openPage({ allowedDomains: ['site.distant.test', 'contourne.distant.test'], proxyServer: proxy.url, proxyBypassList: ['contourne.distant.test'] }, undefined, {}, { resolve: dns.resolve });
+  try {
+    const r = await fx.page.navigate('http://site.distant.test/');
+    assert.equal(r.title, 'Vhost site.distant.test');
+    assert.equal(fx.page.lastBlocked(), null, 'remoteIPAddress (le proxy, 127.0.0.1) n\'est pas pris pour un rebinding');
+    assert.deepEqual(dns.asked, [], 'aucune résolution locale d\'un nom résolu par le proxy');
+    // Un nom de proxyBypassList part en direct : contrôle complet, donc refusé (DNS → 10.0.0.5).
+    await assert.rejects(fx.page.navigate('http://contourne.distant.test/'), (e: GraspError) => e.status === 403 && /10\.0\.0\.5/.test(e.message));
+    assert.deepEqual(dns.asked, ['contourne.distant.test']);
+  } finally { await fx.close(); await proxy.close(); }
+});
+
 test('certificats : vérifiés par défaut ; ignoreCertErrorsFor ne vaut que pour les hôtes listés', async () => {
   const rules = [`MAP site.exemple.test 127.0.0.1:${httpsPort}`, `MAP autre.exemple.test 127.0.0.1:${httpsPort}`];
   const strict = await openPage({ allowedDomains: ['site.exemple.test'], hostResolverRules: rules });
@@ -125,7 +171,7 @@ test('certificats : vérifiés par défaut ; ignoreCertErrorsFor ne vaut que pou
 
 test('HTTP basic : identifiants fournis au seul hôte prévu, sous-ressources comprises, jamais dans la console', async () => {
   const rules = [`MAP preprod.exemple.test 127.0.0.1:${httpPort}`, `MAP autre-preprod.exemple.test 127.0.0.1:${httpPort}`];
-  const fx = await openPage({ allowedDomains: ['preprod.exemple.test', 'autre-preprod.exemple.test'], hostResolverRules: rules }, undefined, {}, [parseHttpAuth(`recette:${PASS}@preprod.exemple.test`)]);
+  const fx = await openPage({ allowedDomains: ['preprod.exemple.test', 'autre-preprod.exemple.test'], hostResolverRules: rules }, undefined, {}, { httpAuth: [parseHttpAuth(`recette:${PASS}@preprod.exemple.test`)] });
   try {
     assert.equal((await fx.page.navigate('http://preprod.exemple.test/')).title, 'Préprod');
     assert.match(await fx.page.text(), /Préprod protégée/);
@@ -141,7 +187,7 @@ test('HTTP basic : identifiants fournis au seul hôte prévu, sous-ressources co
 });
 
 test('HTTP basic : identifiants refusés → un seul essai, page 401 et erreur explicite (pas de boucle)', async () => {
-  const fx = await openPage({ allowedDomains: ['preprod.exemple.test'], hostResolverRules: [`MAP preprod.exemple.test 127.0.0.1:${httpPort}`] }, undefined, {}, [parseHttpAuth('recette:mauvais-mot@preprod.exemple.test')]);
+  const fx = await openPage({ allowedDomains: ['preprod.exemple.test'], hostResolverRules: [`MAP preprod.exemple.test 127.0.0.1:${httpPort}`] }, undefined, {}, { httpAuth: [parseHttpAuth('recette:mauvais-mot@preprod.exemple.test')] });
   try {
     const n = hits.length;
     assert.equal((await fx.page.navigate('http://preprod.exemple.test/')).title, '401');

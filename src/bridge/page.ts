@@ -1,7 +1,8 @@
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
-import { checkUrl, type EffectivePolicy } from '../core/policy.js';
+import { checkNavigation, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
+import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
 import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
@@ -593,6 +594,13 @@ export class PageController {
   private loading = false;
   private pendingNavAt = 0;
   private blocked: Blocked | null = null;
+  /** Document servi par une adresse privée alors que le DNS de Grasp en donnait une publique (rebinding). */
+  private rebound: Blocked | null = null;
+  /** Résolveur DNS de la protection SSRF (injectable pour les tests). */
+  private dns: Resolver = systemResolver;
+  /** Politique + proxy effectif de la session : contexte réseau de la protection SSRF. */
+  private netCtx: Readonly<SsrfContext> | undefined;
+  private get ssrfCtx(): Readonly<SsrfContext> { return this.netCtx ?? this.policy; }
   private lastDialog: string | null = null;
   private mainFrameId = '';
   /** Navigateur qui ne nous appartient pas : pas d'auto-attach sur les autres onglets. */
@@ -662,7 +670,7 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined; resolve?: Resolver | undefined; proxyServer?: string | null | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
     // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
@@ -672,6 +680,9 @@ export class PageController {
     pc.foreign = opts.newTab === true;
     pc.capturesDir = opts.capturesDir;
     if (opts.httpAuth !== undefined) pc.creds = Object.freeze(opts.httpAuth.map((c) => Object.freeze({ ...c })));
+    if (opts.resolve !== undefined) pc.dns = opts.resolve;
+    // Proxy effectif (celui de la session s'il surcharge la config) : la protection SSRF en dépend.
+    pc.netCtx = Object.freeze({ ...policy, proxyServer: opts.proxyServer !== undefined ? opts.proxyServer : policy.proxyServer });
     if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     const en = opts.engine ?? {};
     pc.fallback = en.fallback ?? 'none';
@@ -1073,6 +1084,35 @@ export class PageController {
     return new GraspError(base.status, msg, extra);
   }
 
+  /**
+   * Seconde ligne contre le DNS rebinding : Chrome résout lui-même, après le contrôle de Grasp. L'adresse à
+   * laquelle il s'est réellement connecté (`remoteIPAddress`) est rejugée ; privée et non autorisée → le cadre
+   * est renvoyé sur about:blank et la navigation est signalée bloquée. La requête est déjà partie : c'est une
+   * protection de la LECTURE, pas de la requête. Exige le domaine Network (actif avec allowConsole).
+   */
+  private async checkRemoteAddress(e: CdpEvent): Promise<void> {
+    if (this.policy.allowPrivateNetwork) return;
+    const ip = String(e.params.response?.remoteIPAddress ?? '');
+    const url = String(e.params.response?.url ?? '');
+    if (ip === '' || !/^https?:/.test(url)) return;
+    const c = classifyIp(ip);
+    if (c === null || c === undefined) return;
+    const u = new URL(url);
+    const host = normalizeHost(u.hostname);
+    if (isExplicitLocal(this.policy.allowedDomains, host)) return;
+    // Adresse sans rapport avec la résolution de Grasp : celle du proxy (il a résolu le nom lui-même), ou la
+    // cible d'une règle MAP de l'utilisateur (adresse écrite telle quelle, admise par le pré-contrôle).
+    const r = routeOf(this.ssrfCtx, host, urlPort(u));
+    if (r.kind === 'proxy') return;
+    if (r.kind === 'mapped' && (classifyIp(r.target) !== undefined || r.target === 'localhost' || r.target.endsWith('.localhost'))) return;
+    const reason = `${new URL(url).hostname} servi par une adresse ${c} (${ip}) alors que la résolution de Grasp était publique (DNS rebinding) — protection SSRF`;
+    const b: Blocked = { url, reason, at: Date.now() };
+    this.blocked = b;
+    if (e.sessionId === this.sessionId && e.params.frameId === this.mainFrameId) this.rebound = b;
+    if (this.policy.allowConsole) this.log({ level: 'error', source: 'grasp', text: `bloqué par Grasp : ${reason} — ${redactUrl(url)}`, blocked: true });
+    await this.cdp.send('Page.navigate', { url: 'about:blank', frameId: e.params.frameId }, e.sessionId).catch(() => undefined);
+  }
+
   /** Hôtes munis d'identifiants HTTP, sans les identifiants (rapport de `grasp security`, liste des sessions). */
   httpAuthReport(): MaskedCredential[] { return maskCredentials(this.creds); }
 
@@ -1145,7 +1185,7 @@ export class PageController {
       if (e.method === 'Security.certificateError') { await this.onCertificateError(e); return; }
       if (e.method === 'Fetch.requestPaused') {
         const url: string = e.params.request.url;
-        const v = checkUrl(this.policy.allowedDomains, url);
+        const v = await checkNavigation(this.ssrfCtx, url, this.dns);
         if (v.allowed) {
           await this.cdp.send('Fetch.continueRequest', { requestId: e.params.requestId }, e.sessionId);
         } else {
@@ -1160,6 +1200,8 @@ export class PageController {
         }
         return;
       }
+      // Synchrone jusqu'au renvoi sur about:blank : `rebound` est posé avant que le load de ce document soit traité.
+      if (e.method === 'Network.responseReceived' && e.params.type === 'Document') void this.checkRemoteAddress(e);
       if (e.sessionId !== undefined && (e.sessionId === this.sessionId || this.children.has(e.sessionId))) {
         if (e.method === 'Target.attachedToTarget') { await this.onChildAttached(e); return; }
         if (e.method === 'Target.detachedFromTarget') { this.children.delete(e.params.sessionId); return; }
@@ -1340,9 +1382,10 @@ export class PageController {
   }
 
   private async navigateLoaded(url: string): Promise<void> {
-    const v = checkUrl(this.policy.allowedDomains, url);
+    const v = await checkNavigation(this.ssrfCtx, url, this.dns);
     if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
     this.blocked = null;
+    this.rebound = null;
     const loaded = this.onceEvent('Page.loadEventFired', 30_000);
     let r: { errorText?: string; loaderId?: string };
     try {
@@ -1357,6 +1400,8 @@ export class PageController {
       throw new GraspError(502, `navigation échouée : ${r.errorText}`);
     }
     if (r.loaderId) await loaded.promise; else loaded.cancel();
+    const rb = this.rebound as Blocked | null; // posé par checkRemoteAddress pendant l'attente
+    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${rb.reason} (${rb.url})`);
     await this.settle();
   }
 

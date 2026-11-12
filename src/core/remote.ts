@@ -133,3 +133,54 @@ export function credentialFor(list: readonly HttpCredential[], url: string): Htt
   const port = u.port !== '' ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
   return list.find((c) => c.host === host && (c.port === undefined || c.port === port));
 }
+
+// ---------- Réconciliation avec la protection SSRF ----------
+
+/** Motif glob de Chrome (`*` et `?`, MatchPattern), sur la chaîne entière. */
+function globMatch(pattern: string, s: string): boolean {
+  const re = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+  return re.test(s);
+}
+
+/** Cible d'une règle MAP qui s'applique : hôte de remplacement (sans port), ou `~NOTFOUND`. */
+export interface MappedTarget { rule: string; target: string }
+
+/**
+ * Règle MAP de --host-resolver-rules qui s'applique à `host:port`, comme Chrome (HostMappingRules::RewriteHost) :
+ * une règle EXCLUDE dont le motif couvre le nom l'emporte ; sinon la PREMIÈRE règle MAP dont le motif couvre
+ * `hôte:port` ou `hôte` seul. `null` : le nom est résolu normalement.
+ */
+export function mappedTarget(rules: readonly string[], host: string, port: number): MappedTarget | null {
+  const h = normalizeHost(host);
+  const parsed = rules.map((r) => r.trim().replace(/\s+/g, ' ').split(' '));
+  for (const p of parsed) if (p[0]?.toUpperCase() === 'EXCLUDE' && p[1] !== undefined && globMatch(p[1].toLowerCase(), h)) return null;
+  for (const p of parsed) {
+    if (p[0]?.toUpperCase() !== 'MAP' || p[1] === undefined || p[2] === undefined) continue;
+    const pat = p[1].toLowerCase();
+    if (!globMatch(pat, `${h}:${port}`) && !globMatch(pat, h)) continue;
+    const t = p[2];
+    const target = /^[~^]NOTFOUND$/i.test(t) ? '~NOTFOUND' : normalizeHost(t.startsWith('[') ? t.slice(0, t.indexOf(']') + 1) : t.replace(/:\d+$/, ''));
+    return { rule: `MAP ${p[1]} ${p[2]}`, target };
+  }
+  return null;
+}
+
+/**
+ * Le proxy résout-il ce nom à la place de Chrome ? Oui pour http(s) et socks5 (le nom est transmis au proxy),
+ * non pour socks4 (Chrome résout lui-même) ni pour un hôte de proxyBypassList (connexion directe). Chrome
+ * contourne aussi d'office la boucle locale (localhost, 127/8, [::1]) : ces hôtes sont jugés sans DNS de toute façon.
+ * Contournement reconnu : nom exact, joker (`*.x`, `.x`), `<local>` (nom sans point) ; schéma et port ignorés.
+ */
+export function proxyResolves(proxyServer: string | null, bypass: readonly string[], host: string): boolean {
+  if (proxyServer === null || /^socks4:/i.test(proxyServer)) return false;
+  const h = normalizeHost(host);
+  for (const raw of bypass) {
+    let e = raw.trim().toLowerCase().replace(/^[a-z0-9+.-]+:\/\//, '');
+    if (e === '<local>') { if (!h.includes('.') && !h.startsWith('[')) return false; continue; }
+    if (e.startsWith('<') || e.includes('/')) continue; // <-loopback>, plages CIDR : pour des adresses, pas des noms
+    e = e.replace(/:\d+$/, '');
+    if (e.startsWith('.')) e = `*${e}`;
+    if (globMatch(e, h)) return false;
+  }
+  return true;
+}

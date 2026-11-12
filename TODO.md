@@ -13,9 +13,12 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
       dans le monde isolé `grasp-lecture`.
 - [ ] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
       transférer une session connectée vers une autre machine ou un conteneur.
-- [ ] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de
+- [x] **Protection SSRF** : refus par défaut des IP privées, vérifié à la résolution DNS, en plus de
       l'allowlist (utile quand l'agent reçoit des URL de l'extérieur). Attention à ne pas casser le
       défaut actuel `127.0.0.1` / `localhost` (tests locaux, tunnels).
+      → fait (`src/core/ssrf.ts`, clé `allowPrivateNetwork`, README « Protection SSRF ») : littéraux inscrits
+      permis, noms résolus en privé refusés (pré-contrôle + garde `Fetch`), rebinding rattrapé après coup par
+      `remoteIPAddress`. Reste : sous-ressources (`fetch()`, images) non couvertes, comme pour l'allowlist.
 - [ ] **Workers et recyclage** : sessions en parallèle, navigateur relancé au-delà de N Mo / N minutes.
       Seulement si on vise du volume.
 - [ ] **Image Docker** : Chrome + Grasp, distroless, non-root.
@@ -31,9 +34,17 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       127.0.0.1:8443"`. Avec un `ssh -L`, le vhost Apache attend son vrai nom (`Host:`), pas `localhost`.
       Fait : syntaxe validée au démarrage, motif avec port (`site.exemple.com:443`), allowlist sur le nom ;
       mêmes drapeaux pour chrome.exe (test réel `GRASP_TEST_WINDOWS=1`).
+      Protection SSRF réconciliée : un nom couvert par une règle MAP est jugé sur la cible de la règle
+      (adresse ou `localhost` = littéral inscrit, admis sans DNS ; nom = résolu et jugé) ; jamais résolu par
+      le DNS système ; contrôle anti-rebinding sauté pour lui (testé : nom mappé sur 127.0.0.1 servi, même
+      nom sans règle mais résolu en privé refusé).
 - [x] **Proxy** : clé `proxyServer` → `--proxy-server=socks5://127.0.0.1:1080` (tunnel `ssh -D`), pour
       voir le site exactement comme depuis le serveur de rebond. Fait : `proxyBypassList`, `--proxy` par
       session (rapporté par `grasp security`), refus en mode attach ; testé avec proxys SOCKS5 et HTTP locaux.
+      Protection SSRF réconciliée : un nom qui passe par le proxy (http, https, socks5, hors
+      `proxyBypassList`) n'est pas résolu localement et le contrôle anti-rebinding est sauté (l'adresse vue
+      est celle du proxy) ; l'allowlist sur le nom reste appliquée. Limite documentée : ce que le proxy
+      résout de son côté n'est pas couvert par la protection SSRF.
 - [x] **Certificats** : option explicite (jamais par défaut) pour accepter un certificat qui ne correspond
       pas au nom via tunnel, signalée par `grasp security`. Fait : `ignoreCertErrorsFor`, limitée aux hôtes
       listés (`Security.certificateError` par onglet, jamais `*`), avertissement à chaque démarrage.

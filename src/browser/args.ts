@@ -59,3 +59,24 @@ export function networkArgs(n: NetworkOptions | undefined): string[] {
   if (n.hostResolverRules.length > 0) out.push(`--host-resolver-rules=${n.hostResolverRules.join(', ')}`);
   return out;
 }
+
+const HRR = '--host-resolver-rules=';
+
+/**
+ * Un seul --host-resolver-rules (Chrome ne retient que le dernier) : les règles de tous les drapeaux sont
+ * concaténées dans leur ordre d'apparition (Chrome applique la première règle MAP qui correspond), à la place
+ * du premier drapeau. Sans drapeau : arguments inchangés.
+ */
+export function mergeHostResolverRules(args: readonly string[]): string[] {
+  const rules: string[] = [];
+  let at = -1;
+  const out: string[] = [];
+  for (const a of args) {
+    if (a.startsWith(HRR)) {
+      if (at < 0) at = out.length;
+      for (const r of a.slice(HRR.length).split(',')) if (r.trim() !== '' && !rules.includes(r.trim())) rules.push(r.trim());
+    } else out.push(a);
+  }
+  if (at >= 0) out.splice(at, 0, `${HRR}${rules.join(', ')}`);
+  return out;
+}

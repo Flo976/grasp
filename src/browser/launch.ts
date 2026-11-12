@@ -3,10 +3,10 @@ import { statfsSync, createWriteStream, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { realProbe, type DiscoveredBrowser } from './discover.js';
 import { CdpClient } from './cdp.js';
-import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, networkArgs, type NetworkOptions } from './args.js';
+import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, mergeHostResolverRules, networkArgs, type NetworkOptions } from './args.js';
 import { buildWindowsChromeArgs, killWindowsChrome, toWindowsPath, windowsChromeAlive, windowsChromeVersion, windowsExcludedPorts } from './windows.js';
 
-export { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, networkArgs, type NetworkOptions };
+export { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, mergeHostResolverRules, networkArgs, type NetworkOptions };
 
 export const MIN_CHROME_MAJOR = 112;
 export const MIN_SHM_BYTES = 256 * 1024 * 1024;
@@ -23,6 +23,8 @@ export interface ChromeArgsInput {
   port: number;
   /** Proxy et règles de résolution (recette à travers un tunnel SSH). */
   network?: NetworkOptions | undefined;
+  /** Arguments ajoutés avant l'URL de départ (voir LaunchOptions.extraArgs). */
+  extraArgs?: readonly string[] | undefined;
 }
 
 function assertPort(port: number): void {
@@ -65,8 +67,10 @@ export function buildChromeArgs(input: ChromeArgsInput): { args: string[]; warni
     args.push('--disable-dev-shm-usage');
     warnings.push(`/dev/shm ne fait que ${Math.round(input.shmBytes / 1024 / 1024)} Mo (< 256 Mo) : Chrome crasherait en boucle. --disable-dev-shm-usage ajouté. Remédiation : docker run --shm-size=1g.`);
   }
+  if (input.extraArgs !== undefined) args.push(...input.extraArgs);
   args.push('about:blank');
-  return { args: mergeDisableFeatures(args, ALWAYS_DISABLED_FEATURES), warnings };
+  // Un seul --disable-features et un seul --host-resolver-rules : Chrome ne retient que le dernier de chaque.
+  return { args: mergeHostResolverRules(mergeDisableFeatures(args, ALWAYS_DISABLED_FEATURES)), warnings };
 }
 
 export function shmSize(path = '/dev/shm'): number | null {
@@ -114,6 +118,11 @@ export interface LaunchOptions {
   pickPort?: () => Promise<number>;
   /** Proxy et règles de résolution (mêmes drapeaux pour chrome.exe). */
   network?: NetworkOptions | undefined;
+  /**
+   * Arguments Chrome supplémentaires (Chrome Linux seulement), ajoutés avant l'URL de départ. Sert aux tests
+   * pour simuler un réseau (--host-resolver-rules que la politique ignore) ; fusionnés avec ceux de `network`.
+   */
+  extraArgs?: readonly string[] | undefined;
 }
 
 export interface ChromeProcess {
@@ -392,7 +401,7 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
   const env = opts.env ?? process.env;
   const version = await chromeVersion(opts.browser.path);
   assertSupportedVersion(version);
-  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize(), network: opts.network };
+  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize(), network: opts.network, extraArgs: opts.extraArgs };
   // Avertissements (sandbox, /dev/shm) : une seule fois, pas à chaque essai de port.
   for (const w of buildChromeArgs({ ...common, port: 1 }).warnings) opts.onWarning?.(w);
 

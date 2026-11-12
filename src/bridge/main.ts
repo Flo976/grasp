@@ -123,6 +123,8 @@ async function main(): Promise<void> {
     // chemin seulement si le navigateur voit nos fichiers (Chrome Linux) ; sinon par contenu (≤ 50 Mo).
     engine: { devtoolsUrl, fallback: init.fallbackEngine ?? 'none', isLocal: !attached && init.browser?.kind !== 'windows' },
     httpAuth: init.httpAuth,
+    // Proxy effectif : la protection SSRF ne résout pas localement un nom que le proxy résoudra.
+    proxyServer,
   });
   // Les identifiants vivent désormais dans le PageController seul : on n'en garde aucune autre copie.
   delete init.httpAuth;

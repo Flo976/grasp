@@ -285,6 +285,7 @@ function renderSecurity(rep: any): string {
   const lines = [
     `navigation : ${p.navigation} (garde runtime dans le navigateur)`,
     `allowlist  : ${p.allowedDomains.length === 0 ? '(vide) — tout est bloqué' : p.allowedDomains.join(', ')}`,
+    `ssrf       : ${p.allowPrivateNetwork ? 'AUTORISÉ (protection SSRF levée : un nom peut résoudre vers une IP privée)' : 'bloqué (protection SSRF ; seuls les hôtes littéraux inscrits dans l\'allowlist)'}`,
     `eval       : ${onoff(p.allowEval)}`,
     `download   : ${onoff(p.allowDownload)}`,
     `upload     : ${onoff(p.allowUpload)}`,
