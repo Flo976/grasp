@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, existsSy
 import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { DEFAULT_LIMITS, type Limits } from './limits.js';
+import { assertHostResolverRule, assertProxyServer, isBypassEntry, isCertHost, isHostResolverRule, isProxyServer } from './remote.js';
 
 /**
  * Configuration. Règle n°1 : « absent » ≠ « désactivé ».
@@ -44,6 +45,14 @@ export interface ResolvedConfig {
    * non livré ou en erreur d'actionnabilité ; « none » (défaut) : jamais.
    */
   fallbackEngine: 'none' | 'playwright';
+  /** Proxy de Chrome (--proxy-server), ex. socks5://127.0.0.1:1080 derrière un `ssh -D`. null = direct. */
+  proxyServer: string | null;
+  /** Hôtes qui contournent le proxy (--proxy-bypass-list). */
+  proxyBypassList: string[];
+  /** Règles --host-resolver-rules, ex. « MAP site.exemple.com 127.0.0.1:8443 » derrière un `ssh -L`. */
+  hostResolverRules: string[];
+  /** Hôtes dont le certificat TLS n'est pas vérifié. Vide par défaut ; jamais `*`. */
+  ignoreCertErrorsFor: string[];
 }
 
 export type ConfigKey = keyof ResolvedConfig;
@@ -68,6 +77,10 @@ export const DEFAULTS: Readonly<ResolvedConfig> = Object.freeze({
   stableTimeoutMs: DEFAULT_LIMITS.stableTimeoutMs,
   inputDeliveryMs: DEFAULT_LIMITS.inputDeliveryMs,
   fallbackEngine: 'none',
+  proxyServer: null,
+  proxyBypassList: Object.freeze([]) as unknown as string[],
+  hostResolverRules: Object.freeze([]) as unknown as string[],
+  ignoreCertErrorsFor: Object.freeze([]) as unknown as string[],
 });
 
 /** Limites de lecture transmises au bridge (elles ne relèvent pas de la politique de sécurité). */
@@ -99,6 +112,25 @@ function int(min: number, max: number, help: string): KeySpec<number> {
       const n = Number(raw);
       if (!/^\d+$/.test(raw) || !check(n)) throw new Error(`entier entre ${min} et ${max} attendu, reçu ${JSON.stringify(raw)}`);
       return n;
+    },
+    help,
+  };
+}
+
+/** Liste de chaînes : séparée par `sep` ou tableau JSON ; vide (ou []) = liste vide. */
+function list(valid: (x: string) => boolean, normalize: (x: string) => string, sep: RegExp, help: string, error: (x: string) => string): KeySpec<string[]> {
+  const check = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string' && valid(x));
+  return {
+    check,
+    parse(raw) {
+      const t = raw.trim();
+      if (t === '' || t === '[]') return [];
+      let items: unknown;
+      if (t.startsWith('[')) items = JSON.parse(t);
+      else items = t.split(sep).map((x) => x.trim()).filter((x) => x !== '');
+      if (!Array.isArray(items) || !items.every((x) => typeof x === 'string')) throw new Error('tableau JSON de chaînes attendu');
+      for (const x of items as string[]) if (!valid(x)) throw new Error(error(x));
+      return (items as string[]).map(normalize);
     },
     help,
   };
@@ -164,6 +196,17 @@ const SPECS: { [K in ConfigKey]: KeySpec<ResolvedConfig[K]> } = {
     parse(raw) { if (raw !== 'none' && raw !== 'playwright') throw new Error('none|playwright attendu'); return raw; },
     help: 'none|playwright : rejeu via Playwright (npm i playwright-core) d\'un clic natif non livré ou non actionnable (défaut none)',
   },
+  proxyServer: {
+    check: (v): v is string | null => v === null || (typeof v === 'string' && isProxyServer(v)),
+    parse: (raw) => assertProxyServer(raw.trim()),
+    help: 'schéma://hôte:port (http, https, socks4, socks5), ex. socks5://127.0.0.1:1080 derrière `ssh -D 1080` ; unset = connexion directe',
+  },
+  proxyBypassList: list(isBypassEntry, (x) => x, /[,;]/, 'hôtes hors proxy, séparés par des virgules (ex. *.local,10.0.0.0/8,<-loopback>) ; sans effet sans proxyServer',
+    (x) => `entrée de contournement invalide ${JSON.stringify(x)} (ni blanc, ni virgule, ni point-virgule)`),
+  hostResolverRules: list(isHostResolverRule, (x) => assertHostResolverRule(x), /,/, 'règles séparées par des virgules, ex. « MAP site.exemple.com 127.0.0.1:8443 » (vhost joint par son vrai nom via `ssh -L`)',
+    (x) => { try { assertHostResolverRule(x); return ''; } catch (e) { return (e as Error).message; } }),
+  ignoreCertErrorsFor: list(isCertHost, (x) => x.trim().toLowerCase(), /,/, 'hôtes dont le certificat TLS n\'est PAS vérifié (ex. site.exemple.com) ; jamais *, vide par défaut',
+    (x) => `hôte invalide ${JSON.stringify(x)} : un nom ou *.domaine attendu (* seul refusé : la dérogation reste limitée à des hôtes listés)`),
 };
 
 export function isConfigKey(k: string): k is ConfigKey { return Object.hasOwn(SPECS, k); }
@@ -194,6 +237,10 @@ export function resolveConfig(file: ConfigFile): ResolvedConfig {
     stableTimeoutMs: pick('stableTimeoutMs'),
     inputDeliveryMs: pick('inputDeliveryMs'),
     fallbackEngine: pick('fallbackEngine'),
+    proxyServer: pick('proxyServer'),
+    proxyBypassList: pick('proxyBypassList'),
+    hostResolverRules: pick('hostResolverRules'),
+    ignoreCertErrorsFor: pick('ignoreCertErrorsFor'),
   };
 }
 

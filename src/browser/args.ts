@@ -36,3 +36,26 @@ export function mergeDisableFeatures(args: readonly string[], features: readonly
   out.splice(at, 0, `${DF}${all.join(',')}`);
   return out;
 }
+
+/** Réseau de Chrome : proxy, contournement, règles de résolution (mêmes drapeaux pour Chrome Linux et chrome.exe). */
+export interface NetworkOptions {
+  proxyServer: string | null;
+  proxyBypassList: readonly string[];
+  hostResolverRules: readonly string[];
+}
+
+/**
+ * Drapeaux réseau. Les valeurs sont validées à la lecture de la config (règle invalide = refus de démarrer) :
+ * Chrome, lui, ignorerait en silence une règle mal formée. Pas de guillemets : un argument par drapeau
+ * (spawn sans shell ; l'interop WSL cite elle-même ceux qui contiennent des espaces pour chrome.exe).
+ */
+export function networkArgs(n: NetworkOptions | undefined): string[] {
+  if (n === undefined) return [];
+  const out: string[] = [];
+  if (n.proxyServer !== null) {
+    out.push(`--proxy-server=${n.proxyServer}`);
+    if (n.proxyBypassList.length > 0) out.push(`--proxy-bypass-list=${n.proxyBypassList.join(';')}`);
+  }
+  if (n.hostResolverRules.length > 0) out.push(`--host-resolver-rules=${n.hostResolverRules.join(', ')}`);
+  return out;
+}

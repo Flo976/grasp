@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures } from './args.js';
+import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, networkArgs, type NetworkOptions } from './args.js';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -66,7 +66,7 @@ export async function windowsLocalAppData(run: Runner = realRunner): Promise<str
 }
 
 /** Arguments de chrome.exe. Pas de guillemets : l'interop WSL cite elle-même les arguments contenant des espaces. */
-export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless: boolean; port: number }): string[] {
+export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless: boolean; port: number; network?: NetworkOptions | undefined }): string[] {
   if (!(Number.isInteger(input.port) && input.port > 0 && input.port < 65536)) throw new Error(`port DevTools invalide : ${input.port}`);
   return mergeDisableFeatures([
     `--user-data-dir=${input.userDataDirWin}`,
@@ -75,6 +75,9 @@ export function buildWindowsChromeArgs(input: { userDataDirWin: string; headless
     '--no-first-run',
     '--no-default-browser-check',
     ...ANTI_BACKGROUND_ARGS,
+    // Proxy, règles de résolution : mêmes drapeaux que Chrome Linux (chrome.exe résout et se connecte côté
+    // Windows ; en mode mirrored, 127.0.0.1 est la boucle locale partagée, un `ssh -L` de WSL y est joignable).
+    ...networkArgs(input.network),
     ...(input.headless ? ['--headless=new'] : []),
     'about:blank',
   ], ALWAYS_DISABLED_FEATURES);

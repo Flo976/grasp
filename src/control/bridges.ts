@@ -5,6 +5,7 @@ import type { EffectivePolicy } from '../core/policy.js';
 import type { Limits } from '../core/limits.js';
 import { checkSocketPath } from '../core/paths.js';
 import { killWindowsChrome } from '../browser/windows.js';
+import type { HttpCredential } from '../core/remote.js';
 
 export interface BridgeInit {
   id: string;
@@ -24,6 +25,10 @@ export interface BridgeInit {
   limits?: Limits;
   /** Repli automatique des clics par le moteur Playwright (config fallbackEngine). */
   fallbackEngine?: 'none' | 'playwright';
+  /** Proxy propre à la session (surcharge policy.proxyServer). */
+  proxyServer?: string;
+  /** Identifiants HTTP basic de la session : transmis par le canal IPC seulement, jamais écrits. */
+  httpAuth?: HttpCredential[] | undefined;
 }
 
 export interface BridgeHandle {

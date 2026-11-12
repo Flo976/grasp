@@ -255,9 +255,33 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
   throw new CliError(`le serveur (pid ${pid}) n'a pas répondu à SIGTERM en ${timeout} ms : SIGKILL envoyé, ${groups} groupe(s) Chrome tué(s), socket nettoyé`);
 }
 
+const SESSION_CREATE_USAGE = 'grasp session create [--profile <nom>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -]';
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (process.stdin.isTTY) { reject(new CliError('--http-auth - : identifiants attendus sur stdin (ex. printf \'%s\\n\' "$PREPROD_AUTH" | grasp session create --http-auth -)')); return; }
+    let buf = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (d: string) => { buf += d; });
+    process.stdin.once('end', () => resolve(buf));
+    process.stdin.once('error', reject);
+  });
+}
+
 function renderSecurity(rep: any): string {
   const p = rep.policy;
   const onoff = (b: boolean) => (b ? 'AUTORISÉ' : 'désactivé');
+  const certs = p.ignoreCertErrorsFor as string[];
+  const rules = p.hostResolverRules as string[];
+  const bypass = p.proxyBypassList as string[];
+  const sessionLines = Object.entries((rep.sessionOptions ?? {}) as Record<string, { proxyServer?: string | null; httpAuth?: Array<{ host: string }>; error?: string }>).flatMap(([id, o]) => {
+    if (o.error !== undefined) return [`session ${id} : ${o.error}`];
+    const parts = [
+      ...(o.proxyServer ? [`proxy ${o.proxyServer} (propre à la session)`] : []),
+      ...(o.httpAuth?.length ? [`auth HTTP ${o.httpAuth.map((h) => h.host).join(', ')} (identifiants masqués)`] : []),
+    ];
+    return parts.length > 0 ? [`session ${id} : ${parts.join(' ; ')}`] : [];
+  });
   const lines = [
     `navigation : ${p.navigation} (garde runtime dans le navigateur)`,
     `allowlist  : ${p.allowedDomains.length === 0 ? '(vide) — tout est bloqué' : p.allowedDomains.join(', ')}`,
@@ -266,9 +290,13 @@ function renderSecurity(rep: any): string {
     `upload     : ${onoff(p.allowUpload)}`,
     `cookies    : ${onoff(p.allowCookies)}`,
     `console    : ${p.allowConsole ? 'AUTORISÉ (lecture seule ; Runtime.enable actif)' : 'désactivé'}`,
+    `proxy      : ${p.proxyServer ? `${p.proxyServer}${bypass.length > 0 ? ` (contournement : ${bypass.join(', ')})` : ''}` : 'aucun (connexion directe)'}`,
+    `résolution : ${rules.length > 0 ? `${rules.join(' ; ')} (allowlist appliquée au nom demandé)` : 'système'}`,
+    `certificats: ${certs.length > 0 ? `NON VÉRIFIÉS pour ${certs.join(', ')} (ignoreCertErrorsFor) ; vérifiés ailleurs` : 'vérifiés'}`,
     `token      : ${p.tokenRequired ? 'exigé' : 'NON exigé'}`,
     `transport  : ${rep.transport}`,
     `sessions   : ${Object.keys(rep.bridges).length}`,
+    ...sessionLines.map((l) => `  ${l}`),
   ];
   return lines.join('\n');
 }
@@ -313,8 +341,18 @@ async function main(argv: string[]): Promise<number> {
       const sub = a.pos[0];
       if (sub === 'create') {
         const prof = a.flags.get('profile');
-        if (prof === true) throw new CliError('usage : grasp session create [--profile <nom>]');
-        const r = await c.call('POST', '/sessions', typeof prof === 'string' ? { profile: prof } : {});
+        if (prof === true) throw new CliError(`usage : ${SESSION_CREATE_USAGE}`);
+        const proxy = a.flags.get('proxy');
+        const auth = a.flags.get('http-auth');
+        // --http-auth - : identifiants lus sur stdin (un par ligne), absents de la ligne de commande (ps, historique).
+        const httpAuth = auth === '-' ? (await readStdin()).split(/\r?\n/).filter((l) => l.trim() !== '') : typeof auth === 'string' ? [auth] : undefined;
+        if (auth === '-' && httpAuth?.length === 0) throw new CliError('--http-auth - : aucun identifiant reçu sur stdin (utilisateur:motdepasse@hôte, un par ligne)');
+        const body = {
+          ...(typeof prof === 'string' ? { profile: prof } : {}),
+          ...(typeof proxy === 'string' ? { proxyServer: proxy } : {}),
+          ...(httpAuth !== undefined ? { httpAuth } : {}),
+        };
+        const r = await c.call('POST', '/sessions', body);
         const j = r.json() as { id: string; profileCreated?: boolean };
         out(json ? r.text() : j.id);
         if (j.profileCreated === true) hint(`profil « ${prof as string} » créé (vide) : connectez-vous une fois dans ce profil (headless=false) pour que l'agent réutilise la session — \`grasp profiles\` pour la liste`);
@@ -322,9 +360,14 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       if (sub === 'list') {
-        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string }>;
+        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string; proxyServer?: string | null; httpAuth?: Array<{ host: string }> }>;
         if (json) out(JSON.stringify(list));
-        else if (list.length) out(list.map((s) => `${s.id}\t${s.profile ?? '(éphémère)'}\t${s.createdAt}`).join('\n'));
+        else if (list.length) {
+          out(list.map((s) => [s.id, s.profile ?? '(éphémère)', s.createdAt,
+            ...(s.proxyServer ? [`proxy ${s.proxyServer}`] : []),
+            ...(s.httpAuth?.length ? [`auth HTTP ${s.httpAuth.map((h) => h.host).join(',')} (identifiants masqués)`] : []),
+          ].join('\t')).join('\n'));
+        }
         return 0;
       }
       if (sub === 'close') {
@@ -335,7 +378,7 @@ async function main(argv: string[]): Promise<number> {
         if (explicit === undefined) hint(`session ${id} fermée`);
         return 0;
       }
-      throw new CliError('usage : grasp session create [--profile P] | list | close [id]');
+      throw new CliError(`usage : ${SESSION_CREATE_USAGE} | list | close [id]`);
     }
     case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': case 'type': await action(); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
@@ -481,7 +524,10 @@ async function main(argv: string[]): Promise<number> {
 const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessibilité, CDP direct)
 
 Serveur      serve [--tcp [--port N]] | stop | status | doctor | daemon install|uninstall|status
-Sessions     session create [--profile <nom>] | session list | session close [id]
+Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
+               --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer
+               --http-auth : identifiants HTTP basic confiés à cet hôte seulement (allowlist exigée), jamais écrits ;
+               « - » les lit sur stdin, un par ligne (hors de ps et de l'historique)
 Profils      profiles [--json]                       liste (* = profil de la session courante)
              profiles create <nom> [--use-when "…"]  profil vide (un --user-data-dir possédé par Grasp)
              profiles import <nom> <répertoire de données Chrome> [--profile-directory "Profile 9"] [--skip-locked]
@@ -550,7 +596,7 @@ Scripts      run [fichier|-] [--continue] [--json]   plusieurs commandes en UN a
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
                eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)
-Sécurité     security            politique telle que le garde l'applique
+Sécurité     security            politique telle que le garde l'applique (proxy, résolution, certificats compris)
 Config       config path | get [clé] | set <clé> <valeur> | unset <clé> | keys
 
 Sélecteurs   ref e5k2 (issue de snap) · CSS #id · texte text:Valider

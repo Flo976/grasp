@@ -3,10 +3,10 @@ import { statfsSync, createWriteStream, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { realProbe, type DiscoveredBrowser } from './discover.js';
 import { CdpClient } from './cdp.js';
-import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures } from './args.js';
+import { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, networkArgs, type NetworkOptions } from './args.js';
 import { buildWindowsChromeArgs, killWindowsChrome, toWindowsPath, windowsChromeAlive, windowsChromeVersion, windowsExcludedPorts } from './windows.js';
 
-export { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures };
+export { ANTI_BACKGROUND_ARGS, ALWAYS_DISABLED_FEATURES, mergeDisableFeatures, networkArgs, type NetworkOptions };
 
 export const MIN_CHROME_MAJOR = 112;
 export const MIN_SHM_BYTES = 256 * 1024 * 1024;
@@ -21,6 +21,8 @@ export interface ChromeArgsInput {
   shmBytes: number | null;
   /** Port DevTools choisi par Grasp (freeLocalPort). */
   port: number;
+  /** Proxy et règles de résolution (recette à travers un tunnel SSH). */
+  network?: NetworkOptions | undefined;
 }
 
 function assertPort(port: number): void {
@@ -48,6 +50,7 @@ export function buildChromeArgs(input: ChromeArgsInput): { args: string[]; warni
     '--metrics-recording-only',
     '--password-store=basic',
     '--use-mock-keychain',
+    ...networkArgs(input.network),
   ];
   if (input.headless) args.push('--headless=new');
   if (input.uid === 0) {
@@ -109,6 +112,8 @@ export interface LaunchOptions {
   startTimeoutMs?: number;
   /** Choix du port DevTools (défaut : freeLocalPort). Injectable pour les tests de course. */
   pickPort?: () => Promise<number>;
+  /** Proxy et règles de résolution (mêmes drapeaux pour chrome.exe). */
+  network?: NetworkOptions | undefined;
 }
 
 export interface ChromeProcess {
@@ -387,7 +392,7 @@ export async function launchChrome(opts: LaunchOptions): Promise<ChromeProcess> 
   const env = opts.env ?? process.env;
   const version = await chromeVersion(opts.browser.path);
   assertSupportedVersion(version);
-  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize() };
+  const common = { userDataDir: opts.userDataDir, headless: opts.headless, env, uid: process.getuid?.() ?? 1000, shmBytes: shmSize(), network: opts.network };
   // Avertissements (sandbox, /dev/shm) : une seule fois, pas à chaque essai de port.
   for (const w of buildChromeArgs({ ...common, port: 1 }).warnings) opts.onWarning?.(w);
 
@@ -469,7 +474,7 @@ async function launchWindowsChrome(opts: LaunchOptions): Promise<ChromeProcess> 
     hint: win,
     budgetMs: opts.startTimeoutMs ?? 30_000,
     pickPort: opts.pickPort ?? (async () => windowsFreePort(await (excludedCache ??= windowsExcludedPorts()))),
-    spawnAt: (p) => spawnBrowser(opts.browser.path, buildWindowsChromeArgs({ userDataDirWin: win, headless: opts.headless, port: p }), env, opts.stderrLog, hardKill),
+    spawnAt: (p) => spawnBrowser(opts.browser.path, buildWindowsChromeArgs({ userDataDirWin: win, headless: opts.headless, port: p, network: opts.network }), env, opts.stderrLog, hardKill),
     // Réseau WSL : chrome.exe écoute sur le 127.0.0.1 de Windows, joignable depuis WSL seulement en mode mirrored.
     unreachable: (p, why) => `chrome.exe a démarré (port DevTools ${p}) mais 127.0.0.1:${p} est injoignable depuis WSL (${why}) : activez networkingMode=mirrored dans %USERPROFILE%\\.wslconfig puis \`wsl --shutdown\`.`,
   });

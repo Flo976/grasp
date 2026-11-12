@@ -26,7 +26,7 @@ function level(v: unknown): ConsoleLevel | undefined {
  * API HTTP du bridge, servie sur un socket Unix privé (0600 dans un répertoire 0700).
  * Seul le control plane s'y connecte ; les permissions du système de fichiers font office d'authentification.
  */
-export function bridgeHandler(page: PageController, info: () => Record<string, unknown>) {
+export function bridgeHandler(page: PageController, info: () => Record<string, unknown>, sessionOptions: () => Record<string, unknown> = () => ({})) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = new URL(req.url ?? '/', 'http://bridge');
@@ -39,6 +39,8 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /health': return sendJson(res, 200, { ok: true, ...info() });
         // L'objet exact que le garde consulte (règle n°3).
         case 'GET /policy': return sendJson(res, 200, page.policy);
+        // Options propres à la session (proxy surchargé, hôtes munis d'identifiants HTTP, jamais les identifiants).
+        case 'GET /session-options': return sendJson(res, 200, sessionOptions());
         case 'GET /location': return sendJson(res, 200, { ...(await page.location()), lastBlocked: page.lastBlocked() });
         case 'POST /navigate': return sendJson(res, 200, await page.nav(str(body, 'url'), opts));
         case 'GET /snap': return sendBuffer(res, 200, 'text/plain; charset=utf-8', await page.snapText({ maxBytes: optInt(q.get('max'), 'max'), scope, nameMax: optCount(q.get('nameMax'), 'name-max') }));

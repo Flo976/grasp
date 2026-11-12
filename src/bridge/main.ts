@@ -76,7 +76,15 @@ async function main(): Promise<void> {
   process.on('disconnect', () => void shutdown(0, 'control plane disparu'));
 
   const init = await getInit();
-  const policy = Object.freeze({ ...init.policy, allowedDomains: Object.freeze([...init.policy.allowedDomains]) });
+  const policy = Object.freeze({
+    ...init.policy,
+    allowedDomains: Object.freeze([...init.policy.allowedDomains]),
+    proxyBypassList: Object.freeze([...init.policy.proxyBypassList]),
+    hostResolverRules: Object.freeze([...init.policy.hostResolverRules]),
+    ignoreCertErrorsFor: Object.freeze([...init.policy.ignoreCertErrorsFor]),
+  });
+  // Proxy de la session (surcharge de proxyServer) : appliqué au lancement, rapporté par /session-options.
+  const proxyServer = init.proxyServer ?? policy.proxyServer;
   socketPath = init.socketPath;
   const warnings: string[] = [];
   let info: { pid: number; pgid: number; version: string; windowsUserDataDir?: string };
@@ -84,6 +92,7 @@ async function main(): Promise<void> {
   if (init.attach !== undefined) {
     // Mode attach : navigateur existant. On ne le lance pas, on ne le tuera pas.
     attached = true;
+    if (proxyServer !== null || policy.hostResolverRules.length > 0) throw new Error('mode attach : proxy et règles de résolution sont des drapeaux de lancement de Chrome, inapplicables à un navigateur existant');
     const { wsUrl, version } = await resolveDevtools(init.attach);
     assertSupportedVersion(version);
     devtoolsUrl = wsUrl;
@@ -94,7 +103,10 @@ async function main(): Promise<void> {
     mkdirSync(init.userDataDir, { recursive: true, mode: 0o700 });
     // chrome.exe : profil sur NTFS (/mnt/c), droits POSIX non applicables.
     if (init.browser.kind !== 'windows') chmodSync(init.userDataDir, 0o700);
-    const launchOpts = { browser: init.browser, userDataDir: init.userDataDir, headless: init.headless, onWarning: (w: string) => { warnings.push(w); log(w); } };
+    const launchOpts = {
+      browser: init.browser, userDataDir: init.userDataDir, headless: init.headless,
+      network: { proxyServer, proxyBypassList: policy.proxyBypassList, hostResolverRules: policy.hostResolverRules },
+      onWarning: (w: string) => { warnings.push(w); log(w); } };
     chrome = await launchChrome(init.stderrLog !== undefined ? { ...launchOpts, stderrLog: init.stderrLog } : launchOpts);
     chrome.child.once('exit', (c, s) => { if (!stopping) void shutdown(1, `Chrome s'est arrêté (code=${c} signal=${s})`); });
     devtoolsUrl = chrome.wsUrl;
@@ -110,10 +122,15 @@ async function main(): Promise<void> {
     // Moteur Playwright (optionnel) : il se branche sur CE navigateur (chrome.exe : 127.0.0.1:<port>). Upload par
     // chemin seulement si le navigateur voit nos fichiers (Chrome Linux) ; sinon par contenu (≤ 50 Mo).
     engine: { devtoolsUrl, fallback: init.fallbackEngine ?? 'none', isLocal: !attached && init.browser?.kind !== 'windows' },
+    httpAuth: init.httpAuth,
   });
+  // Les identifiants vivent désormais dans le PageController seul : on n'en garde aucune autre copie.
+  delete init.httpAuth;
 
   const c = info;
-  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached })));
+  const pc = page;
+  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
+    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() })));
   if (existsSync(socketPath)) rmSync(socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const prev = process.umask(0o077);

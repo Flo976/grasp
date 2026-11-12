@@ -8,7 +8,8 @@ import type { AddressInfo } from 'node:net';
 import { bridgeSocketPath, checkSocketPaths, type GraspPaths } from '../core/paths.js';
 import { checkPermissions, ensurePrivateDir } from '../core/perms.js';
 import { loadConfigFile, resolveConfig, limitsOf, type ResolvedConfig } from '../core/config.js';
-import { effectivePolicy, type EffectivePolicy } from '../core/policy.js';
+import { checkUrl, effectivePolicy, type EffectivePolicy } from '../core/policy.js';
+import { assertProxyServer, credentialLabel, maskCredentials, parseHttpAuth, type HttpCredential } from '../core/remote.js';
 import { GraspError } from '../core/errors.js';
 import { readBody, request, sendError, sendJson, type Endpoint, optStr, optBool, readJson, str } from '../core/http.js';
 import { discoverChrome, profileRootsFor, realProbe, type DiscoveredBrowser, type ProfileRoots } from '../browser/discover.js';
@@ -35,6 +36,42 @@ export interface Session {
   switchDone?: Promise<void> | undefined;
   /** Session fermée (retirée de la table) : une bascule en vol doit abandonner. */
   closed?: Promise<void> | undefined;
+  /** Options d'accès distant de la session, conservées en mémoire pour relancer le bridge (bascule de profil). */
+  options: SessionOptions;
+}
+
+/** Options de session : proxy propre et identifiants HTTP basic (mémoire du control plane et du bridge, jamais sur disque). */
+export interface SessionOptions {
+  proxyServer?: string;
+  httpAuth: HttpCredential[];
+}
+
+/**
+ * Lit les options de POST /sessions. Identifiants : chaînes « utilisateur:motdepasse@hôte[:port] » ; l'hôte doit
+ * être dans l'allowlist (les identifiants ne partent jamais ailleurs). Aucun message ne recopie un identifiant.
+ */
+export function sessionOptionsOf(body: Record<string, unknown>, policy: Readonly<EffectivePolicy>, attach: boolean): SessionOptions {
+  const out: SessionOptions = { httpAuth: [] };
+  const proxy = body.proxyServer;
+  if (proxy !== undefined && proxy !== null) {
+    if (typeof proxy !== 'string') throw new GraspError(400, 'proxyServer : chaîne attendue');
+    if (attach) throw new GraspError(400, 'mode attach : le proxy est un drapeau de lancement de Chrome, inapplicable à un navigateur existant');
+    try { out.proxyServer = assertProxyServer(proxy.trim()); } catch (e) { throw new GraspError(400, (e as Error).message); }
+  }
+  const raw = body.httpAuth;
+  if (raw !== undefined && raw !== null) {
+    const list = typeof raw === 'string' ? [raw] : raw;
+    if (!Array.isArray(list) || !list.every((x) => typeof x === 'string')) throw new GraspError(400, 'httpAuth : chaîne ou tableau de chaînes « utilisateur:motdepasse@hôte[:port] » attendu');
+    for (const [i, x] of (list as string[]).entries()) {
+      let c: HttpCredential;
+      try { c = parseHttpAuth(x); } catch (e) { throw new GraspError(400, `httpAuth[${i}] : ${(e as Error).message}`); }
+      const v = checkUrl(policy.allowedDomains, `http://${credentialLabel(c)}/`);
+      if (!v.allowed) throw new GraspError(403, `httpAuth : ${v.reason} — des identifiants ne sont confiés qu'à un hôte de l'allowlist`);
+      if (out.httpAuth.some((o) => o.host === c.host && o.port === c.port)) throw new GraspError(400, `httpAuth : ${credentialLabel(c)} donné deux fois`);
+      out.httpAuth.push(c);
+    }
+  }
+  return out;
 }
 
 export interface ControlPlaneOptions {
@@ -158,6 +195,17 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   }
   if (process.getuid?.() === 0) log('AVERTISSEMENT : GRASP_ALLOW_NO_SANDBOX=1 — Chrome sans sandbox.');
 
+  // Accès distant : proxy et règles de résolution sont des drapeaux de lancement ; jamais ignorés en silence.
+  if (config.cdpUrl !== null && (config.proxyServer !== null || config.hostResolverRules.length > 0)) {
+    throw new Error('mode attach (cdpUrl) : proxyServer et hostResolverRules sont des drapeaux de lancement de Chrome, inapplicables à un navigateur existant — retirez-les ou lancez ce navigateur avec --proxy-server / --host-resolver-rules');
+  }
+  if (config.proxyServer !== null) log(`proxy : ${config.proxyServer}${config.proxyBypassList.length > 0 ? ` (contournement : ${config.proxyBypassList.join(', ')})` : ''}`);
+  else if (config.proxyBypassList.length > 0) log('AVERTISSEMENT : proxyBypassList sans proxyServer : sans effet');
+  if (config.hostResolverRules.length > 0) log(`résolution d'hôte : ${config.hostResolverRules.join(' ; ')} (l'allowlist porte sur le nom demandé)`);
+  if (policy.ignoreCertErrorsFor.length > 0) {
+    log(`AVERTISSEMENT : certificats TLS NON vérifiés pour ${policy.ignoreCertErrorsFor.join(', ')} (ignoreCertErrorsFor) — à réserver à une recette à travers un tunnel ; \`grasp config unset ignoreCertErrorsFor\` pour revenir à la vérification`);
+  }
+
   const sessions = new Map<string, Session>();
   let closing: Promise<void> | undefined;
   const persistInstances = () => writePrivate(paths.instancesFile, JSON.stringify([...sessions.values()].map((s) => ({
@@ -195,6 +243,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       capturesDir: paths.capturesDir,
       limits: limitsOf(config),
       fallbackEngine: config.fallbackEngine,
+      ...(s.options.proxyServer !== undefined ? { proxyServer: s.options.proxyServer } : {}),
+      ...(s.options.httpAuth.length > 0 ? { httpAuth: s.options.httpAuth } : {}),
     }, {
       log,
       onExit: (code) => {
@@ -229,11 +279,11 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     try { return { ...store.ensure(name), release }; } catch (e) { release(); throw e; }
   }
 
-  async function createSession(profile: string | undefined): Promise<{ session: Session; profileCreated: boolean }> {
+  async function createSession(profile: string | undefined, options: SessionOptions = { httpAuth: [] }): Promise<{ session: Session; profileCreated: boolean }> {
     const id = `s${randomBytes(6).toString('hex')}`;
     const p = profile !== undefined ? profileFor(profile, '--profile', `la session ${id} (en cours de création)`) : undefined;
     try {
-      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false };
+      const base = { id, profile: profile ?? null, userDataDir: p?.profile.path ?? join(roots.tmp, id), ephemeral: p === undefined, createdAt: new Date().toISOString(), switching: false, options };
       const bridge = await startBridge(base);
       if (closing !== undefined) {
         // Arrêt du serveur pendant le démarrage : la liste des sessions à fermer est déjà prise.
@@ -245,7 +295,13 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       sessions.set(id, s);
       persistInstances();
       if (profile !== undefined) store.touch(profile);
-      log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${profile !== undefined ? `, profil ${profile}` : ''})`);
+      // Jamais d'identifiants dans le journal : l'hôte seulement.
+      const extra = [
+        ...(profile !== undefined ? [`profil ${profile}`] : []),
+        ...(options.proxyServer !== undefined ? [`proxy ${options.proxyServer}`] : []),
+        ...(options.httpAuth.length > 0 ? [`authentification HTTP pour ${options.httpAuth.map(credentialLabel).join(', ')}`] : []),
+      ];
+      log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${extra.map((x) => `, ${x}`).join('')})`);
       return { session: s, profileCreated: p?.created === true };
     } finally { p?.release(); }
   }
@@ -356,9 +412,14 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
 
   async function securityReport(): Promise<Record<string, unknown>> {
     const bridges: Record<string, unknown> = {};
+    const sessionOptions: Record<string, unknown> = {};
     for (const s of sessions.values()) {
-      const r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, 'GET', '/policy').catch(() => null);
+      const sock = { transport: 'unix' as const, socketPath: s.bridge.socketPath };
+      const r = await request(sock, 'GET', '/policy').catch(() => null);
       bridges[s.id] = r && r.status === 200 ? r.json() : { error: 'bridge injoignable' };
+      // Ce que le bridge détient en mémoire (proxy de session, hôtes munis d'identifiants, masqués).
+      const o = await request(sock, 'GET', '/session-options').catch(() => null);
+      sessionOptions[s.id] = o && o.status === 200 ? o.json() : { error: 'bridge injoignable' };
     }
     let disk: unknown;
     try { disk = loadEffective(paths).policy; } catch (e) { disk = { error: (e as Error).message }; }
@@ -366,6 +427,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       // L'objet exact transmis aux bridges et consulté par le garde.
       policy,
       bridges,
+      sessionOptions,
       transport: endpoint.transport,
       configFile: paths.configFile,
       configFileExists: existsSync(paths.configFile),
@@ -427,11 +489,14 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       const route = `${req.method} ${url.pathname}`;
       if (route === 'GET /security/effective') return sendJson(res, 200, await securityReport());
       if (route === 'GET /sessions') {
-        return sendJson(res, 200, [...sessions.values()].map((s) => ({ id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir })));
+        return sendJson(res, 200, [...sessions.values()].map((s) => ({
+          id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir,
+          proxyServer: s.options.proxyServer ?? null, httpAuth: maskCredentials(s.options.httpAuth),
+        })));
       }
       if (route === 'POST /sessions') {
         const body = await readJson(req);
-        const { session: s, profileCreated } = await createSession(optStr(body, 'profile'));
+        const { session: s, profileCreated } = await createSession(optStr(body, 'profile'), sessionOptionsOf(body, policy, config.cdpUrl !== null));
         return sendJson(res, 201, { id: s.id, profile: s.profile, profileCreated });
       }
       if (route === 'GET /profiles') {

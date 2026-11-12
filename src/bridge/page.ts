@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
 import { checkUrl, type EffectivePolicy } from '../core/policy.js';
+import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
 import { ConsoleBuffer, formatArg, formatArgs, levelOfConsoleType, levelOfLog, redactUrl, redactUrlsIn, type ConsoleEntry, type ConsoleQuery, type ConsoleResult, type NewEntry, type RemoteObjectLike } from '../core/console.js';
 import { imageSize, type ImageFormat } from '../core/image.js';
@@ -645,6 +646,12 @@ export class PageController {
   /** Moteur Playwright (connexion paresseuse) et repli automatique des clics. */
   private pw: PlaywrightEngine | undefined;
   private fallback: 'none' | 'playwright' = 'none';
+  /** Identifiants HTTP basic de la session (mémoire seulement ; jamais journalisés ni rapportés en clair). */
+  private creds: readonly HttpCredential[] = [];
+  /** Requêtes auxquelles des identifiants ont déjà été fournis : un second défi = identifiants refusés. */
+  private readonly authTried = new Set<string>();
+  /** Hôtes dont un certificat non vérifié a déjà été signalé dans la console. */
+  private readonly certNoted = new Set<string>();
   /** Crochets de test (jamais utilisés en production). */
   testHooks: TestHooks | undefined;
 
@@ -655,7 +662,7 @@ export class PageController {
     readonly policy: Readonly<EffectivePolicy>,
   ) {}
 
-  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined }): Promise<PageController> {
+  static async attach(cdp: CdpClient, policy: Readonly<EffectivePolicy>, opts: { downloadDir: string; newTab?: boolean; capturesDir?: string | undefined; limits?: Partial<Limits> | undefined; engine?: EngineConfig | undefined; httpAuth?: readonly HttpCredential[] | undefined }): Promise<PageController> {
     const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string; type: string }> }>('Target.getTargets');
     // Navigateur partagé (mode attach) : on ouvre notre propre onglet, sans toucher à ceux de l'utilisateur.
     let targetId = opts.newTab ? undefined : targetInfos.find((t) => t.type === 'page')?.targetId;
@@ -664,6 +671,7 @@ export class PageController {
     const pc = new PageController(cdp, sessionId, targetId, policy);
     pc.foreign = opts.newTab === true;
     pc.capturesDir = opts.capturesDir;
+    if (opts.httpAuth !== undefined) pc.creds = Object.freeze(opts.httpAuth.map((c) => Object.freeze({ ...c })));
     if (opts.limits !== undefined) pc.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     const en = opts.engine ?? {};
     pc.fallback = en.fallback ?? 'none';
@@ -1065,13 +1073,76 @@ export class PageController {
     return new GraspError(base.status, msg, extra);
   }
 
-  /** Interception de toutes les requêtes de document (navigation, redirection, iframe). */
-  private guard(sessionId: string): Promise<unknown> {
-    return this.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] }, sessionId);
+  /** Hôtes munis d'identifiants HTTP, sans les identifiants (rapport de `grasp security`, liste des sessions). */
+  httpAuthReport(): MaskedCredential[] { return maskCredentials(this.creds); }
+
+  /**
+   * Interception de toutes les requêtes de document (navigation, redirection, iframe). Avec des identifiants
+   * HTTP : défis d'authentification reçus aussi (Fetch.authRequired) ; Chrome réutilise ensuite les
+   * identifiants acceptés pour les sous-ressources du même espace de protection (mesuré, Chrome 150).
+   * Avec ignoreCertErrorsFor : les erreurs de certificat de la cible passent par Security.certificateError,
+   * où seuls les hôtes listés sont acceptés (réglage par cible, jamais pour tout le navigateur).
+   */
+  private async guard(sessionId: string): Promise<void> {
+    await this.cdp.send('Fetch.enable', {
+      patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }],
+      ...(this.creds.length > 0 ? { handleAuthRequests: true } : {}),
+    }, sessionId);
+    if (this.policy.ignoreCertErrorsFor.length > 0) {
+      await this.cdp.send('Security.enable', {}, sessionId);
+      try {
+        await this.cdp.send('Security.setOverrideCertificateErrors', { override: true }, sessionId);
+      } catch (e) {
+        throw new Error(`ignoreCertErrorsFor : ce navigateur refuse Security.setOverrideCertificateErrors (${(e as Error).message}) ; retirez ignoreCertErrorsFor ou changez de version de Chrome`);
+      }
+    }
+  }
+
+  /** Erreur de certificat : acceptée seulement pour un hôte de ignoreCertErrorsFor, signalée une fois par hôte. */
+  private async onCertificateError(e: CdpEvent): Promise<void> {
+    const url = String(e.params.requestURL ?? '');
+    let host = '';
+    try { host = new URL(url).hostname; } catch { /* URL illisible : refusée */ }
+    const ok = host !== '' && hostMatches(this.policy.ignoreCertErrorsFor, host) !== null;
+    await this.cdp.send('Security.handleCertificateError', { eventId: e.params.eventId, action: ok ? 'continue' : 'cancel' }, e.sessionId);
+    if (!this.policy.allowConsole) return;
+    if (ok && !this.certNoted.has(host)) {
+      this.certNoted.add(host);
+      this.log({ level: 'warn', source: 'grasp', text: `certificat TLS NON vérifié accepté pour ${host} (${String(e.params.errorType)}, ignoreCertErrorsFor)` });
+    } else if (!ok) {
+      this.log({ level: 'error', source: 'grasp', text: `certificat TLS refusé (${String(e.params.errorType)}) — ${redactUrl(url)} ; hôte absent de ignoreCertErrorsFor` });
+    }
+  }
+
+  /**
+   * Défi d'authentification HTTP : identifiants fournis seulement à leur hôte (nom demandé, port s'il est
+   * précisé), si l'URL est dans l'allowlist et que le défi vient du serveur (jamais d'un proxy). Un second
+   * défi sur la même requête = identifiants refusés : on abandonne, sans boucle.
+   */
+  private async onAuthRequired(e: CdpEvent): Promise<void> {
+    const requestId: string = e.params.requestId;
+    const url = String(e.params.request?.url ?? '');
+    const source = String(e.params.authChallenge?.source ?? '');
+    const cred = source === 'Server' && checkUrl(this.policy.allowedDomains, url).allowed ? credentialFor(this.creds, url) : undefined;
+    let response: Record<string, string>;
+    // Hôte sans identifiants : la réponse 401 s'affiche, comme sans Grasp en headless (« Default » ferait échouer
+    // la navigation en ERR_INVALID_AUTH_CREDENTIALS, ou ouvrirait une boîte de dialogue en fenêtré).
+    if (cred === undefined) response = { response: 'CancelAuth' };
+    else if (this.authTried.has(requestId)) {
+      response = { response: 'CancelAuth' };
+      if (this.policy.allowConsole) this.log({ level: 'error', source: 'grasp', text: `authentification HTTP refusée par ${credentialLabel(cred)} (identifiants de la session rejetés) — ${redactUrl(url)}` });
+    } else {
+      this.authTried.add(requestId);
+      if (this.authTried.size > 1000) this.authTried.delete(this.authTried.values().next().value as string);
+      response = { response: 'ProvideCredentials', username: cred.username, password: cred.password };
+    }
+    await this.cdp.send('Fetch.continueWithAuth', { requestId, authChallengeResponse: response }, e.sessionId);
   }
 
   private async onEvent(e: CdpEvent): Promise<void> {
     try {
+      if (e.method === 'Fetch.authRequired') { await this.onAuthRequired(e); return; }
+      if (e.method === 'Security.certificateError') { await this.onCertificateError(e); return; }
       if (e.method === 'Fetch.requestPaused') {
         const url: string = e.params.request.url;
         const v = checkUrl(this.policy.allowedDomains, url);

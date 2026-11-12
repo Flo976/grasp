@@ -33,6 +33,16 @@ export async function runDoctor(paths: GraspPaths, env: NodeJS.ProcessEnv, home:
     add('config', 'ok', `${paths.configFile} — allowlist [${policy.allowedDomains.join(', ')}], eval ${policy.allowEval ? 'ON' : 'off'}, transport ${config.transport}`);
   } catch (e) { add('config', 'fail', (e as Error).message); }
 
+  if (cfg !== undefined) {
+    const net = [
+      cfg.proxyServer !== null ? `proxy ${cfg.proxyServer}` : '',
+      cfg.hostResolverRules.length > 0 ? `résolution ${cfg.hostResolverRules.join(' ; ')}` : '',
+    ].filter((x) => x !== '');
+    if (cfg.cdpUrl !== null && net.length > 0) add('réseau', 'fail', `${net.join(', ')} : inapplicables en mode attach (drapeaux de lancement de Chrome)`);
+    else if (net.length > 0) add('réseau', 'ok', `${net.join(', ')} (l'allowlist porte sur le nom demandé)`);
+    if (cfg.ignoreCertErrorsFor.length > 0) add('certificats', 'warn', `NON vérifiés pour ${cfg.ignoreCertErrorsFor.join(', ')} (ignoreCertErrorsFor)`);
+  }
+
   try { checkPermissions(permissionTargets(paths)); add('permissions', 'ok', 'fichiers 0600, répertoires 0700'); } catch (e) { add('permissions', 'fail', (e as Error).message); }
 
   let browser: DiscoveredBrowser | undefined;

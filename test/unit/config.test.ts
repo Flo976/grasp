@@ -72,6 +72,10 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   stableTimeoutMs: { raw: '0', value: 0 },
   inputDeliveryMs: { raw: '500', value: 500 },
   fallbackEngine: { raw: 'playwright', value: 'playwright' },
+  proxyServer: { raw: 'socks5://127.0.0.1:1080', value: 'socks5://127.0.0.1:1080' },
+  proxyBypassList: { raw: '*.local,<-loopback>', value: ['*.local', '<-loopback>'] },
+  hostResolverRules: { raw: 'MAP site.exemple.com 127.0.0.1:8443, EXCLUDE localhost', value: ['MAP site.exemple.com 127.0.0.1:8443', 'EXCLUDE localhost'] },
+  ignoreCertErrorsFor: { raw: 'site.exemple.com', value: ['site.exemple.com'] },
 };
 
 test('régression #4 — config set persiste chaque clé publique (relecture du fichier)', () => {
