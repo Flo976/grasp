@@ -92,6 +92,12 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
 - [x] **Rapport de recette** : console en erreur, requêtes 4xx/5xx et erreurs de formulaire résumées en
       fin de `run`, avec capture en cas d'échec. — Fait : `run --report` (d'office avec `expect`), texte
       compact et `--json` (`report`) ; capture prise juste après chaque échec (chemin seulement).
+- [x] **Recette multi-pages** : `grasp diff <urlA> <urlB> [--paths f]` (préprod/prod page par page : statut,
+      titre, structure du snapshot, texte de `main`, erreurs console, requêtes en échec) et `grasp audit
+      <sitemap|liste>` (statut, console, requêtes 4xx/5xx, liens internes cassés, formulaire au chargement).
+      Fait (branche `feat/recette-multipages`) : sessions éphémères (`--concurrency`), routes `/inventory` et
+      `/check-links` (monde isolé, même origine, HEAD sans suivre les redirections, déconnexion jamais demandée),
+      bornes annoncées, `--json`, code 1 ; tests sur deux instances du site de test (`multipage.test.ts`).
 - [x] **Doc** : section README « Tester un serveur distant » (tunnel SSH, allowlist, exemples). Fait :
       `ssh -L` simple, vhost par `hostResolverRules`, `ssh -D` + `proxyServer`, certificats, basic auth,
       recette complète, avec `expect` et le rapport de recette (`examples/recette.sh`).
@@ -117,6 +123,9 @@ Accès distant
       sur une session créée par la CLI).
 
 Lecture et recette
+- [ ] Recette multi-pages : pas d'outil MCP ni de ligne `grasp run` pour `diff`/`audit` ; pas de crawl récursif
+      (un niveau depuis une page HTML) ; sitemaps `.xml.gz` non lus ; tolérance aux contenus variables seulement
+      par `--ignore` ; pas de comparaison visuelle (captures).
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
 - [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`
       ignorée : l'étape en cours va à son terme) ; pas d'outils dédiés `expect` ni `state` (accessibles par `run`).

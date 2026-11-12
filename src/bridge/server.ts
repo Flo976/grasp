@@ -75,6 +75,13 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
           if (!Array.isArray(body.cookies)) throw new GraspError(400, 'champ « cookies » (tableau) requis');
           return sendJson(res, 200, { restored: await page.restoreCookies(body.cookies as SessionCookie[]) });
         }
+        // Recette multi-pages (grasp audit / diff) : relevé de la page, vérification des liens internes.
+        case 'GET /inventory': return sendJson(res, 200, await page.inventory());
+        case 'POST /check-links': {
+          const urls = body.urls;
+          if (!Array.isArray(urls) || !urls.every((u) => typeof u === 'string')) throw new GraspError(400, 'champ « urls » (tableau d\'URL) requis');
+          return sendJson(res, 200, await page.checkLinks(urls as string[]));
+        }
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());

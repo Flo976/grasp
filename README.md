@@ -551,6 +551,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `screenshot [options]` | Capture ; sans `-o`, **chemin** d'un fichier 0600 sur stdout. Voir [Captures](#captures-décran). |
 | `console [options]` | Journal du navigateur, une ligne par entrée. Voir [Console](#console-du-navigateur). |
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
+| `diff <urlA> <urlB> [--paths f]`, `audit <sitemap\|liste>` | Recette **multi-pages** : deux environnements comparés page par page, ou chaque page d'un sitemap contrôlée (statut, console, requêtes, formulaire, liens internes). Voir [Recette multi-pages](#recette-multi-pages--diff-et-audit). |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
@@ -800,6 +801,140 @@ page finale : http://127.0.0.1:45955/boutique « Boutique »
 - Le verdict ne dépend que des étapes : une erreur console rapportée ne fait pas échouer le run ; pour qu'elle
   le fasse, `expect no-console-errors`. Exemple complet : `examples/recette.sh` (une recette qui passe, puis la
   même qui échoue sur une 500).
+
+### Recette multi-pages : diff et audit
+
+Le rapport de `grasp run` vérifie **une** page et ce qu'on y fait. Deux commandes l'étendent à un site : `diff`
+compare deux environnements (préprod et prod) page par page, `audit` passe chaque page d'un sitemap ou d'une liste
+au crible. Même lecture que le rapport de recette (console de niveau `error`, requêtes 4xx/5xx, erreurs de
+formulaire), sorties bornées, code ≠ 0 dès qu'il y a quelque chose à voir.
+
+```bash
+grasp diff https://www.exemple.com https://preprod.exemple.com --paths chemins.txt   # un chemin par ligne, # commente
+grasp audit https://preprod.exemple.com/sitemap.xml --concurrency 4
+grasp audit urls.txt --no-links          # ou plusieurs URL en arguments, ou - (stdin)
+```
+
+**`grasp diff <urlA> <urlB> [--paths fichier|-]`** : chaque chemin est résolu sur chaque base comme un lien
+(`new URL(chemin, base)` : `/produits` remplace le chemin de la base, `produits` s'y ajoute) ; sans `--paths`, les
+deux URL elles-mêmes. Chaque page est visitée dans A puis dans B par la même session, puis comparée sur :
+
+| Rubrique | Lu par | Comparé |
+|---|---|---|
+| statut HTTP | Navigation Timing (`responseStatus`) du document | égalité |
+| titre | `document.title` après stabilité | égalité |
+| structure | snapshot : lignes `heading`, `banner`, `navigation`, `main`, `contentinfo`, `complementary`, `region`, `search`, `form`, `dialog`, sans refs ni états, indentées selon leur seule imbrication | ligne à ligne, dans l'ordre (plus longue sous-suite commune) |
+| texte | `text --scope main` (sinon la page), 50 000 caractères au plus, lignes non vides | ligne à ligne, dans l'ordre |
+| console | entrées `error` (console, exception, CSP…) depuis le début de la navigation | multi-ensemble (l'ordre d'arrivée varie) |
+| requêtes en échec | réponses 4xx/5xx, `net::ERR_…`, blocages de Grasp | multi-ensemble |
+
+```
+== diff : DIFFÉRENCES — 4 pages : 1 identique, 3 différentes (2071 ms, 2 sessions)
+A = http://127.0.0.1:46547/
+B = http://127.0.0.1:45039/
+(- : seulement dans A ; + : seulement dans B ; origines remplacées par {origine})
+≠  /produits
+     structure : 1 seulement dans A, 1 seulement dans B
+       -     heading[2] "Promotions"
+       +     heading[2] "Soldes"
+     texte (main) : 2 seulement dans A, 2 seulement dans B
+       - Promotions
+       - Prix : 12 €
+       + Soldes
+       + Prix : 14 €
+     console : 1 seulement dans B
+       + console panier introuvable (produits:5)
+     requêtes en échec : 1 seulement dans B
+       + network GET {origine}/absent.png → 404 Not Found
+≠  /contact
+     texte (main) : 1 seulement dans A, 1 seulement dans B
+       - Mis à jour le 3 mars
+       + Mis à jour le 9 avril
+≠  /statut
+     statut HTTP : A 200 ; B 500
+=  /
+```
+
+- **Origines neutralisées** : l'origine de chaque base, entière (`http://h:80` ne touche ni `http://h:8080` ni
+  `http://h:80.exemple.org`), devient `{origine}` partout : un lien absolu vers sa propre origine ne compte pas
+  comme une différence. Un autre nom propre à l'environnement (`preprod` dans un texte, un CDN différent) en reste
+  une : `--ignore <regex>` (insensible à la casse) **écarte de la comparaison** les lignes qui correspondent, dans
+  toutes les rubriques (titre compris) — une date de mise à jour, par exemple.
+- **Bornes** : 6 lignes montrées par rubrique (`… et N autre(s)`), lignes coupées à 160 caractères, 40 pages
+  détaillées puis une ligne par page ; les pages identiques tiennent sur une ligne (`=  /, /contact`). `--json` :
+  `{ok, a, b, ms, pages: [{path, urlA, urlB, same, differences: [{what, a?, b?, removed?, added?, removedCount?,
+  addedCount?, note?}], notes}], notCompared}`, 50 lignes au plus par rubrique, nombres réels à côté.
+- **Jamais « identique » en silence** : une rubrique qu'un côté n'a pas pu lire (console désactivée, snapshot
+  illisible) est dite en `note:`, et une navigation impossible d'un côté est une différence.
+
+**`grasp audit <url-sitemap|url…|fichier|->`** : une URL seule est lue d'abord — sitemap (`urlset`) → ses
+`<loc>` ; index de sitemaps → les `<loc>` de chacun (50 sitemaps au plus) ; page HTML → elle et ses liens
+internes, un niveau (annoncé) ; un fichier, `-` ou plusieurs URL → la liste telle quelle. Chaque page :
+
+```
+== audit : ÉCHEC — 5 pages : 2 OK, 3 avec problèmes ; liens internes : 7 vérifiés, 1 cassé (1510 ms, 2 sessions)
+OK  200 http://127.0.0.1:45039/ « Accueil » (514 ms)
+KO  200 http://127.0.0.1:45039/produits « Produits » (529 ms)
+      console : 1
+        console panier introuvable (produits:5)
+      requêtes en échec : 1
+        network GET http://127.0.0.1:45039/absent.png → 404 Not Found
+OK  200 http://127.0.0.1:45039/contact « Contact » (487 ms)
+KO  200 http://127.0.0.1:45039/inscription « Inscription » (504 ms)
+      formulaire au chargement : 1
+        textbox "Courriel"="ada@" [invalide: Adresse incomplète]
+KO  404 http://127.0.0.1:45039/absente « Introuvable » (494 ms)
+      statut HTTP 404
+liens cassés : 1
+  404 http://127.0.0.1:45039/mort — sur http://127.0.0.1:45039/
+liens écartés sans requête : 1 — http://127.0.0.1:45039/logout (déconnexion probable)
+note: sitemap http://127.0.0.1:45039/sitemap.xml : 5 entrées
+```
+
+- **Problème** = statut ≥ 400, navigation impossible (refusée par le garde : `refusée : navigation bloquée : …`,
+  jamais demandée au site), erreur console, requête en échec, erreur de formulaire au chargement (mêmes lignes que
+  le snapshot, sans ref) ou lien interne cassé. La réponse 4xx/5xx du document lui-même n'est rapportée qu'une
+  fois, par son statut. Console désactivée : `console : non lue (…)`, ni problème ni « aucune erreur ».
+- **Liens internes** (même origine que la page, `a[href]` et `area[href]`, fragment retiré) : vérifiés **depuis
+  la page**, par un `fetch` HEAD du monde isolé (cookies, proxy, résolution d'hôtes et identifiants de la
+  session ; GET si le serveur répond 405/501, corps abandonné ; 10 s par lien, 6 en parallèle). Les
+  **redirections ne sont pas suivies** (une 301 n'est pas un lien cassé, sa cible n'est pas vérifiée) : rien ne
+  part vers une autre origine. Le bridge écarte, sans requête, toute URL d'une autre origine que la page ou hors
+  allowlist. Chaque lien est vérifié **une fois** pour tout l'audit, avec la liste des pages où il figure ; 200 au
+  plus (`--max-links N`, 5000 au plus ; au-delà, annoncés comme non vérifiés) ; `--no-links` pour s'en passer.
+  Un lien qui ressemble à une **déconnexion** (`logout`, `log-out`, `signout`, `déconnexion`, `disconnect`,
+  `logoff`) n'est jamais demandé — un HEAD suffit à déconnecter sur bien des frameworks — ni visité quand il
+  sert de graine. `--ignore <regex>` écarte aussi des liens et des lignes console.
+- **Bornes** : 5 entrées par rubrique et par page, 30 liens cassés ; `--json` : `{ok, source, ms, pages: [{url,
+  finalUrl?, title?, status, error?, blocked?, console, forms, problems, ms}], notVisited, links: {checked, broken:
+  [{url, status?, error?, from}], unchecked, skipped, disabled?}, notes}`.
+
+Communs aux deux commandes :
+
+- **Sessions** : éphémères, une par `--concurrency` (2 par défaut, 8 au plus ; une session = un Chrome),
+  créées pour la commande et **fermées à la fin**, Ctrl-C compris (aucune page de plus ne démarre, la page en
+  cours va à son terme, code 130). `--profile`, `--proxy`, `--http-auth` (`-` : sur stdin) comme
+  `session create` ; `--profile` impose `--concurrency 1`. `--session <id>` : cette session seule, laissée
+  ouverte. `GRASP_SESSION` est volontairement **ignorée** : la recette n'emmène pas l'onglet de travail de
+  l'agent de page en page.
+- **Politique** : chaque page passe par les routes ordinaires de la session (`/navigate`, `/snap`, `/text`,
+  `/console`, `/expect`, plus `/inventory` et `/check-links`) : allowlist, protection SSRF, garde des
+  redirections et traqueurs s'appliquent comme pour `nav`. Le relevé (`/inventory` : statut, liens, `<loc>`) et
+  la vérification des liens sont du code fixe de Grasp dans le monde isolé `grasp-lecture`, autorisé avec
+  `allowEval=false`.
+- **Bornes** : `--max N` pages ou chemins (50 par défaut, 1000 au plus) ; au-delà, annoncé
+  (`AVERTISSEMENT : …`), sans faire échouer la recette. Option inconnue, valeur hors bornes ou liste illisible :
+  refusées **avant** le lancement du moindre Chrome.
+- **Code** : 0 si tout est identique (diff) ou sans problème (audit), 1 sinon ; `--json` pour la sortie structurée.
+- **Coût mesuré** (site de test local, Chrome 150 headless, WSL2) : ≈ 0,5 s par page, dont les 400 ms de calme de
+  l'attente de stabilité ; audit de 5 pages et 7 liens avec 2 sessions : 1,5 s de travail, 2,8 s au total avec
+  la création des sessions ; diff de 4 chemins (8 pages) avec 2 sessions : 2,1 s, 2,6 s au total.
+- **Icône automatique** : la requête `/favicon.ico` que Chrome lance d'office, une fois par session et par
+  origine, est écartée des relevés (elle tomberait sur une page au hasard du partage entre sessions).
+- Orchestration côté client, comme `grasp mcp`, au-dessus de l'API HTTP (`src/core/multipage.ts`,
+  `src/cli/multipage.ts`) ; pas disponible dans `grasp run` ni comme outil MCP. Tests :
+  `test/unit/multipage.test.ts`, `test/integration/multipage.test.ts` (deux instances du site de test,
+  `test/helpers/multisite.ts`).
 
 ## Serveur MCP
 
@@ -1266,6 +1401,8 @@ POST /type   {target, text, delay?, …}        (toute action : engine? = native
 POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)
+GET  /inventory → {url, status, contentType, kind, links[], linksOmitted, locs[], locsOmitted}   (statut, liens internes, <loc> d'un sitemap)
+POST /check-links {urls[] (50 au plus)} → {results: [{url, status? | redirect? | error? | skipped?}]}   (même origine que la page, HEAD)
 POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
@@ -1670,6 +1807,14 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   bascule, les deux profils sont réservés (création de session ou suppression → 409) ; une session
   fermée pendant la bascule l'interrompt (409) sans laisser de navigateur.
 - macOS : non testé (pas de `/proc`, pas de `setpriv` ; le control plane tue alors les groupes Chrome).
+- **Recette multi-pages** (`diff`, `audit`) : le texte comparé est celui de `main` (sinon de la page), et une
+  page qui affiche une date, un compteur ou un jeton différent à chaque chargement diffère d'elle-même :
+  `--ignore` est fait pour ça, il n'y a pas de tolérance automatique. Les liens sont relevés dans le DOM
+  (`a[href]`, `area[href]`), pas dans les racines fantômes ni les iframes, et seulement ceux de la même origine
+  que la page ; un lien qui refuse HEAD autrement que par 405/501 peut être mal jugé ; une redirection n'est pas
+  suivie (sa cible n'est pas vérifiée). Un lien de déconnexion au nom inhabituel (`/quitter`) serait demandé en
+  HEAD : gardez les sessions éphémères (le défaut) ou utilisez `--ignore`. Un sitemap est lu par Chrome (XML
+  servi tel quel ; un `.xml.gz` n'est pas lu). Pas de suivi des liens au-delà d'un niveau.
 - **Erreurs de formulaire** : relevé heuristique. Un message non relié est rattaché au champ voisin par la
   structure du DOM (4 ancêtres au plus) et repéré par son allure (classe/id `error`, `invalid`, `erreur`,
   `err`, `role=alert`) : un balisage sans aucun de ces indices n'est pas vu, et un texte d'aide qui porte une
