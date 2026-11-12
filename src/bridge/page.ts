@@ -22,6 +22,7 @@ import { SCROLL_BUDGET_MS, SCROLL_FN, SCROLL_STEPS_DEFAULT, scrollNote, type Scr
 import { describeViewport, mobileUserAgent, type ViewportSpec } from '../core/viewport.js';
 import { Redactor, secretAllowedOn, type SecretUse } from '../core/secrets.js';
 import { A11Y_DEFAULT_MAX, A11Y_DESC_FN, A11Y_DOM_FN, A11Y_KINDS, A11Y_MAX, A11Y_NOTE, axIssues, domIssue, imageFix, renderA11y, scopeNodes, type A11yIssue, type A11yKind, type A11yReport, type DomItem, type RawIssue } from './a11y.js';
+import { CHECK_LINKS_MAX, INVENTORY_FN, checkLinksFn, splitLinks, type Inventory, type LinkCheck } from './inventory.js';
 import { PlaywrightEngine, PW_ACTION_TIMEOUT_MS, PW_FALLBACK_TIMEOUT_MS, PW_IDLE_MS, parseFrameTarget, playwrightKey, pwError, type PwLocator, type PwPage } from './playwright.js';
 
 export interface ActionOptions {
@@ -3930,6 +3931,25 @@ export class PageController {
       if (info.tag !== 'INPUT' || info.type !== 'file') throw badRequest('upload attend un <input type=file>');
       await this.s('DOM.setFileInputFiles', { files, backendNodeId: id });
     });
+  }
+
+  // ---------- Recette multi-pages (grasp audit / diff) : relevé de la page et liens internes ----------
+
+  /** Statut HTTP du document, liens internes, entrées d'un sitemap XML (code fixe, monde isolé). */
+  async inventory(): Promise<Inventory> {
+    return await this.evalIsolated<Inventory>(INVENTORY_FN);
+  }
+
+  /**
+   * Vérifie des liens de la même origine que la page courante, depuis la page (cookies, proxy et résolution
+   * d'hôtes de la session) : HEAD, redirections non suivies. Autre origine ou hors allowlist : écarté sans requête.
+   */
+  async checkLinks(urls: string[]): Promise<{ results: LinkCheck[] }> {
+    if (urls.length > CHECK_LINKS_MAX) throw badRequest(`${urls.length} liens : ${CHECK_LINKS_MAX} au plus par appel`);
+    const { url } = await this.location();
+    const { check, skipped } = splitLinks(this.policy.allowedDomains, url, urls);
+    const checked = check.length > 0 ? await this.evalIsolated<LinkCheck[]>(checkLinksFn(check), true) : [];
+    return { results: [...checked, ...skipped] };
   }
 }
 

@@ -19,7 +19,8 @@ for (const f of ['by', 'to', 'max-steps']) VALUE_FLAGS.add(f);
 VALUE_FLAGS.add('domains');
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
-export function parseArgs(argv: string[]): Args {
+/** `valueFlags` : options qui prennent une valeur (celles d'une commande à part, comme `audit`, s'y ajoutent). */
+export function parseArgs(argv: string[], valueFlags: ReadonlySet<string> = VALUE_FLAGS): Args {
   const pos: string[] = [];
   const flags = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
@@ -29,7 +30,7 @@ export function parseArgs(argv: string[]): Args {
     if (m && !(a.startsWith('-') && !a.startsWith('--') && m[1]!.length > 1)) {
       const name = ALIASES[m[1]!] ?? m[1]!;
       if (m[2] !== undefined) flags.set(name, m[2]);
-      else if (VALUE_FLAGS.has(name)) {
+      else if (valueFlags.has(name)) {
         const v = argv[++i];
         if (v === undefined) throw new ScriptError(`--${name} attend une valeur`);
         flags.set(name, v);

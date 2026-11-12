@@ -137,6 +137,13 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         }
         // Historique : sélecteur durable de la cible, relevé avant l'action (route interne du control plane).
         case 'POST /internal/durable': return sendJson(res, 200, await page.durableTarget(str(body, 'target')));
+        // Recette multi-pages (grasp audit / diff) : relevé de la page, vérification des liens internes.
+        case 'GET /inventory': return sendJson(res, 200, await page.inventory());
+        case 'POST /check-links': {
+          const urls = body.urls;
+          if (!Array.isArray(urls) || !urls.every((u) => typeof u === 'string')) throw new GraspError(400, 'champ « urls » (tableau d\'URL) requis');
+          return sendJson(res, 200, await page.checkLinks(urls as string[]));
+        }
         case 'GET /pdf': return sendBuffer(res, 200, 'application/pdf', await page.pdf());
         case 'POST /eval': return sendJson(res, 200, { ok: true, ...await page.evaluateTyped(str(body, 'expression')) });
         case 'GET /cookies': return sendJson(res, 200, await page.cookies());

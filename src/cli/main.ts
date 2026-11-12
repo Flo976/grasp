@@ -13,6 +13,7 @@ import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
 import { runMcp } from './mcp.js';
 import { commandHelp, helpJson, skillText } from './help.js';
+import { multipageCmd } from './multipage.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
@@ -31,7 +32,7 @@ import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
 
 class CliError extends Error {
   /** Champs supplémentaires du corps d'erreur (ex. entrées console produites pendant l'action). */
-  constructor(message: string, readonly extra?: Record<string, unknown>) { super(message); }
+  constructor(message: string, readonly extra?: Record<string, unknown>, readonly status?: number) { super(message); }
 }
 
 const out = (s: string) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
@@ -80,7 +81,7 @@ class Client {
       let msg = r.text();
       let extra: Record<string, unknown> | undefined;
       try { extra = r.json() as Record<string, unknown>; msg = String(extra.error ?? msg); } catch { /* texte brut */ }
-      throw new CliError(msg, extra);
+      throw new CliError(msg, extra, r.status);
     }
     return r;
   }
@@ -622,6 +623,8 @@ async function main(argv: string[]): Promise<number> {
     case 'expect': await expectCmd(c, a); return 0;
     case 'run': return runCmd(c, a);
     case 'history': await historyCmd(c, a); return 0;
+    // Recette multi-pages : sessions éphémères propres (pas GRASP_SESSION), voir src/cli/multipage.ts.
+    case 'diff': case 'audit': return multipageCmd(a.cmd, argv, (sid, method, path, body, timeoutMs) => new Client(paths, sid).call(method, path, body, timeoutMs), { out, hint });
     case 'profiles': {
       const sub = a.pos[0];
       if (sub === undefined || sub === 'list') {
@@ -922,6 +925,16 @@ Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plus
                → ERROR, jamais ignorée ; arrêt au premier échec (--continue pour poursuivre) ; client coupé
                (Ctrl-C, délai de l'agent) → aucune étape de plus ne démarre (journal du serveur) ;
                stdout « [n] commande → OK|ERROR: raison » + sortie utile (snap, text, diff, console, chemin)
+Multi-pages  diff <urlA> <urlB> [--paths fichier|-] [--max N (50)] [--concurrency N (2)] [--ignore <regex>]
+               compare deux environnements page par page (chemins de --paths résolus sur chaque base) : statut,
+               titre, plan (titres et régions du snapshot), texte de main (sinon de la page), erreurs console,
+               requêtes en échec ; origines remplacées par {origine} ; code 1 s'il y a une différence
+             audit <url-sitemap|url…|fichier|-> [--max N (50)] [--concurrency N (2)] [--max-links N (200) | --no-links]
+               chaque page : statut HTTP, erreurs console, requêtes 4xx/5xx, erreurs de formulaire au chargement ;
+               liens internes vérifiés depuis la page (HEAD, redirections non suivies, déconnexion jamais) ;
+               URL seule : sitemap (index compris) ou page HTML + ses liens internes ; code 1 s'il y a un problème
+               sessions éphémères (une par --concurrency, fermées à la fin ; --session <id> : celle-ci seule) ;
+               --profile, --proxy, --http-auth comme session create ; tout passe par l'allowlist ; --json
 Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés par défaut)
                eval : valeur en JSON, « undefined » si l'expression ne renvoie rien (--json : value et type)
              console : lecture autorisée par défaut, jamais de corps ni d'en-têtes (config set allowConsole false)

@@ -155,6 +155,8 @@ for (const r of ['/back', '/forward', '/reload', '/scroll']) SESSION_ROUTES.add(
 SESSION_ROUTES.add('/viewport');
 SESSION_ROUTES.add('/network');
 SESSION_ROUTES.add('/a11y');
+// Recette multi-pages (grasp audit / diff).
+for (const r of ['/inventory', '/check-links']) SESSION_ROUTES.add(r);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
