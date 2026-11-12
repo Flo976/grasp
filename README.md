@@ -588,6 +588,69 @@ navigation → http://127.0.0.1:8080/submit?nom=Ada+Lovelace&…
   (`eval` interdit reste interdit, allowlist, console…) et mêmes refs — celles d'un `snap` du script servent aux
   étapes suivantes. `profile <nom>` bascule la session au milieu du script (le bridge est relu à chaque étape).
 
+## Serveur MCP
+
+`grasp mcp` expose Grasp comme serveur [MCP](https://modelcontextprotocol.io) (Model Context Protocol) sur
+**stdio** : JSON-RPC 2.0, un message par ligne, méthodes `initialize`, `ping`, `tools/list` et `tools/call`
+(versions du protocole `2025-06-18`, `2025-03-26` et `2024-11-05`). Aucune dépendance ajoutée : le protocole
+tient en quelques centaines de lignes (`src/cli/mcp.ts`).
+
+```bash
+claude mcp add grasp -- grasp mcp                           # Claude Code
+claude mcp add grasp -- node /chemin/vers/grasp/dist/src/cli/main.js mcp   # sans npm link
+```
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
+
+```json
+{ "mcpServers": { "grasp": { "command": "grasp", "args": ["mcp"] } } }
+```
+
+- **Client mince** : chaque outil devient une ligne de commande Grasp traduite en requête par `buildRequest`
+  (`src/core/script.ts`), exactement comme la CLI et `grasp run`. Même API HTTP, même token, même politique
+  (allowlist, `eval` interdit…) : `grasp mcp` ne décide rien.
+- **Serveur** : si le control plane est injoignable, `grasp mcp` lance `grasp serve` en processus enfant et
+  l'arrête à sa sortie ; un serveur déjà en place (`grasp serve`, `grasp daemon install`) est utilisé et
+  laissé tel quel. `--no-serve` : serveur absent → chaque outil répond une erreur qui le dit.
+- **Session** : créée au premier appel d'outil (`--profile <nom>` pour un profil connecté), fermée quand le
+  client MCP ferme stdin. `--session <id>` ou `GRASP_SESSION` : session existante réutilisée (celle de la
+  CLI, par exemple), **jamais fermée** par `grasp mcp`. Si la session créée disparaît (navigateur arrêté),
+  l'erreur le dit et l'appel suivant en ouvre une neuve.
+- **stdout** réservé au protocole ; journal (`grasp mcp: session s… créée`, sortie du serveur lancé) sur stderr.
+
+| Outil | Arguments | Équivalent CLI |
+|---|---|---|
+| `nav` | `url`, options d'action | `nav` |
+| `snap` | `max`, `scope`, `nameMax` | `snap --max --scope --name-max` |
+| `text` | `max`, `scope` | `text` |
+| `click`, `hover` | `target`, options d'action | idem |
+| `fill`, `select` | `target`, `value`, options d'action | idem |
+| `type` | `target`, `text`, `delay`, options d'action | idem |
+| `check` | `target`, `checked` (défaut `true`), options d'action | `check [--uncheck]` |
+| `press` | `key`, `target?`, options d'action | idem |
+| `wait` | `text` \| `sel` \| `idle`, `timeout` | idem |
+| `console` | `level`, `since`, `limit` (50), `clear` | idem |
+| `screenshot` | `full`, `el`, `format`, `quality`, `maxWidth`, `refs`, `image` | `screenshot` sans `-o` |
+| `run` | `script`, `continue` | `grasp run` |
+| `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
+
+Options d'action : `snapDiff`, `max`, `scope`, `console`, `shotOnError`, `engine` (`native` \| `playwright`).
+`eval`, `cookies` et `upload` ne sont pas des outils : ils restent accessibles par `run`, soumis à la même
+politique (désactivés par défaut).
+
+- **Résultats** : le texte que la CLI écrirait, notes comprises (`note: …` en tête, puisqu'il n'y a pas de
+  stderr côté agent) : `OK` ou le diff, lignes console, `seq courant`. `screenshot` renvoie le **chemin** du
+  fichier (0600) et ses dimensions, pas l'image : `image: true` la joint en plus (base64 ; réduisez avec
+  `maxWidth`).
+- **Erreurs** : une erreur Grasp est un résultat `isError: true` dont le texte est `ERROR: <message du
+  serveur>`, candidats compris (`ref … n'est plus dans la page ; candidats les plus proches : …`, `noms
+  proches : …`), chemin de capture (`shotOnError`) et console de l'action (`console`). Un `run` avec une étape
+  en échec est aussi `isError`, avec le rapport complet des étapes. Un argument inconnu ou mal typé
+  (`snapdiff`, `max: "beaucoup"`) est **refusé**, jamais ignoré, comme une option inconnue de la CLI. Les
+  erreurs JSON-RPC (`-32700`, `-32601`, `-32602` outil inconnu) restent réservées au protocole.
+- Testé de bout en bout (`test/integration/mcp.test.ts`) : `grasp mcp` en sous-processus, dialogue JSON-RPC,
+  formulaire du site de test rempli et vérifié par `text`, chaque ligne de stdout analysée comme JSON.
+
 ## Moteur Playwright de repli
 
 Le cœur de Grasp reste en CDP direct. Pour les cas où il bute, un moteur **optionnel** s'appuie sur

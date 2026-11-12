@@ -11,6 +11,7 @@ import { startControlPlane } from '../control/server.js';
 import { isGraspServer, isProcessAlive } from '../control/procutil.js';
 import { installDaemon, uninstallDaemon, systemdStatus } from './daemon.js';
 import { runDoctor } from './doctor.js';
+import { runMcp } from './mcp.js';
 import { killWindowsChrome } from '../browser/windows.js';
 import { writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
@@ -303,6 +304,13 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'stop': await stop(paths, env); return 0;
+    case 'mcp': {
+      // Serveur MCP sur stdio : stdout appartient au protocole (voir src/cli/mcp.ts).
+      const prof = a.flags.get('profile');
+      if (prof === true || a.pos.length > 0) throw new CliError('usage : grasp mcp [--session <id>] [--profile <nom>] [--no-serve]');
+      await runMcp({ paths, env, session, profile: typeof prof === 'string' ? prof : undefined, autoServe: !a.flags.has('no-serve') });
+      return 0;
+    }
     case 'status': {
       const r = await c.call('GET', '/health');
       const j = r.json();
@@ -481,6 +489,9 @@ async function main(argv: string[]): Promise<number> {
 const HELP = `grasp — contrôle de navigateur pour agents IA (arbre d'accessibilité, CDP direct)
 
 Serveur      serve [--tcp [--port N]] | stop | status | doctor | daemon install|uninstall|status
+MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP sur stdio (claude mcp add grasp -- grasp mcp)
+               outils nav snap text click fill type select check press hover wait console screenshot run profile ;
+               session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
 Sessions     session create [--profile <nom>] | session list | session close [id]
 Profils      profiles [--json]                       liste (* = profil de la session courante)
              profiles create <nom> [--use-when "…"]  profil vide (un --user-data-dir possédé par Grasp)
@@ -564,7 +575,7 @@ Sortie       OK sur stdout, conseils et erreurs (ERROR: <cmd>: <raison>) sur std
 
 const argv = process.argv.slice(2);
 const cmdName = argv.find((x) => !x.startsWith('-')) ?? 'help';
-main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve') return; process.exit(code); }, (e: Error) => {
+main(argv).then((code) => { process.exitCode = code; if (cmdName !== 'serve' && cmdName !== 'mcp') return; process.exit(code); }, (e: Error) => {
   process.stderr.write(`ERROR: ${cmdName}: ${e.message}\n`);
   // --console sur une action en échec : les entrées produites pendant l'action suivent l'erreur.
   const entries = e instanceof CliError ? e.extra?.console : undefined;

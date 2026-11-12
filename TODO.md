@@ -7,8 +7,11 @@ Ordre proposé. Toute reprise de code doit citer la source et la licence.
 - [ ] **Blocage des traqueurs** : liste de Peter Lowe (pgl.yoyo.org, ~3 500 domaines, celle qu'utilise
       Obscura), via `Network.setBlockedURLs` ou le garde `Fetch` existant. Optionnel, activé par défaut
       en lecture. Attendu : pages plus rapides, attente de stabilité plus courte, snapshots plus propres.
-- [ ] **Serveur MCP** : `grasp mcp` (stdio) au-dessus de l'API HTTP (`snap`, `click`, `fill`, `wait`,
+- [x] **Serveur MCP** : `grasp mcp` (stdio) au-dessus de l'API HTTP (`snap`, `click`, `fill`, `wait`,
       `text`, `console`, `screenshot`, `run`…). Branchable dans Claude Desktop / Cursor en une ligne.
+      Fait : sans dépendance, outils = lignes de commande via `buildRequest`, serveur lancé si absent,
+      session créée puis fermée (ou imposée par `--session`). Reste : notifications de progression pour
+      les `run` longs, annulation (`notifications/cancelled` ignorée : l'étape en cours va à son terme).
 - [ ] **Sortie Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), calculée
       dans le monde isolé `grasp-lecture`.
 - [ ] **Export/import de l'état** : `grasp state export|import` (cookies + localStorage en JSON) pour
