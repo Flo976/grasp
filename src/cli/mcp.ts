@@ -468,13 +468,15 @@ const TOOLS: Tool[] = [
   {
     name: 'storage',
     // Mêmes contrôles que grasp storage : allowCookies, origine affichée dans l'allowlist, code fixe sans eval.
-    description: 'Stockage Web (localStorage ou sessionStorage) de l\'origine AFFICHÉE, sans eval : get (valeur, 4000 caractères au plus), set, rm. Pour poser une session factice (jeton, profil) puis recharger la page : storage set, puis nav. Exige allowCookies (désactivé par défaut : 403 sinon) ; origine http(s) dans l\'allowlist ; sur about:blank, naviguez d\'abord (ou outil state_import, avant toute navigation).',
-    props: { op: S('Opération.', { enum: ['get', 'set', 'rm'] }), area: S('Stockage visé.', { enum: ['local', 'session'] }), key: S('Clé (1 à 1000 caractères).'), value: S('Valeur (avec op=set seulement).') },
+    description: 'Stockage Web (localStorage ou sessionStorage) de l\'origine AFFICHÉE, ou de `origin`, sans eval : get (valeur, 4000 caractères au plus), set, rm. Pour poser une session factice (jeton, profil) AVANT le premier chargement : op=set avec origin (même sur about:blank), puis nav. Exige allowCookies (désactivé par défaut : 403 sinon) ; origine http(s) dans l\'allowlist (et protection SSRF avec origin) ; sessionStorage d\'une origine non affichée : set seulement, appliqué au premier document de cette origine.',
+    props: { op: S('Opération.', { enum: ['get', 'set', 'rm'] }), area: S('Stockage visé.', { enum: ['local', 'session'] }), key: S('Clé (1 à 1000 caractères).'), value: S('Valeur (avec op=set seulement).'), origin: S('Origine http(s) visée (ex. https://app.exemple.com), même avant son premier chargement ; défaut : origine affichée.') },
     required: ['op', 'area', 'key'],
     async run(c, a) {
       if ((a.op === 'set') !== (a.value !== undefined)) throw new ArgError(a.op === 'set' ? 'value requis avec op=set' : 'value ne s\'applique qu\'avec op=set');
       const pos = [String(a.op), String(a.area), String(a.key), ...(a.value !== undefined ? [String(a.value)] : [])];
-      const j = (await send(c, buildRequest({ cmd: 'storage', pos, flags: new Map() }))).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; boundary?: BoundaryTag };
+      // origin : même option que grasp storage --origin (mêmes contrôles côté bridge : allowlist, SSRF, allowCookies).
+      const flags = new Map<string, string | true>(a.origin !== undefined ? [['origin', String(a.origin)]] : []);
+      const j = (await send(c, buildRequest({ cmd: 'storage', pos, flags }))).json() as { op: string; origin: string; area: string; key: string; value?: string | null; truncated?: number; existed?: boolean; pending?: boolean; boundary?: BoundaryTag };
       const where = `${j.area}Storage de ${j.origin}`;
       if (j.op === 'get') {
         // Clé absente : erreur, comme le code 1 de la CLI (jamais une valeur vide prise pour la bonne).
@@ -482,7 +484,7 @@ const TOOLS: Tool[] = [
         // Valeur écrite par la page : encadrée si les frontières de contenu sont actives.
         return text([wrapTagged(j.value, j.boundary, 'stockage'), ...(j.truncated !== undefined ? [`AVERTISSEMENT : valeur tronquée à ${j.value.length} caractères sur ${j.truncated}`] : [])].join('\n'));
       }
-      return text(`OK — ${j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : where}`);
+      return text(`OK — ${j.op === 'rm' && j.existed === false ? `${where} : clé « ${j.key} » déjà absente` : j.pending === true ? `${where} : appliqué au premier document de cette origine dans l'onglet` : where}`);
     },
   },
   {

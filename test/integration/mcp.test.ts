@@ -365,6 +365,33 @@ test('mcp : session factice sans eval — state_import avant navigation, storage
   }
 });
 
+test('mcp : storage avec origin — session factice posée sur about:blank avant le premier chargement, mêmes contrôles que --origin', async () => {
+  const t = makeTestEnv();
+  const site = await startTestSite();
+  writeConfig(t.env, { allowCookies: true, allowedDomains: ['127.0.0.1'] });
+  const srv = await startServer(t.env);
+  const mcp = new Mcp(t.env);
+  try {
+    await mcp.init();
+    // about:blank : origin donne une cible sans navigation préalable (localStorage hors de la page, sans requête).
+    const set = await mcp.call('storage', { op: 'set', area: 'local', key: 'theme', value: 'mcp-origine', origin: site.url });
+    assert.equal(set.isError, false, set.text);
+    assert.match(set.text, new RegExp(`^OK — localStorage de ${site.url.replace(/[.]/g, '\\.')}$`));
+    assert.equal((await mcp.call('storage', { op: 'get', area: 'local', key: 'theme', origin: site.url })).text, 'mcp-origine');
+    // sessionStorage : set seulement, appliqué au premier document de l'origine.
+    assert.match((await mcp.call('storage', { op: 'set', area: 'session', key: 'brouillon', value: 'mcp-session', origin: site.url })).text, /appliqué au premier document de cette origine/);
+    // Hors allowlist : refusé, comme la CLI.
+    const hors = await mcp.call('storage', { op: 'set', area: 'local', key: 'k', value: 'v', origin: 'https://ailleurs.example' });
+    assert.equal(hors.isError, true);
+    assert.equal((await mcp.call('nav', { url: `${site.url}/compte` })).isError, false);
+    assert.match((await mcp.call('text')).text, /Thème : mcp-origine[\s\S]*Brouillon : mcp-session/, 'valeurs lues par la page elle-même');
+    assert.equal(await mcp.close(), 0);
+  } finally {
+    mcp.proc.kill('SIGKILL');
+    srv.proc.kill('SIGTERM'); await waitExit(srv.proc); await site.close(); t.cleanup();
+  }
+});
+
 test('mcp : storage get — valeur écrite par la page encadrée (source=stockage, nonce) quand les frontières sont actives', async () => {
   const t = makeTestEnv();
   const site = await startTestSite();

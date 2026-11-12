@@ -1766,7 +1766,7 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) :
 | `history` | `since`, `limit`, `asRun`, `expect` | `history [--as-run [--expect]]` ([rejeu](#historique-et-rejeu--grasp-history)) |
 | `screenshot` | `full`, `el`, `format`, `quality`, `maxWidth`, `refs`, `image` | `screenshot` sans `-o` |
 | `run` | `script`, `continue`, `report` | `grasp run [--report\|--no-report]` ; lignes `expect` et [rapport de recette](#recette--expect-et-rapport-de-run) joint d'office |
-| `storage` | `op` (`get` \| `set` \| `rm`), `area` (`local` \| `session`), `key`, `value` (avec `set`) | `storage get\|set\|rm local\|session <clé> [valeur]` ([session factice](#session-factice-sans-alloweval)) |
+| `storage` | `op` (`get` \| `set` \| `rm`), `area` (`local` \| `session`), `key`, `value` (avec `set`), `origin` (facultatif, même sur `about:blank`) | `storage get\|set\|rm local\|session <clé> [valeur] [--origin <url>]` ([session factice](#session-factice-sans-alloweval)) |
 | `state_import` | `state` (le JSON lui-même, pas un chemin) | `state import <fichier>` ([état](#état--export-et-import)) |
 | `profile` | `name?` | sans `name` : `profiles` ; avec : `profile <nom>` |
 
