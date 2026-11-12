@@ -121,6 +121,9 @@ Onglets et popups
       popup / `target=_blank` adopté en pause (garde posé avant son premier document), annoncé par l'action
       (`nouvel onglet t2 ouvert : …`), `--follow` ; retour sur l'ouvreur quand le popup se ferme (OAuth) ; refs,
       console, garde, traqueurs, SSRF par onglet ; plafond `maxTabs` (10). Tests : `tabs.test.ts`, `tabs-cli.test.ts`.
+- [x] Mode attach : `tab new` et l'onglet d'état (`state export|import`) étaient détachés aussitôt attachés (le
+      meneur prenait leur `Target.attachedToTarget` pour un onglet de l'utilisateur) ; cibles réclamées
+      (`hub.claimed`), test en mode attach dans `tabs.test.ts`.
 - [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
       l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
       pause : le premier document échapperait au garde.

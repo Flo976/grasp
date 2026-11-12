@@ -49,6 +49,11 @@ export class TabHub {
   readonly attaching = new Map<string, Promise<string>>();
   /** Création de cible en cours (sérialisée) : distingue l'onglet d'état d'export/import d'un onglet à adopter. */
   creating: 'scratch' | 'tab' | undefined;
+  /**
+   * Cibles que Grasp attache lui-même (Target.attachToTarget : `tab new` et onglet d'état en mode attach). Leur
+   * Target.attachedToTarget n'est pas celui d'un onglet de l'utilisateur : le meneur ne doit pas les détacher.
+   */
+  readonly claimed = new Set<string>();
   private lock: Promise<unknown> = Promise.resolve();
   /** Popups refusés (plafond) : toutes leurs requêtes échouent, le temps de les relancer puis de les fermer. */
   readonly denied = new Set<string>();
@@ -1464,6 +1469,9 @@ export class PageController {
       if (e.method === 'Target.attachedToTarget' && e.sessionId === undefined) {
         const sid: string = e.params.sessionId;
         const info = e.params.targetInfo as TargetInfo;
+        // Session ouverte par Grasp lui-même (attachToTarget) : son appelant la reprend telle quelle (y compris si
+        // l'événement est traité après que la session a déjà un propriétaire).
+        if (this.hub.claimed.has(info.targetId) || this.hub.ownerOf(sid) !== undefined) return;
         if (info.targetId === this.targetId || this.foreign || this.hub.ownsTarget(info.targetId)) {
           // Onglets de l'utilisateur (mode attach) : on ne les garde pas, on les laisse vivre.
           if (e.params.waitingForDebugger) await this.cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
@@ -3165,14 +3173,18 @@ export class PageController {
         const ready = this.hub.attaching.get(targetId);
         if (ready !== undefined) sid = await ready;
       }
-      if (sid === undefined) sid = (await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      if (sid === undefined) {
+        // Mode attach : attachement explicite, réclamé pour que le meneur ne le prenne pas pour un onglet de l'utilisateur.
+        this.hub.claimed.add(targetId);
+        sid = (await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      }
       this.scratch.set(sid, '');
       await this.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sid);
       // Un service worker du site ne doit pas répondre à la place du document vide.
       await this.cdp.send('Network.enable', {}, sid).then(() => this.cdp.send('Network.setBypassServiceWorker', { bypass: true }, sid)).catch(() => undefined);
       return await fn(sid);
     } finally {
-      if (targetId !== undefined) this.hub.attaching.delete(targetId);
+      if (targetId !== undefined) { this.hub.attaching.delete(targetId); this.hub.claimed.delete(targetId); }
       if (sid !== undefined) this.scratch.delete(sid);
       if (targetId !== undefined) await this.cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
     }

@@ -1711,7 +1711,9 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   même session s'intercale entre deux étapes.
 - **Onglets** : en mode attach (`cdpUrl`), Grasp ne pose pas l'auto-attach du navigateur (il pauserait les onglets
   de l'utilisateur) : les popups ouverts depuis l'onglet de Grasp ne sont **ni gardés ni adoptés** (mesuré : l'auto-attach
-  d'une session d'onglet, comme `Target.autoAttachRelated`, n'attache pas les popups) ; `tab new` y fonctionne. Un
+  d'une session d'onglet, comme `Target.autoAttachRelated`, n'attache pas les popups) ; `tab new` y fonctionne
+  (attachement explicite, réclamé par Grasp : test « mode attach » de `tabs.test.ts`, qui couvre aussi l'onglet
+  d'état de `state export`). Un
   popup refermé par la page avant la fin de son adoption est dit « refermé avant d'avoir pu être piloté ». La
   bascule de profil et le recyclage relancent le navigateur : seul l'onglet actif est rouvert. Le serveur MCP n'a
   pas d'outil dédié aux onglets (`run` les accepte). Les refs d'un onglet fermé sont oubliées (« inconnue »).

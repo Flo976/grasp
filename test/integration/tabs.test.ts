@@ -5,6 +5,12 @@ import { startTestSite, type TestSite } from '../helpers/testsite.js';
 import { Tabs } from '../../src/bridge/tabs.js';
 import type { PageController } from '../../src/bridge/page.js';
 import { GraspError } from '../../src/core/errors.js';
+import type { ConfigFile } from '../../src/core/config.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { launchChrome } from '../../src/browser/launch.js';
+import { discoverChrome, realProbe } from '../../src/browser/discover.js';
 
 /**
  * Onglets et popups, contre un vrai Chrome : target=_blank, simulateur OAuth (window.open + window.close),
@@ -16,7 +22,7 @@ after(async () => { await site.close(); });
 
 interface Fx { fx: PageFixture; tabs: Tabs; page: PageController; close(): Promise<void> }
 
-async function open(max = 10, config = { allowedDomains: ['127.0.0.1'] }): Promise<Fx> {
+async function open(max = 10, config: ConfigFile = { allowedDomains: ['127.0.0.1'] }): Promise<Fx> {
   const fx = await openPage(config);
   const tabs = new Tabs(fx.cdp, fx.page, max);
   return { fx, tabs, page: tabs.facade(), close: () => fx.close() };
@@ -156,4 +162,38 @@ test('popup refermé par la page hors de toute action : annoncé par la réponse
     assert.equal(await o.tabs.takeNotices(), undefined, 'dite une seule fois');
     assert.match((await o.page.location()).url, /\/onglets$/);
   } finally { await o.close(); }
+});
+
+test('mode attach (cdpUrl) : tab new ouvre un onglet pilotable, l\'onglet d\'état fonctionne, les onglets de l\'utilisateur restent ouverts', async () => {
+  // Navigateur « de l'utilisateur » lancé à part, Grasp s'y branche comme en mode attach (GRASP_TEST_CDP_URL).
+  const dir = mkdtempSync(join(tmpdir(), 'gr-tabs-att-'));
+  const chrome = await launchChrome({ browser: discoverChrome(process.env, realProbe, process.env.HOME ?? '/'), userDataDir: dir, headless: true, network: { proxyServer: null, proxyBypassList: [], hostResolverRules: [] } });
+  const prev = process.env.GRASP_TEST_CDP_URL;
+  let o: Fx | undefined;
+  try {
+    process.env.GRASP_TEST_CDP_URL = chrome.wsUrl;
+    try { o = await open(10, { allowedDomains: ['127.0.0.1'], allowCookies: true }); } finally {
+      if (prev === undefined) delete process.env.GRASP_TEST_CDP_URL; else process.env.GRASP_TEST_CDP_URL = prev;
+    }
+    assert.equal(o.fx.page.attachedMode, true);
+    await o.page.nav(`${site.url}/onglets`);
+    const n = await o.tabs.open(`${site.url}/onglets/aide`);
+    assert.deepEqual([n.id, n.active, n.title], ['t2', true, 'Aide']);
+    assert.match(await o.page.text(), /Aide en ligne/);
+    const v = await o.tabs.open();
+    assert.deepEqual([v.id, v.url], ['t3', 'about:blank']);
+    await assert.rejects(o.page.nav('https://example.com/'), (e: GraspError) => e.status === 403);
+    assert.equal(o.tabs.size, 3);
+    // Onglet d'état (export) : même mécanisme d'attachement explicite.
+    const st = await o.page.exportState([]);
+    assert.equal(st.state.format, 'grasp-state');
+    await o.tabs.close('t3');
+    await o.tabs.select('t1');
+    assert.match(await o.page.text(), /Se connecter avec Fournisseur/);
+  } finally {
+    if (o !== undefined) await o.tabs.closeAll().catch(() => undefined);
+    o?.fx.cdp.close();
+    await chrome.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

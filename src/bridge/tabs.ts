@@ -256,14 +256,17 @@ export class Tabs {
       }
     } else {
       // Mode attach : pas d'auto-attach du navigateur (onglets de l'utilisateur) ; attachement explicite.
+      // La cible est réclamée (hub.claimed) : sans cela, le meneur prendrait son attachement pour celui d'un onglet
+      // de l'utilisateur et le détacherait aussitôt.
       const { targetId } = await this.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
+      sibling.hub.claimed.add(targetId);
       try {
         const { sessionId } = await this.cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
         tab = this.register(await PageController.adopt(sibling, sessionId, targetId), undefined);
       } catch (e) {
         await this.cdp.send('Target.closeTarget', { targetId }).catch(() => undefined);
         throw e;
-      }
+      } finally { sibling.hub.claimed.delete(targetId); }
     }
     const prev = this.activeTab;
     await this.focus(tab);
