@@ -6,6 +6,8 @@ import { launchChrome, assertSupportedVersion, type ChromeProcess } from '../bro
 import { CdpClient } from '../browser/cdp.js';
 import { chromeDownloadPath } from '../browser/windows.js';
 import { PageController } from './page.js';
+import { Tabs } from './tabs.js';
+import { DEFAULT_LIMITS } from '../core/limits.js';
 import { bridgeHandler } from './server.js';
 import type { BridgeInit } from '../control/bridges.js';
 
@@ -18,6 +20,7 @@ let cdp: CdpClient | undefined;
 let server: Server | undefined;
 let socketPath: string | undefined;
 let page: PageController | undefined;
+let tabs: Tabs | undefined;
 let attached = false;
 let stopping = false;
 
@@ -31,8 +34,9 @@ async function shutdown(code: number, why: string): Promise<never> {
   server?.close();
   server?.closeAllConnections();
   // Connexion Playwright d'abord : simple déconnexion de son WebSocket, jamais une fermeture du navigateur.
-  await page?.closeEngine().catch((e: Error) => log(`moteur Playwright : ${e.message}`));
-  if (attached) await page?.closeTab();
+  await (tabs !== undefined ? tabs.closeEngines() : page?.closeEngine())?.catch((e: Error) => log(`moteur Playwright : ${e.message}`));
+  // Mode attach : nos onglets (popups compris) sont fermés, le navigateur de l'utilisateur reste ouvert.
+  if (attached) await (tabs !== undefined ? tabs.closeAll() : page?.closeTab());
   cdp?.close();
   let exit = code;
   if (chrome) {
@@ -131,8 +135,10 @@ async function main(): Promise<void> {
 
   const c = info;
   const pc = page;
-  server = createServer(bridgeHandler(page, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
-    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() })));
+  // Onglets : l'API du bridge agit sur l'onglet actif ; popups et target=_blank deviennent des onglets pilotables.
+  tabs = new Tabs(cdp, page, init.limits?.maxTabs ?? DEFAULT_LIMITS.maxTabs);
+  server = createServer(bridgeHandler(tabs.facade(), () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
+    () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport() }), tabs));
   if (existsSync(socketPath)) rmSync(socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const prev = process.umask(0o077);

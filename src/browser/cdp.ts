@@ -13,7 +13,7 @@ export class CdpError extends Error {
   }
 }
 
-interface Pending { method: string; resolve(v: unknown): void; reject(e: Error): void }
+interface Pending { method: string; sessionId: string | undefined; resolve(v: unknown): void; reject(e: Error): void }
 
 /** Client CDP minimal sur WebSocket, avec sessions « flatten » (un seul socket pour toutes les cibles). */
 export class CdpClient extends EventEmitter {
@@ -45,7 +45,7 @@ export class CdpClient extends EventEmitter {
     const msg: Record<string, unknown> = { id, method, params };
     if (sessionId !== undefined) msg.sessionId = sessionId;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { method, resolve: resolve as (v: unknown) => void, reject });
+      this.pending.set(id, { method, sessionId, resolve: resolve as (v: unknown) => void, reject });
       this.ws.send(JSON.stringify(msg), (err) => {
         if (err) { this.pending.delete(id); reject(new Error(`${method}: ${err.message}`)); }
       });
@@ -83,9 +83,20 @@ export class CdpClient extends EventEmitter {
       return;
     }
     if (typeof msg.method === 'string') {
+      // Cible fermée (onglet, popup, cadre) : Chrome ne répond plus jamais aux commandes en vol sur sa session
+      // (mesuré, Chrome 150) — elles sont rejetées ici plutôt que d'attendre indéfiniment.
+      if (msg.method === 'Target.detachedFromTarget' && typeof msg.params?.sessionId === 'string') this.failSession(msg.params.sessionId);
       const ev: CdpEvent = { method: msg.method, params: msg.params ?? {} };
       if (typeof msg.sessionId === 'string') ev.sessionId = msg.sessionId;
       this.emit('event', ev);
+    }
+  }
+
+  private failSession(sessionId: string): void {
+    for (const [id, p] of this.pending) {
+      if (p.sessionId !== sessionId) continue;
+      this.pending.delete(id);
+      p.reject(new CdpError(p.method, -32001, 'cible fermée (session CDP détachée)'));
     }
   }
 

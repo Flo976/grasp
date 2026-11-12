@@ -73,6 +73,7 @@ const SAMPLE: Record<string, { raw: string; value: unknown }> = {
   diffMax: { raw: '6000', value: 6000 },
   stableTimeoutMs: { raw: '0', value: 0 },
   inputDeliveryMs: { raw: '500', value: 500 },
+  maxTabs: { raw: '3', value: 3 },
   fallbackEngine: { raw: 'playwright', value: 'playwright' },
   proxyServer: { raw: 'socks5://127.0.0.1:1080', value: 'socks5://127.0.0.1:1080' },
   proxyBypassList: { raw: '*.local,<-loopback>', value: ['*.local', '<-loopback>'] },

@@ -1,6 +1,7 @@
 import { GraspError } from '../core/errors.js';
 import { formatEntry, type ConsoleEntry } from '../core/console.js';
 import { buildRequest, checkRunFlags, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
+import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 
 /** Au-delà, un script est refusé : un agent qui en écrit plus se trompe probablement d'outil. */
 export const MAX_RUN_STEPS = 500;
@@ -236,6 +237,12 @@ function render(cmd: string, result: unknown): { output?: string; detail?: strin
       return { output: Array.isArray(c.entries) ? c.entries.map(formatEntry).join('\n') : '', detail: [...w, `seq courant : ${c.seq}`].join(' ; ') };
     }
     case 'wait': return {};
+    case 'tabs': return { output: formatTabs(Array.isArray(j.tabs) ? j.tabs as TabInfo[] : []) };
+    case 'tab': {
+      // tab close : l'onglet fermé et le nouvel onglet actif ; tab <id> | new : la ligne de l'onglet.
+      if (typeof j.closed === 'string') return { detail: `onglet ${j.closed} fermé ; onglet actif : ${formatTab(j.active as TabInfo).trim()}` };
+      return { output: formatTab(j as unknown as TabInfo).trim(), ...(typeof j.detail === 'string' ? { detail: j.detail } : {}) };
+    }
     case 'expect': return typeof j.detail === 'string' ? { detail: j.detail } : {};
     case 'profile': {
       const p = j as { unchanged?: boolean; profile?: string; previous?: string | null };

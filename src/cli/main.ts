@@ -17,6 +17,7 @@ import { ensurePrivateDir, writePrivateFile } from '../core/perms.js';
 import { formatEntry, type ConsoleEntry, type ConsoleResult } from '../core/console.js';
 import { formatReport, type RunResult } from '../control/run.js';
 import { parseArgs, buildRequest, consoleBody, readQuery, renderEval, shotQuery, waitRequest, type Args } from '../core/script.js';
+import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 
 /**
  * CLI : client mince du control plane. Aucune logique métier ici.
@@ -278,6 +279,18 @@ async function expectCmd(c: Client, a: Args): Promise<void> {
   if (j.detail !== undefined) hint(`note: ${j.detail}`);
 }
 
+/** tabs | tab <id> | tab new [url] | tab close [id] : ligne(s) d'onglet sur stdout, notes sur stderr. */
+async function tabsCmd(c: Client, a: Args): Promise<void> {
+  const rq = buildRequest(a);
+  const r = await c.call(rq.method, rq.path, rq.body, rq.timeoutMs);
+  if (a.flags.has('json')) { out(r.text()); return; }
+  const j = r.json() as { tabs?: TabInfo[]; closed?: string; active?: TabInfo; detail?: string } & Partial<TabInfo>;
+  if (j.detail) hint(`note: ${j.detail}`);
+  if (Array.isArray(j.tabs)) { out(formatTabs(j.tabs)); return; }
+  if (typeof j.closed === 'string') { out('OK'); hint(`onglet ${j.closed} fermé ; onglet actif : ${formatTab(j.active!).trim()}`); return; }
+  out(formatTab(j as TabInfo).trim());
+}
+
 async function binary(c: Client, a: Args, path: string, ext: string): Promise<void> {
   const r = await c.call('GET', path);
   const file = a.flags.get('output');
@@ -477,6 +490,7 @@ async function main(argv: string[]): Promise<number> {
       throw new CliError(`usage : ${SESSION_CREATE_USAGE} | list | close [id]`);
     }
     case 'nav': case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': case 'type': await action(); return 0;
+    case 'tabs': case 'tab': await tabsCmd(c, a); return 0;
     case 'snap': out((await c.call('GET', `/snap${readQuery(a)}`)).text()); return 0;
     case 'text': {
       const t = (await c.call('GET', `/text${readQuery(a)}`)).text();
@@ -699,9 +713,16 @@ Actions      nav <url> | click <sél> | fill <sél> <valeur> | select <sél> <va
                           onglet en arrière-plan → ramené au premier plan (note)
              config fallbackEngine playwright : un clic natif non livré ou non actionnable (invisible, désactivé)
                           est rejoué via Playwright, annoncé (« note: rejoué via Playwright : … ») ; défaut none
+Onglets      tabs                    onglets de la session : « * t1 "Titre" url » (* = actif), « (ouvert par t1) »
+             tab <id> | tab new [url] | tab close [id]   bascule, nouvel onglet (gardé, URL pré-contrôlée),
+               fermeture (défaut : l'actif ; jamais le dernier) ; plafond maxTabs (10), popups compris
+             popup ou target=_blank ouvert par une action : « note: nouvel onglet t2 ouvert : <url> » ; --follow
+               (toute action) y bascule ; popup hors allowlist : bloqué par le garde puis fermé, raison dite ;
+               onglet actif fermé par la page (OAuth) : retour sur l'onglet qui l'a ouvert, annoncé ;
+               refs, console, garde, traqueurs et protection SSRF : par onglet (ref d'un autre onglet → 404 qui le dit)
 Scripts      run [fichier|-] [--continue] [--report|--no-report] [--json]   plusieurs commandes en UN aller-retour
                une commande par ligne, même syntaxe que la CLI (nav snap text click fill select check press
-               hover type wait expect eval console screenshot cookies upload profile), commentaires #, guillemets à la shell ;
+               hover type wait expect eval console screenshot cookies upload profile tabs tab), commentaires #, guillemets à la shell ;
                rapport de recette (--report, d'office si le script contient expect) : étapes OK/KO et durées,
                erreurs console et requêtes 4xx/5xx du run, erreurs de formulaire, capture à chaque échec (chemin) ;
                analysé en entier avant d'exécuter ; option inconnue ou globale sur une ligne (--session, --json…)

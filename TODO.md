@@ -116,6 +116,17 @@ Accès distant
 - [ ] `grasp mcp` ne sait pas encore créer une session avec `--proxy` ou `--http-auth` (utiliser `--session`
       sur une session créée par la CLI).
 
+Onglets et popups
+- [x] **Onglets pilotables** (branche `feat/onglets-popups`) : `tabs`, `tab <id>`, `tab new [url]`, `tab close [id]` ;
+      popup / `target=_blank` adopté en pause (garde posé avant son premier document), annoncé par l'action
+      (`nouvel onglet t2 ouvert : …`), `--follow` ; retour sur l'ouvreur quand le popup se ferme (OAuth) ; refs,
+      console, garde, traqueurs, SSRF par onglet ; plafond `maxTabs` (10). Tests : `tabs.test.ts`, `tabs-cli.test.ts`.
+- [ ] Mode attach : popups ni gardés ni adoptés (pas d'auto-attach du navigateur dans le Chrome de l'utilisateur ;
+      l'auto-attach d'onglet n'attache pas les popups). Piste : `Target.setDiscoverTargets` + `openerId`, mais sans
+      pause : le premier document échapperait au garde.
+- [ ] Outils MCP dédiés `tabs` / `tab` (aujourd'hui via `run`) ; recyclage et bascule de profil : seul l'onglet actif
+      est rouvert.
+
 Lecture et recette
 - [ ] `expect` ne prend pas en charge `frame=…` (`wait --sel` le sait).
 - [ ] MCP : notifications de progression pour les `run` longs ; annulation (`notifications/cancelled`

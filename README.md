@@ -91,6 +91,8 @@ limite la lecture à une zone.
 - 🕵️ **`navigator.webdriver` à `false`** grâce à un port DevTools choisi par Grasp
   ([détails](#port-devtools-et-navigatorwebdriver)).
 - 📜 **`grasp run`** : plusieurs commandes en un seul appel.
+- 🗂️ **Onglets et popups pilotables** : `tabs`, `tab <id>|new|close`, popup annoncé par l'action, `--follow`, retour
+  sur l'ouvreur quand un popup OAuth se ferme ; garde, console et refs par onglet ([détails](#onglets-et-popups)).
 - 🤖 **Serveur MCP** : `grasp mcp` sur stdio, branchable dans Claude Code, Claude Desktop ou Cursor en une
   ligne, sans dépendance ajoutée ([détails](#serveur-mcp)).
 - 📝 **Texte en Markdown** : `grasp text --markdown` (titres, listes, liens, tableaux, code), même budget et
@@ -553,6 +555,7 @@ grasp wait [--text T | --sel S | --idle] [--timeout ms] [--json]
 | `pdf [-o f.pdf]` | Binaire sur stdout (si redirigé) ou dans un fichier. |
 | `run [fichier\|-] [--continue] [--report\|--no-report]` | Plusieurs commandes en **un** aller-retour, rapport de recette. Voir [grasp run](#grasp-run--plusieurs-commandes-en-un-appel). |
 | `state export [fichier\|-] [--origin …]`, `state import <fichier\|->` | Cookies + stockage Web en JSON, d'une session à une autre (autre profil, autre machine). Exige `allowCookies`. Voir [État](#état--export-et-import). |
+| `tabs`, `tab <id> \| new [url] \| close [id]` | Onglets de la session : popups et `target=_blank` pilotables, `--follow` sur une action. Voir [Onglets et popups](#onglets-et-popups). |
 | `eval`, `cookies`, `upload` | **Désactivés par défaut** (403). `eval` affiche la valeur en JSON, `undefined` quand l'expression ne renvoie rien (`el.click()`, `form.submit()`) ; `--json` : `{ok, value?, type}`. |
 
 **Sélecteurs**, acceptés partout : ref `e5k2`, CSS `#id` (ou `css:…`), texte `text:Valider`, et
@@ -568,6 +571,7 @@ Un sélecteur ambigu répond 409 avec les refs candidates, sans choix arbitraire
   (`AVERTISSEMENT : 50 ligne(s) console plus ancienne(s) non jointe(s) (200 au plus par action) — grasp console
   --since 812 --limit 1000`) et dans le JSON (`console.since`, `console.omitted`, `console.dropped`) ;
 - `--shot-on-error` : en cas d'échec, capture du viewport, chemin ajouté au message d'erreur ;
+- `--follow` : bascule sur l'onglet (popup, `target=_blank`) que l'action ouvre ([Onglets](#onglets-et-popups)) ;
 - `--engine playwright` (`click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`) : l'action
   passe par le [moteur Playwright de repli](#moteur-playwright-de-repli).
 
@@ -583,6 +587,66 @@ grasp click '#absent' --shot-on-error
 **Sorties** : `OK` sur stdout ; conseils et notes sur stderr ; erreurs
 `ERROR: <cmd>: <raison>` sur stderr avec un code non nul ; `--json` pour la sortie structurée.
 `export S=$(grasp session create)` capture uniquement l'identifiant.
+
+### Onglets et popups
+
+Une session a des **onglets**, un `PageController` chacun : garde de navigation, protection SSRF, traqueurs,
+identifiants HTTP basic, console et refs **propres à chaque onglet**. Toutes les commandes (`snap`, `click`,
+`console`…) visent l'onglet **actif**.
+
+| Commande | Effet |
+|---|---|
+| `tabs` | Liste bornée (`maxTabs` lignes au plus, titre coupé à 80 caractères, URL à 200) : `* t1 "Titre" url` (`*` = actif), `(ouvert par t1)` pour un popup. `--json` : `{tabs: [{id, url, title, active, opener?}]}`. |
+| `tab <id>` | Bascule (l'onglet est ramené au premier plan, sauf en mode attach). |
+| `tab new [url]` | Nouvel onglet, actif. L'URL est **pré-contrôlée avant** de créer l'onglet (refusée → 403, rien n'est créé) ; navigation en échec → onglet refermé. |
+| `tab close [id]` | Ferme l'onglet (défaut : l'actif) ; l'actif devient l'onglet qui l'avait ouvert, sinon le dernier activé. Le dernier onglet n'est jamais fermé (409). |
+
+```
+grasp click text:Aide
+  note: nouvel onglet t2 ouvert : http://127.0.0.1:8080/onglets/aide « Aide » — grasp tab t2 pour y basculer
+grasp click '#oauth' --follow
+  note: nouvel onglet t3 ouvert : http://127.0.0.1:8080/onglets/autoriser « Fournisseur » ; onglet actif : t3 (--follow)
+grasp click text:Autoriser          # le fournisseur répond par postMessage puis appelle window.close()
+  note: l'onglet t3 s'est fermé pendant l'action (fermé par la page ; …) — onglet actif : t1 « Application » http://…
+grasp text | grep 'Connecté : Ada'   # la preuve, c'est la page de l'ouvreur
+grasp click '#dehors'               # window.open vers un hôte hors allowlist
+  note: popup bloqué par Grasp : domaine hors allowlist : [::1] — http://[::1]:8080/ ; onglet t4 fermé
+```
+
+- **Popups** (`window.open`, `target=_blank`, y compris `noopener`) : l'auto-attach du navigateur les attache
+  **en pause** ; Grasp pose le garde `Fetch` (allowlist, schémas, SSRF, traqueurs) sur la cible en pause, demande
+  les domaines `Page`, `DOM`, `Accessibility` et la console, **puis** la relance. Mesuré (Chrome 150) : sur une cible
+  en pause, `Page.enable` reste sans réponse jusqu'à la relance, d'où cet ordre (garde attendu en pause, domaines
+  traités par la cible dans l'ordre, avant son premier document).
+- **Annonce** : une action (`nav`, `click`, `fill`, `select`, `check`, `press`, `hover`, `type`, `upload`, `eval`)
+  qui ouvre un popup attend son onglet (2 s au plus après `Page.windowOpen`) et son premier document (2 s au plus),
+  puis le dit dans sa note. `--follow` (toute action, aussi dans `run`) y bascule après en avoir attendu la
+  stabilité ; sans popup, `--follow` le dit et ne change rien. Une ouverture demandée sans onglet à la clé (bloqueur
+  de popups de Chrome, fenêtre nommée réutilisée) est signalée aussi.
+- **Popup hors allowlist** : son document est refusé par le garde avant de partir ; l'onglet resté vierge est
+  fermé et la raison dite. Le test vérifie qu'aucune requête n'atteint le serveur visé.
+- **Retour (flux OAuth)** : l'onglet actif fermé par la page (`window.close()`) rend la main à l'onglet qui l'avait
+  ouvert. Pendant une action : l'action réussit (la page a réagi en se fermant), Grasp attend la stabilité de
+  l'ouvreur (sa page reçoit le `postMessage`) et le dit. Hors action (popup qui se ferme seul) : la réponse
+  **suivante**, quelle qu'elle soit, porte la note (en-tête `X-Grasp-Notice`, `note:` sur stderr, `[n] note:` dans
+  `run`). Commandes en vol sur une cible fermée : rejetées aussitôt (mesuré : Chrome n'y répond jamais).
+- **Refs par onglet** : chaque onglet garde la mémoire des refs de ses snapshots. Une ref remise par un autre
+  onglet est refusée (404 `ref e1x2 vient de l'onglet t1, pas de l'onglet actif t2 : … grasp tab t1 pour y agir,
+  ou snap ici`), même si le même hash existe dans la page active (même rôle, même nom, même rang).
+- **Plafond** : `maxTabs` (défaut 10, de 1 à 100) onglets par session, popups compris. Au-delà, `tab new` → 409 et
+  le popup est fermé sans rien charger (`popup fermé sans rien charger : plafond de 10 onglets atteint (maxTabs)`).
+  Une cible fermée **en pause** bloque l'ouvreur (mesuré, Chrome 150 : son `window.open`, et le clic qui l'appelle,
+  restent sans retour) : le popup refusé est donc relancé avec toutes ses requêtes refusées par `Fetch`, puis fermé.
+- Coût mesuré sur le site de test (headless, Linux) : un `click` sur un lien `target=_blank` rend la main avec la
+  note environ 140 ms après la demande d'ouverture (`Page.windowOpen`) ; le flux OAuth complet (`click --follow`, `click Autoriser`, lecture) tient
+  en 2 s dans `test/integration/tabs.test.ts`.
+
+Tests : `test/integration/tabs.test.ts` (vrai Chrome : `target=_blank`, simulateur OAuth `window.open` +
+`postMessage` + `window.close()`, popup hors allowlist, refs, plafond, `tab new`/`tab close`, fermeture hors
+action) et `tabs-cli.test.ts` (CLI et `grasp run` de bout en bout). Mutation vérifiée : sans le garde posé **en
+pause**, le popup hors allowlist charge `[::1]` et le test passe au rouge. Le refus par `Fetch` du popup au-delà du
+plafond n'a pas de mutation rouge (la fermeture suit la relance de trop près pour qu'une requête parte sur le site
+de test) : c'est une seconde ligne.
 
 ### Sortie Markdown
 
@@ -1266,6 +1330,7 @@ POST /type   {target, text, delay?, …}        (toute action : engine? = native
 POST /eval {expression}   GET /cookies   POST /upload {target, files[], engine?}
 GET  /state/export?origin=a,b → {state, report}    POST /state/import {state} → {cookies, origins, localStorageKeys, sessionStorage, skipped[]}
 POST /expect {kind, …, timeout?, shotOnError?}  → {ok, waited} ; 417 si l'assertion échoue (attendu … ; constaté : …)
+GET  /tabs → {tabs}   POST /tabs/select {id}   POST /tabs/new {url?}   POST /tabs/close {id?}   (toute action : follow?)
 POST /run {script, continue?, report?}   → {ok, total, executed, steps[], report?} ; 400 si le script est invalide (rien d'exécuté)
 ```
 
@@ -1596,6 +1661,7 @@ sans la présenter comme appliquée.
 | **Lecture et actions (transmises au bridge, hors politique)** | | |
 | `snapMax`, `textMax`, `diffMax` | 12000 o, 4000 car., 4000 car. | Budgets de lecture ; `--max` les surcharge à chaque appel |
 | `stableTimeoutMs` | 5000 | [Attente de stabilité](#attente-de-stabilité) (0 = aucune) |
+| `maxTabs` | 10 | Onglets par session, popups compris (1 à 100) ; au-delà : `tab new` → 409, popup fermé sans rien charger ([Onglets](#onglets-et-popups)) |
 | `inputDeliveryMs` | 300 | Délai de [livraison vérifiée](#livraison-vérifiée-des-entrées) d'une entrée (50 à 10 000) |
 | `fallbackEngine` | `none` | `playwright` : rejeu des clics par le [moteur de repli](#moteur-playwright-de-repli) |
 
@@ -1643,7 +1709,12 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   « clic synthétique » le signale toujours.
 - `grasp run` exécute ses étapes en séquence sur la session : une autre commande lancée en parallèle sur la
   même session s'intercale entre deux étapes.
-- Une session = un onglet. Les popups sont gardés par l'allowlist mais ne sont pas pilotables.
+- **Onglets** : en mode attach (`cdpUrl`), Grasp ne pose pas l'auto-attach du navigateur (il pauserait les onglets
+  de l'utilisateur) : les popups ouverts depuis l'onglet de Grasp ne sont **ni gardés ni adoptés** (mesuré : l'auto-attach
+  d'une session d'onglet, comme `Target.autoAttachRelated`, n'attache pas les popups) ; `tab new` y fonctionne. Un
+  popup refermé par la page avant la fin de son adoption est dit « refermé avant d'avoir pu être piloté ». La
+  bascule de profil et le recyclage relancent le navigateur : seul l'onglet actif est rouvert. Le serveur MCP n'a
+  pas d'outil dédié aux onglets (`run` les accepte). Les refs d'un onglet fermé sont oubliées (« inconnue »).
 - `state export|import` : cookies et stockage Web seulement — ni IndexedDB, ni Cache Storage, ni service
   workers, ni identifiants enregistrés ; une connexion liée à l'appareil (empreinte, jeton lié au TLS, Google)
   peut ne pas survivre au transfert. Le localStorage n'est lu que pour les origines **connues** de la session
@@ -1660,8 +1731,8 @@ chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pa
   (rien ne reste pour appeler `Browser.close` ou PowerShell) : il tourne jusqu'au prochain
   `grasp serve` (ou redémarrage systemd), qui le retrouve via `instances.json` et le tue.
 - **Recyclage** (`browserMaxRssMb`, `browserMaxAgeMin`) : la page est rouverte par un nouveau GET (état JS,
-  `sessionStorage`, résultat de POST, refs et tampon console perdus) ; les autres onglets ou popups n'existent pas
-  (une session = un onglet). La vérification n'a lieu qu'à l'arrivée d'une commande : une session inactive garde
+  `sessionStorage`, résultat de POST, refs et tampon console perdus) ; seule la page de l'onglet **actif** est
+  rouverte, les autres onglets et popups sont perdus. La vérification n'a lieu qu'à l'arrivée d'une commande : une session inactive garde
   son navigateur, quel que soit son âge ou sa mémoire. Une session constamment occupée par des commandes qui se
   chevauchent n'est jamais au repos, donc jamais recyclée. chrome.exe : mesure vieille de 30 s au plus, en octets
   privés (pas résidents). La PSS répartit les pages partagées entre tous leurs utilisateurs : celle d'une session

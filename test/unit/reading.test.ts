@@ -26,7 +26,7 @@ function flatten(root: AXNode): AXNode[] {
 // ---------- Limites de taille ----------
 
 test('limites par défaut : text et diff 4000 caractères, snap ramené à 12000 octets, attente plafonnée à 5 s', () => {
-  assert.deepEqual(DEFAULT_LIMITS, { snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300 });
+  assert.deepEqual(DEFAULT_LIMITS, { snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300, maxTabs: 10 });
 });
 
 test('truncateText : intact sous la limite, sinon coupe + dernière ligne explicite avec le reste exact', () => {

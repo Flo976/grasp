@@ -127,7 +127,7 @@ export function checkListen(listen: string | undefined, transport: 'unix' | 'tcp
 
 export interface ControlPlane { endpoint: Endpoint; close(): Promise<void> }
 
-const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect']);
+const SESSION_ROUTES = new Set(['/navigate', '/snap', '/text', '/click', '/fill', '/select', '/check', '/press', '/hover', '/type', '/screenshot', '/pdf', '/eval', '/cookies', '/upload', '/location', '/console', '/wait', '/state/export', '/state/import', '/expect', '/tabs', '/tabs/select', '/tabs/new', '/tabs/close']);
 const sha = (s: string) => createHash('sha256').update(s).digest();
 
 /** Lecture unique de la config : c'est ce chemin que lisent le garde, le rapport et `doctor`. */
@@ -641,6 +641,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (e instanceof GraspError) throw e;
       throw new GraspError(502, `bridge de la session ${s.id} injoignable : ${(e as Error).message}`);
     } finally { leave(s); }
+    // Note du bridge (onglet fermé par la page depuis la commande précédente) : jointe à l'étape, comme le recyclage.
+    const bn = r.headers['x-grasp-notice'];
+    if (typeof bn === 'string') onNotice(decodeURIComponent(bn));
     const isJson = String(r.headers['content-type'] ?? '').startsWith('application/json');
     if (r.status >= 400) {
       let msg = r.text();
@@ -667,6 +670,9 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     // En-têtes x-grasp-* du bridge (dimensions d'une capture) transmis tels quels.
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(r.headers)) if (k.startsWith('x-grasp-') && typeof v === 'string') extra[k] = v;
+    // Notes du control plane (recyclage) et du bridge (onglets) : les deux, jamais l'une à la place de l'autre.
+    const own = res.getHeader('x-grasp-notice');
+    if (typeof own === 'string' && extra['x-grasp-notice'] !== undefined) extra['x-grasp-notice'] = `${own}${encodeURIComponent(' ; ')}${extra['x-grasp-notice']}`;
     res.writeHead(r.status, { ...extra, 'content-type': String(r.headers['content-type'] ?? 'application/octet-stream'), 'content-length': r.body.length });
     res.end(r.body);
   }
@@ -752,7 +758,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         let r: RunResult;
         let notice: string | undefined;
         try {
-          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = n; }), optBool(body, 'continue') === true, ac.signal, {
+          r = await runScript(steps, (rq) => execStep(s, rq, (n) => { notice = notice !== undefined ? `${notice} ; ${n}` : n; }), optBool(body, 'continue') === true, ac.signal, {
             report: optBool(body, 'report'),
             takeNotice: () => { const n = notice; notice = undefined; return n; },
           });

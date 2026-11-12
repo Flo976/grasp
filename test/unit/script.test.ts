@@ -80,3 +80,19 @@ test('text --markdown : ?markdown=1 (CLI et run) ; refusé ailleurs ou avec une 
   assert.equal(compileScript('text --markdown --scope main').length, 1);
   assert.throws(() => compileScript('snap --markdown'), /ligne 1 : option --markdown inconnue pour snap/);
 });
+
+
+test('onglets : tabs, tab <id> | new [url] | close [id], --follow transmis ; formes invalides refusées', async () => {
+  const { formatTab } = await import('../../src/core/tabs.js');
+  const rq = (l: string) => buildRequest(parseArgs(splitLine(l)));
+  assert.deepEqual(rq('tabs'), { cmd: 'tabs', method: 'GET', path: '/tabs' });
+  assert.deepEqual(rq('tab t2'), { cmd: 'tab', method: 'POST', path: '/tabs/select', body: { id: 't2' } });
+  assert.deepEqual(rq('tab new'), { cmd: 'tab', method: 'POST', path: '/tabs/new', body: {}, timeoutMs: 120_000 });
+  assert.deepEqual(rq('tab new http://127.0.0.1/'), { cmd: 'tab', method: 'POST', path: '/tabs/new', body: { url: 'http://127.0.0.1/' }, timeoutMs: 120_000 });
+  assert.deepEqual(rq('tab close'), { cmd: 'tab', method: 'POST', path: '/tabs/close', body: {} });
+  assert.deepEqual(rq('tab close t3'), { cmd: 'tab', method: 'POST', path: '/tabs/close', body: { id: 't3' } });
+  assert.equal(rq('click e1 --follow').body?.follow, true);
+  assert.equal(rq('click e1').body?.follow, undefined);
+  for (const bad of ['tab', 'tab 2', 'tab t0', 'tab close x', 'tab t1 t2', 'tab new a b']) assert.throws(() => rq(bad), /usage|identifiant/, bad);
+  assert.equal(formatTab({ id: 't2', url: 'http://x/', title: 'T'.repeat(100), active: false, opener: 't1' }), `  t2 "${'T'.repeat(79)}…" http://x/ (ouvert par t1)`);
+});

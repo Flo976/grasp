@@ -17,9 +17,14 @@ export interface Limits {
    * confiance reçu par la page dans ce délai, Grasp passe à l'étage de reprise suivant.
    */
   inputDeliveryMs: number;
+  /**
+   * Onglets ouverts au plus dans une session (popups, target=_blank, tab new compris) : au-delà, `tab new` est
+   * refusé (409) et un popup est fermé avant d'avoir rien exécuté, avec une note.
+   */
+  maxTabs: number;
 }
 
-export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({ snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300 });
+export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({ snapMax: 12_000, textMax: 4000, diffMax: 4000, stableTimeoutMs: 5000, inputDeliveryMs: 300, maxTabs: 10 });
 
 /** Fenêtre de calme exigée : aucune mutation du DOM ni activité réseau pendant ce délai = page stable. */
 export const STABLE_QUIET_MS = 400;

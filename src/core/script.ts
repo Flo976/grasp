@@ -5,6 +5,7 @@
  */
 
 import { EXPECT_DEFAULT_MS, EXPECT_KINDS, expectSpecOf, isExpectKind, type ExpectKind } from './expect.js';
+import { TAB_ID_RE } from './tabs.js';
 
 export class ScriptError extends Error {}
 
@@ -114,6 +115,8 @@ function actionBody(a: Args, extra: Record<string, unknown>): Record<string, unk
     // Transmis tel quel : le bridge valide (« --max abc » est une erreur 400, pas une limite ignorée).
     ...(max !== undefined ? { max } : {}), ...(scope !== undefined ? { scope } : {}),
     ...(a.flags.has('console') ? { console: true } : {}), ...(a.flags.has('shot-on-error') ? { shotOnError: true } : {}),
+    // --follow : bascule sur l'onglet (popup, target=_blank) que l'action ouvre.
+    ...(a.flags.has('follow') ? { follow: true } : {}),
     ...engineOf(a),
   };
 }
@@ -193,10 +196,10 @@ export function consoleBody(a: Args): Record<string, unknown> {
 }
 
 /** Commandes exécutables dans `grasp run`. */
-export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile'] as const;
+export const RUN_COMMANDS = ['nav', 'snap', 'text', 'click', 'fill', 'select', 'check', 'press', 'hover', 'type', 'wait', 'expect', 'eval', 'console', 'screenshot', 'cookies', 'upload', 'profile', 'tabs', 'tab'] as const;
 const KNOWN_ELSEWHERE = new Set(['serve', 'stop', 'status', 'session', 'profiles', 'pdf', 'security', 'config', 'doctor', 'daemon', 'help', 'run']);
 
-const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine'];
+const ACTION_FLAGS = ['snap-diff', 'max', 'scope', 'console', 'shot-on-error', 'engine', 'follow'];
 /** Options acceptées sur une ligne de `grasp run`, par commande (celles que buildRequest transmet). */
 const RUN_FLAGS: Record<string, readonly string[]> = {
   nav: ACTION_FLAGS, click: ACTION_FLAGS, fill: ACTION_FLAGS, select: ACTION_FLAGS, press: ACTION_FLAGS, hover: ACTION_FLAGS,
@@ -206,7 +209,7 @@ const RUN_FLAGS: Record<string, readonly string[]> = {
   console: ['level', 'since', 'limit', 'clear'],
   // -o : refusé plus loin avec un message dédié (le fichier serait écrit par le serveur).
   screenshot: ['full', 'refs', 'el', 'quality', 'max-width', 'format', 'output'],
-  upload: ['engine'], eval: [], cookies: [], profile: [],
+  upload: ['engine'], eval: [], cookies: [], profile: [], tabs: [], tab: [],
   expect: ['regex', 'timeout', 'scope', 'since', 'ignore', 'shot-on-error'],
 };
 /** Options du run lui-même (ou du terminal) : sur une ligne, elles changeraient le sens de la ligne sans effet réel. */
@@ -267,10 +270,29 @@ export function buildRequest(a: Args): StepRequest {
     case 'upload': { const [target, ...files] = need(a, 2, 'upload <sélecteur> <fichier>…'); return { cmd, method: 'POST', path: '/upload', body: { target, files, ...engineOf(a) } }; }
     case 'profile': { const [name] = need(a, 1, 'profile <nom>'); return { cmd, method: 'POST', path: 'profile', body: { name } }; }
     case 'expect': return expectRequest(a);
+    case 'tabs': return { cmd, method: 'GET', path: '/tabs' };
+    case 'tab': return tabRequest(a);
     default:
       if (KNOWN_ELSEWHERE.has(cmd)) throw new ScriptError(`« ${cmd} » n'est pas disponible dans run (commandes : ${RUN_COMMANDS.join(', ')})`);
       throw new ScriptError(`commande inconnue « ${cmd} » (commandes de run : ${RUN_COMMANDS.join(', ')})`);
   }
+}
+
+export const TAB_USAGE = 'tab <id> | tab new [url] | tab close [id]   (grasp tabs : liste)';
+
+/** `tab <id>` (bascule), `tab new [url]`, `tab close [id]`. */
+function tabRequest(a: Args): StepRequest {
+  const [sub, arg, ...rest] = a.pos;
+  const usage = () => new ScriptError(`usage : grasp ${TAB_USAGE}`);
+  if (sub === undefined || rest.length > 0) throw usage();
+  if (sub === 'new') return { cmd: 'tab', method: 'POST', path: '/tabs/new', body: arg !== undefined ? { url: arg } : {}, timeoutMs: 120_000 };
+  if (sub === 'close') {
+    if (arg !== undefined && !TAB_ID_RE.test(arg)) throw new ScriptError(`tab close : identifiant d'onglet t1, t2… attendu, reçu « ${arg} »`);
+    return { cmd: 'tab', method: 'POST', path: '/tabs/close', body: arg !== undefined ? { id: arg } : {} };
+  }
+  if (arg !== undefined) throw usage();
+  if (!TAB_ID_RE.test(sub)) throw new ScriptError(`tab : identifiant d'onglet t1, t2… (grasp tabs), new ou close attendu, reçu « ${sub} »`);
+  return { cmd: 'tab', method: 'POST', path: '/tabs/select', body: { id: sub } };
 }
 
 /** Options de chaque assertion (toutes acceptent --shot-on-error). */
