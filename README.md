@@ -1060,7 +1060,8 @@ Mise en page mobile
   fenêtre existante, sans la redimensionner. Non testé sur chrome.exe (`GRASP_TEST_WINDOWS=1` non lancé pour
   cette fonction).
 - **Script** : `viewport` est une commande de [`grasp run`](#grasp-run--plusieurs-commandes-en-un-appel) (mêmes
-  options ; une option inconnue refuse le script) ; le serveur MCP l'atteint par son outil `run`.
+  options ; une option inconnue refuse le script) ; le serveur MCP l'atteint par son outil `run`, dont la
+  description annonce la commande et sa syntaxe courte (liste tirée des commandes de `run`, testée).
 
 ## Console du navigateur
 
