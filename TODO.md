@@ -104,6 +104,7 @@ Chrome) et l'imitation TLS (Chrome a déjà la vraie empreinte).
       `--snap-diff`), y compris hors action (à l'action suivante) et en cas d'échec. Pas d'option de session
       (choix : une réponse positive se décide par action). Relecture : un texte ne confirme plus un `confirm`
       (seul `accept` le fait ; `cancel`, `Dismiss`… → refus), valeur en `--…` refusée (400).
+      Dialogue ouvert pendant le `--snap-diff` d'après ou `post` : rapporté par l'action (relevé en dernier).
       Reste : dialogues d'une iframe hors processus non testés.
 
 ## Suites (limites notées par chaque branche, regroupées à l'intégration)

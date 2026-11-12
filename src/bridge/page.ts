@@ -1450,7 +1450,9 @@ export class PageController {
       else if (stab.ongoing === true) out.detail = ONGOING_NOTE;
       else if (stab.background === true) out.detail = BACKGROUND_NOTE;
       if (before) out.diff = await this.diffAfter(before, opts, doc0);
-      // Dialogues (beforeunload de la page quittée, alert du nouveau document…) : note, et en tête du diff.
+      // Dialogues (beforeunload de la page quittée, alert du nouveau document…) : note, et en tête du diff ;
+      // relevés après le diff, politique close au même moment (comme act).
+      this.endDialogs();
       const dlg = this.takeDialogs(out);
       if (dlg.length > 0) {
         out.detail = [...dlg, ...(out.detail !== undefined ? [out.detail] : [])].join(' ; ');
@@ -2296,18 +2298,24 @@ export class PageController {
       if (this.trackersBlocked > trk0) res.trackersBlocked = this.trackersBlocked - trk0;
       // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
       const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
-      const dlg = this.takeDialogs(res);
-      const notes = [detail, ...actionNotes, replaced, ...dlg, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const notes = [detail, ...actionNotes, replaced, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);
         // « Aucun changement » après une entrée qui n'a pas atteint la page : ce n'est pas un OK ordinaire.
         if (this.undelivered && res.diff === NO_CHANGE) res.diff = "(aucun changement — l'entrée native n'a pas atteint la page : action rejouée en synthétique, sans effet sur l'arbre d'accessibilité)";
-        if (dlg.length > 0) res.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${res.diff}`;
       }
       if (post !== undefined) {
         const extra = await post(res).catch(() => undefined);
         if (extra !== undefined && extra !== '') res.detail = res.detail !== undefined ? `${res.detail} ; ${extra}` : extra;
+      }
+      // Dialogues relevés en DERNIER (après le diff et `post`, pendant lesquels la politique valait encore), et la
+      // politique close au même moment : un dialogue plus tardif reçoit le défaut et va, marqué, à l'action suivante.
+      this.endDialogs();
+      const dlg = this.takeDialogs(res);
+      if (dlg.length > 0) {
+        res.detail = [...dlg, ...(res.detail !== undefined ? [res.detail] : [])].join(' ; ');
+        if (res.diff !== undefined) res.diff = `${dlg.map((l) => `! ${l}`).join('\n')}\n${res.diff}`;
       }
       if (opts.console === true) res.console = this.consoleSince(seq);
       return res;

@@ -125,6 +125,25 @@ test('--dialog "texte" sur un confirm (faute de frappe, intention de refus mal d
   assert.match(await liste(), /Article A/);
 });
 
+test('dialogue ouvert pendant le --snap-diff d\'après (fin d\'action) : rapporté par CETTE action, avec la réponse qu\'elle a donnée', async () => {
+  await fx.page.navigate(`${site.url}/dialogues`);
+  // Fenêtre déterministe : le snapshot d'après est précédé d'un clic dans la page qui ouvre un confirm.
+  type Priv = { diffAfter: (...a: unknown[]) => Promise<string>; s: (m: string, p: object) => Promise<unknown> };
+  const priv = fx.page as unknown as Priv;
+  const orig = priv.diffAfter;
+  priv.diffAfter = async function (this: Priv, ...a: unknown[]) {
+    await this.s('Runtime.evaluate', { expression: "document.getElementById('sup-a').click()" });
+    return orig.apply(this, a);
+  };
+  let r;
+  try { r = await fx.page.click('#info', { dialog: 'accept', snapDiff: true }); } finally { delete (priv as Partial<Priv>).diffAfter; }
+  assert.doesNotMatch(await liste(), /Article A/, 'confirm accepté (politique de l\'action)');
+  assert.deepEqual(r.dialogs?.map((d) => `${d.type}:${d.accepted}`), ['alert:true', 'confirm:true'], JSON.stringify(r.dialogs));
+  assert.match(r.diff ?? '', /^! dialogue confirm « Supprimer « Article A » \? » → accepté$/m, r.diff);
+  const n = await fx.page.click('#info');
+  assert.deepEqual(n.dialogs?.map((d) => d.type), ['alert'], 'rien de reporté à l\'action suivante');
+});
+
 test('--dialog invalide : 400, l\'action n\'a pas lieu', async () => {
   await fx.page.navigate(`${site.url}/dialogues`);
   await assert.rejects(fx.page.click('#sup-a', { dialog: 'x'.repeat(5000) }), (e: GraspError) => e.status === 400 && /4096 au plus/.test(e.message));

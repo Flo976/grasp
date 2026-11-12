@@ -668,6 +668,9 @@ grasp click '#sup-a' --dialog accept --snap-diff
   comptés). `beforeunload` : Chrome ne transmet pas le message de la page (`dialogue beforeunload → …`).
 - Un dialogue ouvert **hors** action (minuterie après la fin d'une action, pendant `wait` ou une lecture)
   reçoit le défaut sûr et est rapporté à l'action suivante, marqué `[ouvert hors action, avant celle-ci]`.
+  L'action couvre tout jusqu'à son rapport, `--snap-diff` d'après et vérifications de fin (formulaire invalide)
+  compris : un dialogue ouvert pendant ces étapes reçoit la réponse de l'action et est rapporté par elle ; les
+  dialogues sont relevés en dernier, au moment où la politique de l'action se ferme.
 - Action en échec : les dialogues vus sont ajoutés au message d'erreur. `nav --dialog dismiss` sur une page
   gardée par `beforeunload` : `ERROR: … net::ERR_ABORTED ; dialogue beforeunload → refusé (la page reste
   affichée, navigation annulée)`, sans attendre le `load` (≈ 6 ms mesurés, page de test locale).
@@ -679,7 +682,8 @@ grasp click '#sup-a' --dialog accept --snap-diff
 Testé contre le site local (`test/integration/dialogues.test.ts`, `dialogues-cli.test.ts`, `test/unit/dialog.test.ts`) :
 `confirm` accepté → article supprimé (vérifié par `text`), défaut → refus et article conservé, `prompt` avec
 texte, valeur proposée, `text:accept` et vide, `confirm` avec `cancel`/`Dismiss`/`no` → refusé et article
-conservé, `--dialog --snap-diff` → 400 (API et CLI), `alert`, `beforeunload` accepté par `nav` et refusé par `click`
+conservé, `--dialog --snap-diff` → 400 (API et CLI), dialogue ouvert pendant le `--snap-diff` d'après (rapporté
+par l'action, pas par la suivante), `alert`, `beforeunload` accepté par `nav` et refusé par `click`
 et par `nav`, dialogue de minuterie hors action ; CLI, `run` et MCP de bout en bout. Le défaut sûr a été
 vérifié par mutation (défaut « tout accepter » réinjecté → tests unitaires et d'intégration au rouge).
 
