@@ -165,6 +165,19 @@ grasp text                                 # vérifier le résultat dans la page
 grasp stop
 ```
 
+## Lancer en local
+
+Prérequis : Node ≥ 22 et un Chrome ou Chromium (sinon `GRASP_CHROME=/chemin/vers/chrome`). Aucun secret requis.
+
+```bash
+npm ci && npm run build
+node dist/src/cli/main.js serve --tcp --listen 0.0.0.0 --port 8080   # démon : GET /health répond {"ok":true,…}
+node dist/src/cli/main.js --version                                  # contrôle de fumée de la CLI
+```
+
+Le reste de l'API exige le jeton du démon. Variable facultative : `GRASP_CHROME`.
+Aperçu sooa : `.sooa/project.yml` (image `node:22-bookworm` avec Chromium, port fourni par sooa, santé `/health`).
+
 ## Scénario de bout en bout (reproductible)
 
 [`examples/e2e.sh`](examples/e2e.sh) démarre le site de test local, un serveur Grasp isolé

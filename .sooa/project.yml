@@ -1,0 +1,17 @@
+version: 1
+name: grasp
+framework: other
+kind: service
+repo: github:flo976/grasp
+default_branch: master
+dev:
+  command: "env GRASP_CHROME=/usr/bin/chromium node dist/src/cli/main.js serve --tcp --listen 0.0.0.0 --port $PORT"
+  port_env: PORT
+  healthcheck: /health
+  install: "npx tsc -p ."
+  startup_timeout: 180
+preview:
+  runtime:
+    image: node:22-bookworm
+    install: "apt-get update && apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*"
+    files: [package.json]
