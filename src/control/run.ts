@@ -1,4 +1,5 @@
 import { GraspError } from '../core/errors.js';
+import type { MaskedValue } from '../core/recipe.js';
 import { formatEntries, formatEntry, type ConsoleEntry } from '../core/console.js';
 import { wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { buildRequest, checkRunFlags, MAX_RUN_SHOT_FILES, parseArgs, parseScript, renderEval, ScriptError, type ScriptLine, type StepRequest } from '../core/script.js';
@@ -89,7 +90,7 @@ export function compileScript(script: string, opts: { files?: boolean } = {}): A
 }
 
 /** Contenu d'un fichier de `state import`, tel que la CLI `grasp run` l'a lu (chemin absolu pour l'historique). */
-export interface RunImport { path: string; state: unknown }
+export interface RunImport { path: string; state: unknown; masked?: MaskedValue[] }
 
 /**
  * `state import <fichier>` : le contenu lu par la CLI (`imports`, clé = fichier tel qu'écrit dans le script) devient
@@ -104,7 +105,7 @@ export function attachImports(steps: Array<{ src: ScriptLine; rq: StepRequest }>
     const f = s.rq.loadFrom!;
     const imp = Object.hasOwn(given, f) ? given[f] as Partial<RunImport> | null : undefined;
     if (imp === undefined || imp === null || typeof imp !== 'object' || imp.state === undefined) throw new GraspError(400, `ligne ${s.src.line} : state import ${f} : contenu du fichier non transmis (lu par la CLI grasp run, champ imports)`);
-    s.rq.body = { state: imp.state, ...(typeof imp.path === 'string' && imp.path !== '' ? { file: imp.path } : {}) };
+    s.rq.body = { state: imp.state, ...(typeof imp.path === 'string' && imp.path !== '' ? { file: imp.path } : {}), ...(imp.masked !== undefined ? { masked: imp.masked } : {}) };
   }
   const cited = new Set(loads.map((s) => s.rq.loadFrom!));
   for (const k of Object.keys(given)) if (!cited.has(k)) throw new GraspError(400, `imports : « ${k} » n'est cité par aucune ligne state import du script`);

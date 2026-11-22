@@ -8,6 +8,7 @@
 
 import { formatEntry, type ConsoleEntry } from './console.js';
 import { stripBoundaries } from './boundaries.js';
+import { stripAllowlistAdvice } from './policy.js';
 
 // ---------- Relevé fourni par le bridge (src/bridge/inventory.ts) ----------
 
@@ -127,7 +128,8 @@ export async function visitPage(call: Call, url: string, want: VisitWants = {}):
     if (typeof n.detail === 'string' && n.detail !== '') f.note = unwrap(n.detail);
   } catch (e) {
     const ce = errOf(e);
-    f.error = unwrap(ce.message);
+    // Conseil d'allowlist retiré : le rapport porte une ligne par page (et diff compare les messages).
+    f.error = stripAllowlistAdvice(unwrap(ce.message));
     if (ce.status === 403) f.blocked = true;
   }
   if (since === undefined) f.console = { unavailable: off };

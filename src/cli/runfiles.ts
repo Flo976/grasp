@@ -4,6 +4,7 @@ import { writePrivateFile } from '../core/perms.js';
 import { compileScript, type RunImport, type RunResult } from '../control/run.js';
 import { RUN_MAX_BYTES, STATE_MAX_BYTES } from '../core/state.js';
 import { homedir } from 'node:os';
+import { resolveStateInput, type ResolvedState } from '../core/recipe.js';
 
 /**
  * `screenshot -o <fichier>` dans `grasp run` : le serveur renvoie l'image (base64) dans le résultat de l'étape,
@@ -123,7 +124,7 @@ export function runFilePath(f: string, cwd = process.cwd(), home = homedir()): s
  * gros : refus, aucune commande exécutée. Script invalide : rien à lire ici, le serveur rend l'erreur d'analyse.
  * `max` : total des fichiers (paramètre pour les tests).
  */
-export function readRunImports(script: string, cwd = process.cwd(), max = STATE_MAX_BYTES, home = homedir()): Record<string, RunImport> {
+export function readRunImports(script: string, cwd = process.cwd(), max = STATE_MAX_BYTES, home = homedir(), notes?: string[]): Record<string, RunImport> {
   let steps: ReturnType<typeof compileScript>;
   try { steps = compileScript(script, { files: true }); } catch { return {}; }
   const out: Record<string, RunImport> = {};
@@ -142,10 +143,14 @@ export function readRunImports(script: string, cwd = process.cwd(), max = STATE_
     } catch (e) { throw new Error(`${where} : lecture impossible : ${(e as Error).message}`); }
     total += Buffer.byteLength(raw);
     if (total > max) throw new Error(`${where} : fichiers d'état trop gros pour un run (${max} octets au plus en tout)`);
-    let state: unknown;
+    let parsed: unknown;
     // Message sans extrait du fichier : il peut contenir des jetons de session.
-    try { state = JSON.parse(raw); } catch { throw new Error(`${where} : JSON invalide (fichier d'état grasp-state ou storageState Playwright attendu)`); }
-    out[f] = { path, state };
+    try { parsed = JSON.parse(raw); } catch { throw new Error(`${where} : JSON invalide (fichier d'état grasp-state, storageState Playwright ou recette de session attendu)`); }
+    // Recette de session : références @file:/@env: résolues ici (relatives au répertoire de la recette), valeurs masquées.
+    let r: ResolvedState;
+    try { r = resolveStateInput(parsed, { baseDir: dirname(path), home }); } catch (e) { throw new Error(`${where} : ${(e as Error).message}`); }
+    for (const n of r.notes) notes?.push(`${where} : ${n}`);
+    out[f] = { path, state: r.state, ...(r.masked.length > 0 ? { masked: r.masked } : {}) };
   }
   return out;
 }
@@ -190,3 +195,19 @@ function writeFailShots(r: RunResult, outDir: string, written: Set<string>): voi
 }
 
 const realpathOr = (p: string): string => { try { return realpathSync(p); } catch { return p; } };
+
+/**
+ * Fichier de `grasp state import <fichier|->` et de `grasp session create --state <fichier>` : état exporté
+ * (grasp-state, storageState Playwright) ou recette de session, dont les références @file:/@env: sont résolues ici
+ * (chemins relatifs au répertoire de la recette ; au répertoire courant pour stdin). Aucun message ne cite le contenu.
+ */
+export function readStateInput(file: string, cwd = process.cwd(), home = homedir()): ResolvedState & { path?: string } {
+  const stdin = file === '-';
+  const path = stdin ? undefined : runFilePath(file, cwd, home);
+  let raw: string;
+  try { raw = readFileSync(stdin ? 0 : path!, 'utf8'); } catch (e) { throw new Error(`lecture de ${stdin ? 'stdin' : file} : ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error(`${stdin ? 'stdin' : file} : JSON invalide (fichier d'état grasp-state, storageState Playwright ou recette de session attendu)`); }
+  const r = resolveStateInput(parsed, { baseDir: stdin ? cwd : dirname(path!), home });
+  return { ...r, ...(path !== undefined ? { path } : {}) };
+}

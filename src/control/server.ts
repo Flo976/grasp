@@ -34,7 +34,7 @@ function minutes(m: number): string {
 import { RUN_MAX_BYTES, STATE_MAX_BYTES } from '../core/state.js';
 import { describeViewport, viewportSpecOf, type ViewportSpec } from '../core/viewport.js';
 import { SecretStore } from '../core/secrets.js';
-import { redactResponse, withSecret } from './redact.js';
+import { redactResponse, registerMasked, withSecret } from './redact.js';
 import { asRunScript, formatHistory, HISTORY_DEFAULT_LIMIT, HISTORY_MAX, HistoryLog } from '../core/history.js';
 import { neutralize, neutralizeDeep, newNonce, wrapContent } from '../core/boundaries.js';
 import { beginRecord, errorOf, finalState, stripTarget, type BridgeCall, type Recording } from './history.js';
@@ -78,6 +78,8 @@ export interface SessionOptions {
   httpAuth: HttpCredential[];
   /** Viewport émulé : celui de session create --viewport, puis du dernier `grasp viewport` réussi (réappliqué au relancement). */
   viewport?: ViewportSpec;
+  /** Moteur de la session (session create --browser webkit) ; absent : Chrome. */
+  engine?: 'webkit';
 }
 
 /**
@@ -107,6 +109,15 @@ export function sessionOptionsOf(body: Record<string, unknown>, policy: Readonly
   }
   // Viewport (session create --viewport) : validé ici, avant tout lancement ; applicable aussi en mode attach (notre onglet seulement).
   if (body.viewport !== undefined && body.viewport !== null) out.viewport = viewportSpecOf(body.viewport);
+  // Moteur (session create --browser webkit) : ce que le mode minimal ne sait pas appliquer est refusé ici, jamais ignoré.
+  const b = body.browser;
+  if (b !== undefined && b !== null && b !== 'chrome') {
+    if (b !== 'webkit') throw new GraspError(400, `browser : « ${String(b).slice(0, 40)} » inconnu (chrome, webkit)`);
+    if (out.proxyServer !== undefined) throw new GraspError(400, 'moteur WebKit : --proxy n\'est pas pris en charge (session Chrome pour passer par un proxy)');
+    if (out.httpAuth.length > 0) throw new GraspError(400, 'moteur WebKit : --http-auth n\'est pas pris en charge (session Chrome pour une préprod en HTTP basic)');
+    if (body.profile !== undefined && body.profile !== null) throw new GraspError(400, 'moteur WebKit : pas de profil persistant (--profile) — session éphémère ; pour une session connectée : --state <état|recette.json>');
+    out.engine = 'webkit';
+  }
   return out;
 }
 
@@ -338,8 +349,8 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     let handle: BridgeHandle | undefined;
     handle = await spawnBridge({
       id: s.id, userDataDir: s.userDataDir, policy, headless: config.headless,
-      ...(browser !== undefined ? { browser } : {}),
-      ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}),
+      // Moteur WebKit : ni Chrome à lancer, ni navigateur existant à rejoindre.
+      ...(s.options.engine === 'webkit' ? { engine: 'webkit' as const } : { ...(browser !== undefined ? { browser } : {}), ...(config.cdpUrl !== null ? { attach: config.cdpUrl } : {}) }),
       socketPath: bridgeSocketPath(paths, s.id),
       downloadDir: downloadDirFor(browser, roots, paths, s.id),
       stderrLog: join(paths.logDir, `chrome-${s.id}.log`),
@@ -410,7 +421,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         ...(options.httpAuth.length > 0 ? [`authentification HTTP pour ${options.httpAuth.map(credentialLabel).join(', ')}`] : []),
         ...(options.viewport !== undefined ? [`viewport ${describeViewport(options.viewport)}`] : []),
       ];
-      log(`session ${id} créée (bridge ${bridge.pid}, Chrome ${bridge.chromePid}${extra.map((x) => `, ${x}`).join('')})`);
+      log(`session ${id} créée (bridge ${bridge.pid}, ${options.engine === 'webkit' ? bridge.version : `Chrome ${bridge.chromePid}`}${extra.map((x) => `, ${x}`).join('')})`);
       return { session: s, profileCreated: p?.created === true };
     } finally { creating--; p?.release(); }
   }
@@ -424,6 +435,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
   async function switchProfile(s: Session, name: string): Promise<{ profile: string; previous: string | null; unchanged: boolean }> {
     validateProfileName(name);
     if (config.cdpUrl !== null) throw new GraspError(400, 'mode attach : le profil est celui du navigateur existant, la bascule est sans effet');
+    if (s.options.engine === 'webkit') throw new GraspError(400, 'moteur WebKit : pas de profil persistant, la bascule de profil est sans objet (session Chrome pour un profil)');
     if (s.switching) throw new GraspError(409, `bascule de profil déjà en cours pour la session ${s.id}`);
     if (s.profile === name) return { profile: name, previous: name, unchanged: true };
     if (store.get(name) === undefined) {
@@ -602,7 +614,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (s.recycling !== undefined) {
         await s.recycling.catch(() => undefined);
         if (s.closed !== undefined) throw new GraspError(502, `session ${s.id} fermée : le recyclage de son navigateur a échoué (journal du serveur)`);
-      } else if (recycleOn && s.inflight === 1 && !s.switching && s.closed === undefined) {
+      } else if (recycleOn && s.options.engine === undefined && s.inflight === 1 && !s.switching && s.closed === undefined) {
         const why = recycleReason(s);
         if (why !== undefined) {
           s.recycling = recycle(s, why).finally(() => { s.recycling = undefined; });
@@ -713,6 +725,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       // Secret substitué APRÈS l'enregistrement : l'historique ne voit que son nom (secret: "NOM").
       let sent = rec !== undefined ? rec.body : rq.body;
       if (clientShots && sent !== undefined && sent.shotOnError === true) { const { shotOnError: _, ...rest } = sent; sent = rest; }
+      registerMasked(secrets.redactor, rq.path.split('?')[0]!, sent);
       r = await request({ transport: 'unix', socketPath: s.bridge.socketPath }, rq.method, rq.path, withSecret(secrets, rq.path.split('?')[0]!, sent), {}, rq.timeoutMs);
       rec?.finish(r.status < 400, r.status, r.status >= 400 ? errorOf(r.text()) : undefined, rec.inline && r.status < 400 ? r.json() : undefined);
     } catch (e) {
@@ -755,6 +768,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
     // Substitution d'un secret hors du try : un secret inconnu ou refusé garde son code (404, 400), pas 502.
     let payload: Record<string, unknown> | undefined;
     try {
+      registerMasked(secrets.redactor, url.pathname, typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : undefined);
       payload = withSecret(secrets, url.pathname, (rec !== undefined ? rec.body : parsed) as Record<string, unknown> | undefined);
     } catch (e) {
       rec?.finish(false, e instanceof GraspError ? e.status : 400, (e as Error).message);
@@ -804,6 +818,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
         return sendJson(res, 200, [...sessions.values()].map((s) => ({
           id: s.id, profile: s.profile, createdAt: s.createdAt, bridgePid: s.bridge.pid, chromePid: s.bridge.chromePid, userDataDir: s.userDataDir,
           proxyServer: s.options.proxyServer ?? null, httpAuth: maskCredentials(s.options.httpAuth), ...(s.options.viewport !== undefined ? { viewport: s.options.viewport } : {}),
+          browser: s.options.engine ?? 'chrome', browserVersion: s.bridge.version,
           browserStartedAt: new Date(s.browserStartedAt).toISOString(), recycles: s.recycles,
           ...(s.memory !== undefined ? { memoryMb: s.memory.mb, memoryMetric: s.memory.metric } : {}),
         })));
@@ -811,7 +826,7 @@ export async function startControlPlane(o: ControlPlaneOptions): Promise<Control
       if (route === 'POST /sessions') {
         const body = await readJson(req);
         const { session: s, profileCreated } = await createSession(optStr(body, 'profile'), sessionOptionsOf(body, policy, config.cdpUrl !== null));
-        return sendJson(res, 201, { id: s.id, profile: s.profile, profileCreated });
+        return sendJson(res, 201, { id: s.id, profile: s.profile, profileCreated, ...(s.options.engine !== undefined ? { browser: s.options.engine, browserVersion: s.bridge.version } : {}) });
       }
       if (route === 'GET /profiles') {
         let current: Session | undefined;

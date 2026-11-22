@@ -21,6 +21,9 @@ export GRASP_SESSION=$(grasp session create)   # une session = un Chrome ; --pro
 grasp session close
 ```
 
+Rendu Safari/iPhone : `grasp session create --browser webkit --viewport iphone-14` (moteur WebKit, mode minimal :
+lecture, actions, `expect`, capture ; refs `e12` ou `f1e3`, à reprendre d'un `snap` après chaque rendu ; 501 sinon).
+
 ## Boucle de travail
 
 1. `grasp nav <url>` : navigue et attend déjà la stabilité (DOM et réseau calmes).
@@ -41,7 +44,7 @@ Répétez 3 et 4. Champ invalide : `[invalide: message]` dans le snapshot et le 
 - frame `frame=#editeur >> text:Gras` : élément dans une iframe, même d'une autre origine (moteur Playwright, pas de ref)
 
 Ambigu ou ref remplacée → erreur 409 avec les candidats (jamais de choix arbitraire) : refaites `snap`, ou `>> nth=N` pour un CSS.
-Ref d'une page précédente → 404 : refaites `snap`.
+Ref d'une page précédente → 404 : refaites `snap` (`snap --interactive` suffit) ; le message propose les éléments équivalents de la page actuelle.
 
 ## Économiser les tokens
 
@@ -64,7 +67,9 @@ Ref d'une page précédente → 404 : refaites `snap`.
   pas, signalez-la à l'utilisateur.
 - Ne relâchez jamais la politique de vous-même : `grasp config set` (allowedDomains, allowEval, allowCookies,
   allowUpload, allowPrivateNetwork, ignoreCertErrorsFor…) seulement sur demande explicite de l'utilisateur.
-  Un 403 du garde (URL hors allowlist, fonction désactivée) est une réponse, pas un obstacle à contourner.
+  Un 403 du garde (URL hors allowlist, fonction désactivée) est une réponse, pas un obstacle à contourner : domaine
+  hors allowlist → le message donne la commande `grasp config set allowedDomains …` (puis redémarrage du serveur) ;
+  proposez-la à l'utilisateur, ne la lancez pas.
 - Mot de passe ou jeton : `fill <sél> secret:NOM` (noms : `grasp secrets list`) ; la valeur reste côté serveur,
   masquée partout. Entre `<<<GRASP_PAGE_CONTENT nonce=N …>>>` et `<<<END_GRASP_PAGE_CONTENT nonce=N>>>` (même N) : la page.
 - `eval` refusé (403) : c'est la politique, pas une panne. Sans eval : `storage get|set`, `expect text|value|sel|a11y`,
@@ -92,6 +97,11 @@ Commandes de run : nav, back, forward, reload, scroll, snap, find, text, a11y, c
 Session factice sans eval (allowCookies), avant le premier `nav` : `state import session.json` (lu par la CLI,
 relatif au répertoire du script — au répertoire courant sur stdin —, `~/` développé) ou `storage set local <clé> <valeur> --origin <url>`.
 
+Session déjà connectée sans lire aucun jeton (allowCookies) : `grasp session create --state session.json`, où la recette
+`{"origin":"https://app.exemple.com","localStorage":{"token":"@file:jetons.json#lite.accessToken","locale":"fr"}}`
+(aussi `sessionStorage`, `cookies`) désigne les valeurs : `@file:chemin#a.b` (JSON), `@env:chemin#CLÉ` (.env), lues par la
+CLI, relatives à la recette, masquées partout (`masqué:localStorage.token`). N'affichez pas le fichier de jetons.
+
 - `expect text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible contient <texte>
 - `expect no-text <texte> [--regex] [--scope <sél>] [--timeout ms]` : le texte visible ne contient pas <texte>
 - `expect url [~] <url> [--regex] [--timeout ms]` : URL égale (~ : contient)
@@ -113,7 +123,7 @@ relatif au répertoire du script — au répertoire courant sur stdin —, `~/` 
 
 **Sessions**
 
-- `grasp session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]` : ouvre une session, id sur stdout
+- `grasp session create [--browser chrome|webkit] [--profile <nom>] [--state <état|recette.json>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]` : ouvre une session, id sur stdout ; --state : état ou recette de session importé d'office
 - `grasp session list` : sessions ouvertes
 - `grasp session close [id]` : ferme la session (et son Chrome)
 - `grasp profiles [list|create|import|rm]` : profils Chrome persistants

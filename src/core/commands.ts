@@ -61,6 +61,8 @@ export const OPTIONS: Record<string, OptionSpec> = {
   'profile': { type: 'string', arg: 'nom', description: 'profil Chrome persistant (cookies, connexions)' },
   'proxy': { type: 'string', arg: 'URL', description: 'proxy de cette session (socks5://127.0.0.1:1080 d\'un ssh -D)' },
   'http-auth': { type: 'string', arg: 'u:mdp@hôte|-', description: 'identifiants HTTP basic pour cet hôte ; - = lus sur stdin' },
+  'state': { type: 'string', arg: 'fichier', description: 'état exporté ou recette de session (JSON) importé dans la session neuve, avant toute navigation (allowCookies)' },
+  'browser': { type: 'enum', values: ['chrome', 'webkit'], description: 'moteur de la session : chrome (défaut, CDP direct) ou webkit (rendu Safari/iPhone, mode minimal, playwright-core requis)' },
   'use-when': { type: 'string', arg: 'texte', description: 'quand utiliser ce profil (affiché par profiles)' },
   'profile-directory': { type: 'string', arg: 'nom', description: 'profil à importer dans le répertoire de données (« Profile 9 »)' },
   'skip-locked': { type: 'boolean', description: 'ignorer les fichiers verrouillés (Chrome ouvert)' },
@@ -162,7 +164,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   // Sessions et profils
   { name: 'session', group: 'Sessions', usage: 'session create|list|close', summary: 'sessions (une session = un Chrome)', options: [],
     subcommands: [
-      { name: 'create', usage: 'session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]', summary: 'ouvre une session, id sur stdout', options: ['profile', 'proxy', 'http-auth', 'viewport', ...VIEWPORT] },
+      { name: 'create', usage: 'session create [--browser chrome|webkit] [--profile <nom>] [--state <état|recette.json>] [--proxy URL] [--http-auth u:mdp@hôte | -] [--viewport LxH|appareil [--mobile] [--dpr N] [--touch] [--mobile-ua]]', summary: 'ouvre une session, id sur stdout ; --state : état ou recette de session importé d\'office', options: ['browser', 'profile', 'state', 'proxy', 'http-auth', 'viewport', ...VIEWPORT] },
       { name: 'list', usage: 'session list', summary: 'sessions ouvertes' },
       { name: 'close', usage: 'session close [id]', summary: 'ferme la session (et son Chrome)' },
     ] },
@@ -225,7 +227,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'state', group: 'Sensibles', usage: 'state export [fichier|-] [--origin …] | import <fichier|->', summary: 'cookies + stockage Web en JSON (run : state import <fichier>)', options: [], run: true, mcp: 'state_import', disabledByDefault: 'allowCookies',
     subcommands: [
       { name: 'export', usage: 'state export [fichier|-] [--origin http://hôte:port,…]', summary: 'exporte (fichier 0600 ; sans fichier : chemin sur stdout) ; commande isolée, pas dans run', options: ['origin'] },
-      { name: 'import', usage: 'state import <fichier|->', summary: 'importe (localStorage fusionné par origine), avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire du script (courant sur stdin), ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
+      { name: 'import', usage: 'state import <fichier|->', summary: 'importe un état exporté ou une recette de session (valeurs @file:/@env: lues par la CLI, masquées) ; localStorage fusionné par origine, avant ou après navigation ; aussi sur une ligne de run (fichier lu par la CLI, relatif au répertoire du script (courant sur stdin), ~/ développé ; pas de - ni de $VAR) et par l\'outil MCP state_import (JSON en argument)' },
     ] },
   // Configuration
   { name: 'security', group: 'Configuration', usage: 'security', summary: 'politique telle que le garde l\'applique', options: [] },

@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import { GraspError } from '../core/errors.js';
 import type { Redactor, SecretStore } from '../core/secrets.js';
+import { maskedOf } from '../core/recipe.js';
 
 /**
  * Filet du control plane : chaque réponse (JSON, texte, erreur) est masquée juste avant l'envoi, quelle que soit
@@ -30,6 +31,20 @@ export function redactResponse(res: ServerResponse, r: Redactor): void {
     }
     return end(b);
   };
+}
+
+/**
+ * `state import` d'une recette de session : les valeurs lues dans un fichier par le client (`masked`) sont
+ * inscrites au masquage du serveur AVANT que la commande parte — toute réponse ultérieure (snap, text, storage get,
+ * console, erreurs, journal) les rend sous la forme `masqué:<libellé>`. Le champ est transmis tel quel au bridge,
+ * qui masque de son côté avant toute troncature.
+ */
+export function registerMasked(r: Redactor, path: string, body: Record<string, unknown> | undefined): void {
+  if (body === undefined || body.masked === undefined) return;
+  if (path !== '/state/import') throw new GraspError(400, `« masked » n'est accepté que par state import (pas par ${path})`);
+  let list;
+  try { list = maskedOf(body.masked); } catch (e) { throw new GraspError(400, (e as Error).message); }
+  for (const m of list) r.mask(m.label, m.value);
 }
 
 /**

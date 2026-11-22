@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { statSync } from 'node:fs';
 import type { CdpClient, CdpEvent } from '../browser/cdp.js';
-import { EVAL_REFUSAL, checkNavigation, policyRefusal, checkUrl, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
+import { EVAL_REFUSAL, checkNavigation, policyRefusal, checkUrl, withAllowlistAdvice, isExplicitLocal, normalizeHost, routeOf, urlPort, type EffectivePolicy, type SsrfContext } from '../core/policy.js';
 import { credentialFor, credentialLabel, hostMatches, maskCredentials, type HttpCredential, type MaskedCredential } from '../core/remote.js';
 import { classifyIp, systemResolver, type Resolver } from '../core/ssrf.js';
 import { GraspError, badRequest, conflict, forbidden, notFound } from '../core/errors.js';
@@ -997,10 +997,13 @@ export class PageController {
   /** Attente de stabilité (DOM et réseau), comme après une action ; plafond stableTimeoutMs. */
   async stable(): Promise<void> { await this.waitStable(this.limits.stableTimeoutMs).catch(() => undefined); }
 
+  /** Refus du garde : un domaine hors allowlist reçoit la commande exacte à proposer à l'utilisateur (core/policy.ts). */
+  private advise(reason: string): string { return withAllowlistAdvice(this.policy.allowedDomains, reason); }
+
   /** Pré-contrôle d'une URL (allowlist, schémas, protection SSRF), sans naviguer : 403 si refusée. */
   async assertNavigable(url: string): Promise<void> {
     const v = await checkNavigation(this.ssrfCtx, url, this.dns);
-    if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
+    if (!v.allowed) throw forbidden(`navigation bloquée : ${this.advise(v.reason)}`);
   }
 
   // ---------- Moteur Playwright de repli (optionnel, connexion paresseuse) ----------
@@ -1818,7 +1821,7 @@ export class PageController {
 
   private async navigateLoaded(url: string): Promise<void> {
     const v = await checkNavigation(this.ssrfCtx, url, this.dns);
-    if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
+    if (!v.allowed) throw forbidden(`navigation bloquée : ${this.advise(v.reason)}`);
     this.blocked = null;
     this.rebound = null;
     const loaded = this.onceEvent('Page.loadEventFired', 30_000);
@@ -1830,13 +1833,13 @@ export class PageController {
       loaded.cancel();
       if (this.blocked !== null) {
         const b: Blocked = this.blocked;
-        throw forbidden(`navigation bloquée par le garde : ${b.reason} (${b.url})`);
+        throw forbidden(`navigation bloquée par le garde : ${this.advise(b.reason)} (${b.url})`);
       }
       throw new GraspError(502, `navigation échouée : ${r.errorText}`);
     }
     if (r.loaderId) await loaded.promise; else loaded.cancel();
     const rb = this.rebound as Blocked | null; // posé par checkRemoteAddress pendant l'attente
-    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${rb.reason} (${rb.url})`);
+    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${this.advise(rb.reason)} (${rb.url})`);
     await this.settle();
   }
 
@@ -1889,7 +1892,7 @@ export class PageController {
       }
       // Pré-contrôle, comme nav : une entrée restaurée sans requête (cache aller-retour) passe aussi par lui.
       const v = await checkNavigation(this.ssrfCtx, entry.url, this.dns);
-      if (!v.allowed) throw forbidden(`navigation bloquée : ${v.reason}`);
+      if (!v.allowed) throw forbidden(`navigation bloquée : ${this.advise(v.reason)}`);
       const before = opts.snapDiff === true ? await this.snapshot({ scope: opts.scope }) : undefined;
       const doc0 = this.docGen;
       const nav0 = this.navCount;
@@ -1941,7 +1944,7 @@ export class PageController {
     const end = Date.now() + 30_000;
     for (;;) {
       const b = this.blockedMain as Blocked | null;
-      if (b !== null && b.at >= since) throw forbidden(`navigation bloquée par le garde : ${b.reason} (${b.url})`);
+      if (b !== null && b.at >= since) throw forbidden(`navigation bloquée par le garde : ${this.advise(b.reason)} (${b.url})`);
       // beforeunload refusé (--dialog dismiss) : la page reste, aucune navigation ne viendra — dit aussitôt (comme
       // l'ERR_ABORTED de nav), sans attendre 30 s.
       if (this.dialogs.slice(dlg0).some((d) => d.type === 'beforeunload' && !d.accepted) && !this.navigating()) throw conflict('navigation annulée : la page est restée affichée (beforeunload refusé)');
@@ -1950,7 +1953,7 @@ export class PageController {
       await sleep(25);
     }
     const rb = this.rebound as Blocked | null;
-    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${rb.reason} (${rb.url})`);
+    if (rb !== null) throw forbidden(`navigation bloquée par le garde : ${this.advise(rb.reason)} (${rb.url})`);
     const f = this.mainFailed as { url: string; error: string | undefined; at: number } | null;
     if (f !== null && f.at >= since) throw new GraspError(502, `navigation échouée : ${f.error ?? 'page d\'erreur du navigateur'} (${redactUrl(f.url)})`);
   }
@@ -2327,7 +2330,7 @@ export class PageController {
         ({ object: { objectId } } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId, executionContextId: ctx }));
       } catch {
         this.isoCtx = undefined;
-        if (attempt >= 1) throw notFound("l'élément n'existe plus — refaites `snap`");
+        if (attempt >= 1) throw notFound("l'élément n'existe plus (page re-rendue pendant l'action ?) — refaites `snap` (`grasp snap --interactive` suffit pour agir)");
         continue;
       }
       try {
@@ -2915,11 +2918,18 @@ export class PageController {
    */
   private relocate(ref: string, snap: Snapshot): number {
     const prev = this.knownRefs.get(ref);
-    if (prev === undefined) throw notFound(`ref ${ref} inconnue : elle ne vient d'aucun snapshot de cette session — refaites \`snap\``);
+    if (prev === undefined) throw notFound(`ref ${ref} inconnue : elle ne vient d'aucun snapshot de cette session — refaites \`snap\` (\`grasp snap --interactive\` : seulement les éléments actionnables, ou \`grasp find <texte>\`)`);
     const what = `${prev.role}${prev.name !== '' ? ` "${prev.name}"` : ''}`;
-    if (prev.doc !== this.docGen) throw notFound(`ref ${ref} (${what}) vient d'une page précédente : la page a changé depuis le snapshot qui l'a remise — refaites \`snap\``);
     const all = PageController.candidates(snap);
     const strip = (c: Candidate): Candidate => ({ ref: c.ref, role: c.role, name: c.name });
+    if (prev.doc !== this.docGen) {
+      // Page changée (navigation, route d'une SPA rechargée) : jamais d'action sur un homonyme, mais les éléments de
+      // la page ACTUELLE qui portent ce rôle et ce nom (sinon les plus proches) sont proposés avec leur nouvelle ref.
+      const same = all.filter((c) => c.role === prev.role && c.key === prev.key);
+      const c = (same.length > 0 ? same.slice(0, 3) : nearest(prev, all, 3)).map(strip);
+      const here = c.length === 0 ? '' : ` ; sur la page actuelle : ${c.map(fmtCandidate).join(', ')}${same.length > 3 ? ', …' : ''}${same.length > 0 ? ' (même rôle et même nom)' : ' (les plus proches)'}`;
+      throw new GraspError(404, `ref ${ref} (${what}) vient d'une page précédente : la page a changé depuis le snapshot qui l'a remise — refaites \`snap\` (\`grasp snap --interactive\` suffit pour agir)${here}`, { candidates: c });
+    }
     const self = prev.id !== undefined ? all.find((c) => c.id === prev.id) : undefined;
     // Identité comparée sur le nom brut de l'arbre (le nom rendu dépend du relevé du texte source).
     if (self !== undefined && self.role === prev.role && self.key === prev.key) {
@@ -2942,7 +2952,7 @@ export class PageController {
       throw new GraspError(409, `ref ${ref} (${what}) n'est plus dans la page : son élément a été retiré ou remplacé, et ${who} ce rôle et ce nom : ${c.map(fmtCandidate).join(', ')}${same.length > 3 ? ', …' : ''} — Grasp ne clique pas un homonyme à votre place : refaites \`snap\` et choisissez une ref`, { candidates: c });
     }
     const near = nearest(prev, all, 3).map(strip);
-    throw new GraspError(404, `ref ${ref} (${what}) n'est plus dans la page ; ${near.length > 0 ? `candidats les plus proches : ${near.map(fmtCandidate).join(', ')}` : 'aucun candidat — refaites `snap`'}`, { candidates: near });
+    throw new GraspError(404, `ref ${ref} (${what}) n'est plus dans la page ; ${near.length > 0 ? `candidats les plus proches : ${near.map(fmtCandidate).join(', ')} — sinon \`grasp snap --interactive\`` : 'aucun candidat — refaites `snap` (`grasp snap --interactive` suffit pour agir)'}`, { candidates: near });
   }
 
   private resolveText(t: string, snap: Snapshot): number {
@@ -3079,7 +3089,7 @@ export class PageController {
     let objectId: string;
     try {
       ({ object: { objectId } } = await this.s<{ object: { objectId: string } }>('DOM.resolveNode', { backendNodeId, objectGroup: 'grasp' }));
-    } catch { throw notFound("l'élément n'existe plus — refaites `snap`"); }
+    } catch { throw notFound("l'élément n'existe plus (page re-rendue pendant l'action ?) — refaites `snap` (`grasp snap --interactive` suffit pour agir)"); }
     const r = await this.s<{ result: { value?: T }; exceptionDetails?: { text: string; exception?: { description?: string } } }>('Runtime.callFunctionOn', {
       objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true, awaitPromise: true,
     });
@@ -3172,7 +3182,7 @@ export class PageController {
       if (this.trackersBlocked > trk0) res.trackersBlocked = this.trackersBlocked - trk0;
       // Élément remplacé par la page juste après l'action (champ de recherche re-rendu en combobox…) : dit.
       const replaced = this.actTarget !== undefined && this.docGen === doc0 ? await this.replacementNote(this.actTarget).catch(() => undefined) : undefined;
-      const notes = [detail, ...actionNotes, replaced, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.blocked.reason}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
+      const notes = [detail, ...actionNotes, replaced, this.blocked !== null && this.blocked.at >= t0 ? `navigation bloquée : ${this.advise(this.blocked.reason)}` : undefined, stab !== undefined && !stab.stable ? PageController.unstableNote(stab) : undefined, stab?.ongoing === true ? ONGOING_NOTE : undefined, stab?.background === true ? BACKGROUND_NOTE : undefined].filter((x): x is string => typeof x === 'string' && x !== '');
       if (notes.length) res.detail = notes.join(' ; ');
       if (before) {
         res.diff = await this.diffAfter(before, opts, doc0);
@@ -4253,7 +4263,7 @@ export class PageController {
     if (originArg !== undefined) {
       origin = normalizeOrigin(originArg);
       if (origin === null) throw badRequest(`--origin : origine http(s) attendue (ex. https://app.exemple.com), reçu « ${originArg} »`);
-      if (!checkUrl(this.policy.allowedDomains, origin).allowed) throw forbidden(`origine hors allowlist : ${origin} (allowedDomains)`);
+      if (!checkUrl(this.policy.allowedDomains, origin).allowed) throw forbidden(`--origin refusée : ${this.advise(checkUrl(this.policy.allowedDomains, origin).reason)}`);
       const v = await checkNavigation(this.ssrfCtx, `${origin}/`, this.dns);
       if (!v.allowed) throw forbidden(`--origin ${origin} refusée : ${v.reason}`);
     }
@@ -4273,6 +4283,8 @@ export class PageController {
       return { ...base, pending: true };
     }
     if (op !== 'get') return { ...base, existed: r.existed };
+    // Masquage AVANT la troncature : une valeur coupée ne doit pas laisser passer le début d'un jeton.
+    if (r.value !== null) r.value = this.secretRedactor.redact(r.value);
     if (r.value !== null && r.value.length > STORAGE_GET_MAX) return { ...base, value: r.value.slice(0, STORAGE_GET_MAX), truncated: r.value.length };
     return { ...base, value: r.value };
   }

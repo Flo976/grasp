@@ -3,6 +3,7 @@ import { GraspError } from '../core/errors.js';
 import { readJson, sendBuffer, sendError, sendJson, str, optStr, optBool, optInt, optCount, optFlag } from '../core/http.js';
 import { isLevel, type ConsoleLevel } from '../core/console.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
+import { maskedOf } from '../core/recipe.js';
 import { expectSpecOf } from '../core/expect.js';
 import { scrollSpecOf } from './scroll.js';
 import { viewportSpecOf } from '../core/viewport.js';
@@ -178,6 +179,8 @@ export function bridgeHandler(page: PageController, info: () => Record<string, u
         case 'GET /state/export': return sendJson(res, 200, await page.exportState(q.getAll('origin').flatMap((o) => o.split(',')).map((o) => o.trim()).filter((o) => o !== '')));
         case 'POST /state/import': {
           if (body.state === undefined) throw new GraspError(400, 'champ « state » (objet d\'état exporté) requis');
+          // Valeurs d'une recette de session venues d'un fichier du client : masquées dès le bridge (avant toute troncature).
+          for (const m of maskedOf(body.masked)) page.secretRedactor.mask(m.label, m.value);
           return sendJson(res, 200, await page.importState(body.state));
         }
         // Stockage Web de l'origine affichée, ou d'une origine désignée (--origin) ; allowCookies, code fixe : voir PageController.storage.

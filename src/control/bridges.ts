@@ -32,6 +32,8 @@ export interface BridgeInit {
   httpAuth?: HttpCredential[] | undefined;
   /** Viewport émulé de la session (session create --viewport, ou dernier `grasp viewport`), posé avant toute navigation. */
   viewport?: ViewportSpec | undefined;
+  /** Moteur de la session : absent = Chrome (CDP direct) ; « webkit » = WebKit lancé par playwright-core (mode minimal). */
+  engine?: 'webkit' | undefined;
 }
 
 export interface BridgeHandle {

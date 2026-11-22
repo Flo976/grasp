@@ -18,6 +18,10 @@ export const VALUE_FLAGS = new Set(['session', 'max', 'output', 'profile', 'port
 for (const f of ['by', 'to', 'max-steps']) VALUE_FLAGS.add(f);
 // grasp secrets set NOM --domains a,b.
 VALUE_FLAGS.add('domains');
+// session create --state <fichier> : état exporté ou recette de session.
+VALUE_FLAGS.add('state');
+// session create --browser webkit : moteur de la session.
+VALUE_FLAGS.add('browser');
 const ALIASES: Record<string, string> = { o: 'output', s: 'session' };
 
 /** `valueFlags` : options qui prennent une valeur (celles d'une commande à part, comme `audit`, s'y ajoutent). */

@@ -428,3 +428,25 @@ Suites de l'intégration :
   MCP/CLI documentés (`op`, `state` en JSON, pas d'argument `session`).
 - [x] **Doc session factice** : `storage get` lit l'état actuel ; une app qui déplace son jeton en mémoire fait
   croire que l'import est perdu.
+
+## Retours de la session de test du 22/11/2026 (26 agents, 298 commandes, 38 erreurs)
+
+Les agents ouvraient des sessions connectées sur une application web en posant des jetons dans le localStorage,
+une clé à la fois (`storage set local <clé> -`), d'après un mode d'emploi écrit à la main. Erreurs les plus
+fréquentes : domaine hors allowlist (403) avant réglage, refs périmées après un rendu.
+
+- [x] **Session d'application réutilisable sans exposer de secret** : `grasp session create --state <fichier>` et
+      recette de session `{origin, localStorage, sessionStorage, cookies}` aux valeurs `@file:…#chemin` /
+      `@env:…#CLÉ`, lues par la CLI et masquées dans toutes les sorties (`masqué:localStorage.token`). README
+      « Recette de session ». Tests : `recipe.test.ts`, `session-recette.test.ts`.
+- [x] **Erreurs plus actionnables** : domaine hors allowlist → commande exacte `grasp config set allowedDomains …`
+      (à proposer à l'utilisateur, jamais lancée par l'agent) et rappel du redémarrage ; ref d'une page précédente →
+      candidats de la page actuelle et `snap --interactive`.
+- [x] **Moteur WebKit, mode minimal** : `grasp session create --browser webkit [--viewport iphone-14]`
+      (`src/bridge/webkit.ts`, `docs/moteur-webkit.md`). Plantage d'un premier essai diagnostiqué : build d'une
+      autre révision que celle de playwright-core, et trois bibliothèques système absentes.
+      Reste (ordre proposé dans `docs/moteur-webkit.md`) : console et erreurs de page (`expect no-console-errors`),
+      `scroll`, journal réseau, onglets, contrôle de l'adresse distante des documents (rebinding DNS), Firefox.
+- [ ] Masquage d'un état exporté importé tel quel (`grasp-state`, `storageState`) : seules les valeurs référencées
+      par une recette (`@file:`, `@env:`) sont masquées aujourd'hui.
+- [ ] `grasp config add allowedDomains <hôte>` : la commande proposée par le 403 doit redonner toute la liste.

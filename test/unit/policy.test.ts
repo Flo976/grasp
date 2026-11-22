@@ -36,3 +36,20 @@ test('URL invalide → bloquée avec raison', () => {
   assert.equal(r.allowed, false);
   assert.match(r.reason, /invalide/);
 });
+
+test('withAllowlistAdvice : domaine hors allowlist → commande exacte (liste actuelle + hôte) et rappel du redémarrage ; autres refus inchangés', async () => {
+  const { withAllowlistAdvice, stripAllowlistAdvice, checkUrl: check } = await import('../../src/core/policy.js');
+  const allowed = ['127.0.0.1', 'localhost', '[::1]'];
+  const reason = check(allowed, 'https://dev.app.exemple.com/x').reason;
+  assert.equal(reason, 'domaine hors allowlist : dev.app.exemple.com');
+  const msg = withAllowlistAdvice(allowed, reason);
+  assert.match(msg, /^domaine hors allowlist : dev\.app\.exemple\.com — à autoriser par l'utilisateur humain, pas par l'agent de lui-même ; commande à lui proposer : grasp config set allowedDomains '127\.0\.0\.1,localhost,\[::1\],dev\.app\.exemple\.com' puis redémarrage du serveur \(grasp stop && grasp serve ; service : systemctl --user restart grasp\) — l'allowlist est lue au démarrage, les sessions ouvertes sont fermées$/);
+  // Idempotent ; liste vide : la commande ne porte que l'hôte.
+  assert.equal(withAllowlistAdvice(allowed, msg), msg);
+  assert.match(withAllowlistAdvice([], check([], 'http://a.exemple.com/').reason), /allowedDomains 'a\.exemple\.com' /);
+  // Schéma interdit, SSRF, URL invalide : aucune commande (l'allowlist n'y changerait rien).
+  for (const r of ['schéma interdit : file:', 'adresse privée : 10.0.0.1 (inscrivez-la telle quelle dans l\'allowlist, ou allowPrivateNetwork=true)', 'URL invalide : x']) assert.equal(withAllowlistAdvice(allowed, r), r);
+  // Rapports multi-pages : conseil retiré, le reste du message gardé.
+  assert.equal(stripAllowlistAdvice(`navigation bloquée par le garde : ${msg} (https://dev.app.exemple.com/x)`), 'navigation bloquée par le garde : domaine hors allowlist : dev.app.exemple.com (https://dev.app.exemple.com/x)');
+  assert.equal(stripAllowlistAdvice('navigation bloquée : schéma interdit : file:'), 'navigation bloquée : schéma interdit : file:');
+});
