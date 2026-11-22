@@ -98,6 +98,32 @@ export function effectivePolicy(cfg: ResolvedConfig): Readonly<EffectivePolicy> 
 
 export interface UrlVerdict { allowed: boolean; reason: string }
 
+/** Début du conseil joint à un refus « domaine hors allowlist » (retiré des rapports multi-pages : une ligne par page). */
+export const ALLOWLIST_ADVICE_MARK = ' — à autoriser par l\'utilisateur humain';
+
+/**
+ * Refus « domaine hors allowlist » rendu actionnable : la commande EXACTE qui autoriserait ce domaine (liste
+ * actuelle + l'hôte refusé : `config set` remplace la liste) et le rappel du redémarrage — l'allowlist est lue au
+ * démarrage du serveur. La commande est donnée pour être proposée à l'utilisateur humain, jamais lancée par
+ * l'agent de lui-même (même règle qu'EVAL_REFUSAL). Toute autre raison (schéma, SSRF, URL invalide) : inchangée.
+ */
+export function withAllowlistAdvice(allowedDomains: readonly string[], reason: string): string {
+  const m = /^domaine hors allowlist : (\S+)/.exec(reason);
+  if (m === null || reason.includes(ALLOWLIST_ADVICE_MARK)) return reason;
+  const list = [...allowedDomains.filter((d) => d !== m[1]), m[1]!].join(',');
+  return `${reason}${ALLOWLIST_ADVICE_MARK}, pas par l'agent de lui-même ; commande à lui proposer : grasp config set allowedDomains '${list}' `
+    + 'puis redémarrage du serveur (grasp stop && grasp serve ; service : systemctl --user restart grasp) — l\'allowlist est lue au démarrage, les sessions ouvertes sont fermées';
+}
+
+/** Message sans le conseil (rapports où le même refus se répète page après page). */
+export function stripAllowlistAdvice(message: string): string {
+  const i = message.indexOf(ALLOWLIST_ADVICE_MARK);
+  if (i === -1) return message;
+  // Le conseil se termine par « … les sessions ouvertes sont fermées » ; ce qui suit (URL entre parenthèses) est gardé.
+  const end = message.indexOf('les sessions ouvertes sont fermées', i);
+  return message.slice(0, i) + (end === -1 ? '' : message.slice(end + 'les sessions ouvertes sont fermées'.length));
+}
+
 /** Fail-closed : liste vide = tout bloqué ; schéma non http(s) bloqué (sauf about:blank). */
 export function checkUrl(allowedDomains: readonly string[], url: string): UrlVerdict {
   let u: URL;

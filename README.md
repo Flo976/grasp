@@ -117,11 +117,17 @@ limite la lecture à une zone.
   vérifier qu'un bouton a vraiment appelé l'API ; jamais d'en-têtes ni de corps ([détails](#journal-réseau)).
 - 💬 **Dialogues pilotables** : `--dialog accept|dismiss|"texte"` par action ; défaut sûr (`confirm` et `prompt`
   refusés), tout dialogue rapporté ([détails](#dialogues-javascript---dialog)).
+- 🪪 **Session d'application en une commande** : `grasp session create --state session.json`, où une recette
+  désigne les jetons (`@file:jetons.json#lite.accessToken`, `@env:.env#CLÉ`) sans les contenir ; valeurs lues par la
+  CLI, masquées dans toutes les sorties ([détails](#recette-de-session--une-application-déjà-connectée-sans-exposer-de-jeton)).
 - 🧑‍💻 **Session factice sans `eval`** : `grasp storage set local <clé> <valeur> [--origin <url>]` (même sur
   `about:blank`, avant le premier chargement) ou `state import`, en commande isolée, sur une ligne de `grasp run`
   ou par les outils MCP `storage` et `state_import`
   ([détails](#session-factice-sans-alloweval)).
 - 🎭 **Moteur Playwright de repli**, optionnel, branché sur le même Chrome (iframes d'autres origines…).
+- 🧭 **Moteur WebKit** (rendu proche de Safari, iPhone compris) : `grasp session create --browser webkit
+  --viewport iphone-14`, mode minimal (nav, snap, clic, saisie, `expect`, capture) avec les mêmes garde-fous
+  ([détails](#moteur-webkit-rendu-safari--iphone)).
 - 🚫 **Traqueurs bloqués** (liste de Peter Lowe, ~3 500 domaines) : pages plus légères, attente plus courte
   ([détails](#blocage-des-traqueurs)).
 - 🧵 **Sessions parallèles et recyclage** : un Chrome par session, navigateur relancé au-delà de N Mo ou
@@ -333,6 +339,74 @@ jamais devinée ; un fichier invalide est refusé en entier, avant d'appliquer q
   affiche déjà cette origine, sinon par un script du monde isolé au **premier** document de l'origine, puis retiré.
 - Ni IndexedDB, ni Cache Storage, ni cookies d'autres contextes de navigation : voir les limites.
 
+### Recette de session : une application déjà connectée, sans exposer de jeton
+
+Beaucoup d'applications web (SPA) gardent leur session dans le `localStorage` : un jeton d'accès, un jeton de
+rafraîchissement, un profil, une langue. Les poser à la main (`storage set local <clé> -`, une clé à la fois)
+oblige l'agent à **lire** les jetons pour les transmettre. Une **recette de session** les désigne sans les contenir :
+la CLI lit les valeurs dans vos fichiers, le serveur les **masque** dans toutes ses sorties, et la session s'ouvre
+connectée en une commande.
+
+```json
+{
+  "origin": "https://dev.app.exemple.com",
+  "localStorage": {
+    "access_token":  "@file:jetons.json#lite.accessToken",
+    "refresh_token": "@file:jetons.json#lite.refreshToken",
+    "user":          "@file:jetons.json#lite.user",
+    "locale":        "fr"
+  },
+  "sessionStorage": { "onglet": "accueil" },
+  "cookies": { "sid": "@env:.env#SESSION_ID" }
+}
+```
+
+```bash
+export GRASP_SESSION=$(grasp session create --state session.json)   # session ouverte ET connectée, avant tout nav
+grasp nav https://dev.app.exemple.com/
+grasp expect text "Mon compte"                                      # la preuve est dans la page
+```
+
+```
+$ grasp session create --state session.json
+s3f9a1c2e7b4d
+état importé : 1 cookie(s), localStorage de 1 origine(s) (4 clé(s)), sessionStorage : appliqué au premier document de son origine
+3 valeur(s) lue(s) dans un fichier : masquée(s) dans toutes les sorties (masqué:<stockage>.<clé>)
+$ grasp storage get local access_token
+masqué:localStorage.access_token
+```
+
+| Valeur | Sens |
+|:--|:--|
+| `"fr"`, `42`, `true`, `{…}`, `[…]` | littéral (nombre et booléen en texte, objet et tableau sérialisés en JSON) — **non masqué** |
+| `"@file:chemin#a.b.0"` | valeur à ce chemin d'un fichier **JSON** (objet ou tableau : sérialisé en JSON) |
+| `"@file:chemin"` | contenu entier du fichier (une fin de ligne finale retirée) |
+| `"@env:chemin#CLÉ"` | variable `CLÉ` d'un fichier `.env` (`export` et guillemets admis) |
+| `"@@…"` | littéral qui commence par `@` |
+
+- **Où** : `grasp session create --state <fichier>` (session neuve, import avant toute navigation ; import refusé :
+  la session est refermée, rien ne reste ouvert), `grasp state import <fichier|->` (session existante) et une
+  ligne `state import <fichier>` de `grasp run`. `--state` accepte aussi un état exporté (`grasp-state`,
+  `storageState` Playwright).
+- **Forme** : `origin` (http ou https), puis `localStorage`, `sessionStorage`, `cookies`, tous facultatifs ; un
+  tableau de recettes pour plusieurs origines (un seul `sessionStorage` : il est propre à l'onglet). `cookies` :
+  `{ "nom": "valeur" }` (domaine = hôte de l'origine, `path=/`, `Secure` si https) ou un tableau
+  `{ name, value, domain, path, expires, httpOnly, secure, sameSite }`. Clé inconnue : refus, rien n'est importé.
+- **Chemins** des références : relatifs au **répertoire de la recette** (au répertoire courant sur stdin), `~/`
+  développé. Jamais l'environnement du processus : un shell l'afficherait, et Chrome en hériterait.
+- **Rien ne fuit** : les valeurs référencées ne passent ni par la ligne de commande (`ps`, historique du shell), ni
+  par stdout/stderr, ni par le journal du serveur, ni par `grasp history` (qui ne garde que le chemin de la
+  recette). Elles sont masquées comme les [secrets](#secrets-fill--secretnom) — forme brute, URL, formulaire, JSON,
+  HTML, valeur coupée par un budget de sortie — sous le nom `masqué:<stockage>.<clé>`, dans `snap`, `text`,
+  `storage get`, `console`, `network`, les erreurs et le rapport de recette. Aucun message d'erreur ne cite une
+  valeur ni un extrait d'un fichier référencé. Limites : une valeur de moins de 4 caractères ou de plus de 4 096
+  n'est pas masquable (avertissement) ; une valeur écrite **en clair** dans la recette n'est pas masquée ; une
+  capture d'écran montre ce que la page affiche ; avec `allowEval`, une expression peut transformer une valeur.
+- **Garde-fous inchangés** : `allowCookies` (désactivé par défaut) est exigé ; une origine ou un cookie hors
+  allowlist n'est pas importé et l'est dit (`AVERTISSEMENT : non importé : …`).
+- **MCP** : l'outil `state_import` accepte une recette à valeurs littérales ; les références `@file:` / `@env:`
+  y sont refusées (un outil MCP ne lit aucun fichier) — ouvrez la session par la CLI puis `grasp mcp --session <id>`.
+
 ## Mode Windows (chrome.exe depuis WSL2)
 
 Le Chrome Linux headless se fait bloquer par Cloudflare sur certains sites ; le vrai Chrome Windows
@@ -462,8 +536,13 @@ en headless, en fenêtré (si `DISPLAY`) et, avec `GRASP_TEST_WINDOWS=1`, sur ch
   - aucun homonyme → 404 avec les **3 candidats les plus proches** (même rôle favorisé, similarité des noms
     insensible à la casse et aux accents) : `ref e9yo0 (button "Panier (1)") n'est plus dans la page ;
     candidats les plus proches : e2k1m button "Panier (2)", …` (un nom qui change n'est jamais deviné) ;
-  - ref remise sur une **page précédente** (navigation depuis) → 404 « vient d'une page précédente — refaites
-    `snap` », jamais relocalisée sur le nouveau document.
+  - ref remise sur une **page précédente** (navigation depuis, route d'une SPA rechargée) → 404, jamais
+    relocalisée sur le nouveau document — mais le message **propose** les éléments de la page actuelle qui portent
+    ce rôle et ce nom (sinon les trois plus proches), avec leur nouvelle ref, et la lecture la moins chère pour
+    repartir : ``ref e5k2 (button "Valider") vient d'une page précédente : la page a changé depuis le snapshot
+    qui l'a remise — refaites `snap` (`grasp snap --interactive` suffit pour agir) ; sur la page actuelle :
+    e9x1 button "Valider" (même rôle et même nom)``. Grasp ne clique toujours pas à votre place : vous choisissez.
+  - ref inconnue, élément disparu pendant l'action : même conseil (`grasp snap --interactive`, `grasp find <texte>`).
 
   Le corps d'erreur JSON porte aussi `candidates: [{ref, role, name}]`. Un `text:` introuvable propose de
   même les noms proches (`aucun élément nommé « Supprmer » — noms proches : evu3y button "Supprimer", …`).
@@ -766,7 +845,8 @@ précédent ou route `pushState` d'une application monopage. **`reload`** rechar
 de test).
 
 - **Garde** : l'URL de l'entrée visée est rejugée comme celle d'un `nav` (allowlist, protection SSRF) **avant**
-  de partir ; refus → 403 `navigation bloquée : …`, page conservée, aucune requête. Ce pré-contrôle n'est pas
+  de partir ; refus → 403 `navigation bloquée : …`, page conservée, aucune requête (un domaine hors allowlist
+  reçoit en plus [la commande à proposer à l'utilisateur](#refus-de-lallowlist--un-message-qui-dit-quoi-faire)). Ce pré-contrôle n'est pas
   une redite du garde `Fetch` : mesuré sur Chrome headless lancé par Grasp, un `back` vers un document déjà vu
   est servi par le cache aller-retour (bfcache) **sans aucune requête** (0 requête au site de test sur 3
   retours), donc invisible du garde `Fetch`. Test par mutation : sans le pré-contrôle, un `back` vers une entrée
@@ -1827,7 +1907,7 @@ configuration des commandes désactivées par défaut).
   demande de l'utilisateur ; `secret:NOM` ; marqueurs des frontières de contenu), lecture progressive, recette, puis
   la liste des commandes de la version installée, une ligne par commande ; les groupes rares (Serveur,
   Configuration, Aide) n'y ont que leurs noms, détail par `grasp help <commande>`. 13 879 octets pour la 0.5.0
-  (le test le borne à 14 000, contre 12 000 pour les 33 commandes d'origine : il est chargé dans
+  (le test le borne à 15 500 depuis la recette de session et le moteur WebKit, contre 12 000 pour les 33 commandes d'origine : il est chargé dans
   le contexte de l'agent).
 - `grasp help --json` : `{format: "grasp-help/1", version, globalOptions, selectors, commands, runCommands,
   expectKinds, mcpTools}` sur une ligne. Chaque option porte `type` (`string`, `integer`, `boolean`, `enum` avec
@@ -1951,6 +2031,57 @@ sonde ; 83 ms avant le défilement préalable et l'attente de deux frames, prix 
 - Écran Windows verrouillé : si Chrome jette les entrées de CDP, il jette aussi celles de Playwright (même
   canal) ; Playwright attend en plus une frame rendue pour cliquer, d'où jusqu'à 5 s perdues avant le repli
   synthétique. Non reproduit sur la machine réelle.
+
+## Moteur WebKit (rendu Safari / iPhone)
+
+Une mise en page qui tient dans Chrome peut casser dans Safari, sur iPhone surtout. `--browser webkit` ouvre une
+session pilotée par **WebKit** au lieu de Chrome, avec les mêmes commandes :
+
+```bash
+npm i playwright-core && npx playwright-core install webkit   # une fois (dépendance optionnelle)
+sudo npx playwright-core install-deps webkit                  # bibliothèques système
+grasp doctor                                                  # ligne « webkit » : démarrage réel vérifié
+
+export GRASP_SESSION=$(grasp session create --browser webkit --viewport iphone-14)
+grasp nav http://127.0.0.1:8080/boutique
+grasp snap --interactive                 # e6:textbox "Quantité"   e8:button "Commander"
+grasp fill e6 2 --snap-diff              # ~ e6:textbox "Quantité"="2"
+grasp click text:Commander
+grasp expect text "Commande enregistrée"
+grasp expect no-horizontal-overflow      # mise en page mobile, sans eval
+grasp expect in-viewport '#valider'
+grasp screenshot                         # chemin d'un PNG 0600 (1170 px de large : densité 3 de l'iPhone)
+```
+
+C'est un **mode minimal**, et il le dit : ce qu'il ne fait pas répond 501 en nommant la commande et la sortie de
+secours (`… non pris en charge par le moteur WebKit (mode minimal : …) — pour cette commande, ouvrez une session
+Chrome`), jamais une option ignorée en silence.
+
+| | Moteur WebKit (mode minimal) |
+|:--|:--|
+| **Pris en charge** | `nav` `back` `forward` `reload` · `snap` (`--interactive`, `--outline`, `--scope`, `--boxes`) `find` `text` · `click` `fill` `type` `select` `check` `press` `hover` (`--snap-diff`, `--dialog`, `--shot-on-error`) · `wait` · `expect text\|no-text\|url\|title\|sel\|no-sel\|value\|in-viewport\|not-clipped\|no-horizontal-overflow` · `screenshot` (`--full`, `--el`, png, jpeg) · `viewport` · `eval` `cookies` `storage` `state import` · `session create --state` · `grasp run` · outils MCP correspondants |
+| **501** | `console` `network` `a11y` `scroll` `pdf` `upload` `tabs` `state export` `audit` `diff` · `expect no-console-errors\|no-form-errors\|request\|a11y` · `--console` `--network` `--follow` · `text --markdown` · `screenshot --refs` |
+| **Refusé à la création** | `--profile` (session éphémère : `--state` pour une session connectée), `--proxy`, `--http-auth` ; `proxyServer` et `hostResolverRules` de la configuration |
+
+- **Appareils** : `--viewport iphone-se | iphone-14 | ipad-mini | LxH` ; en mode mobile, le user agent est celui du
+  Safari de l'appareil. Densité, mode mobile et tactile sont fixés **à la création** (réglages du contexte
+  WebKit) : `grasp viewport LxH` ne change ensuite que la taille, et le dit sinon.
+- **Refs** : `e12` ou `f1e3` (préfixe du cadre tel que Playwright le numérote ; le snapshot contient les iframes). Elles valent jusqu'au
+  rendu suivant — un élément renommé ou re-rendu change de ref — et ne se transportent pas d'un moteur à l'autre.
+  Ref périmée : 404 immédiat qui dit de refaire `snap`, jamais dix secondes d'attente.
+- **Mêmes garde-fous** : allowlist et protection SSRF sur **chaque document** (page et iframes), redirections
+  HTTP comprises — la cible d'une redirection interdite n'est jamais demandée (testé : aucune requête au site) ;
+  téléchargements refusés ; popups fermés avant tout chargement (leur URL est rendue : `grasp nav <url>`) ;
+  service workers bloqués ; traqueurs annulés ; frontières de contenu ; secrets et valeurs de recette masqués,
+  secret restreint à ses domaines ; `eval`, cookies et stockage soumis à `allowEval` / `allowCookies`.
+- **Session connectée sur iPhone** : `grasp session create --browser webkit --viewport iphone-14 --state
+  session.json` ([recette de session](#recette-de-session--une-application-déjà-connectée-sans-exposer-de-jeton)).
+- **Ce n'est pas Safari** : c'est le moteur WebKit au build de Playwright. Mise en page et JavaScript sont ceux de
+  WebKit ; ce qui tient à iOS (barres du navigateur, clavier virtuel, zones de sécurité) n'est pas reproduit.
+
+Conception, traitement des redirections, limites et suite : [docs/moteur-webkit.md](docs/moteur-webkit.md).
+Tests : `test/integration/webkit.test.ts` (sautés, avec la raison, si WebKit n'est pas installé sur le poste),
+`test/unit/webkit-snapshot.test.ts`.
 
 ## Captures d'écran
 
@@ -2628,6 +2759,26 @@ grasp fill '#password' secret:MDP_PREPROD --snap-diff
   encodées, valeurs coupées, champ marqué, deux étages. La documentation de Playwright MCP le dit d'elle-même :
   « a convenience and not a security feature ». Voir les limites ci-dessous.
 
+### Refus de l'allowlist : un message qui dit quoi faire
+
+Un domaine hors allowlist est la première erreur d'une recette sur un site réel. Le 403 donne désormais la
+**commande exacte** et rappelle le redémarrage, que l'on naviguait (`nav`, `back`, `tab new`, `storage --origin`),
+que l'on ait cliqué un lien ou suivi une redirection :
+
+```
+$ grasp nav https://dev.app.exemple.com/
+ERROR: nav: navigation bloquée : domaine hors allowlist : dev.app.exemple.com — à autoriser par l'utilisateur
+humain, pas par l'agent de lui-même ; commande à lui proposer : grasp config set allowedDomains
+'127.0.0.1,localhost,[::1],dev.app.exemple.com' puis redémarrage du serveur (grasp stop && grasp serve ;
+service : systemctl --user restart grasp) — l'allowlist est lue au démarrage, les sessions ouvertes sont fermées
+```
+
+- La commande porte la **liste actuelle plus l'hôte refusé** : `config set` remplace la liste, il ne l'étend pas.
+- Elle est **donnée, jamais exécutée** : élargir l'allowlist reste une décision de l'utilisateur (même règle que
+  pour `allowEval`). Un agent la lui propose ; il ne la lance pas de lui-même.
+- Les autres refus (schéma interdit, protection SSRF, URL invalide) gardent leur message : y ajouter un domaine
+  n'y changerait rien. Les rapports `grasp audit` et `grasp diff` omettent le conseil (une ligne par page).
+
 ### Protection SSRF
 
 L'allowlist dit quels **noms** sont admis ; elle ne dit rien de l'**adresse** à laquelle ils mènent. Un
@@ -2949,7 +3100,9 @@ GRASP_TEST_WINDOWS=1 npm test   # ajoute le test réel chrome.exe (WSL2 mirrored
 
 L'intégration démarre un `node:http` local qui sert la page de test (`test/helpers/testsite.ts`).
 playwright-core est une devDependency : sans lui, les tests du moteur Playwright sont **sautés** (et ceux du
-chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pas.
+chemin « absent » tournent quand même) ; le reste de la suite n'en dépend pas. Les tests du moteur WebKit lancent
+le WebKit de Playwright (`npx playwright-core install webkit`) : absent ou sans ses bibliothèques système, ils
+sont **sautés** avec la raison.
 
 ## Limites connues
 

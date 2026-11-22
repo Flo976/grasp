@@ -10,6 +10,7 @@ import { formatTab, formatTabs, type TabInfo } from '../core/tabs.js';
 import { renderViewport } from '../core/viewport.js';
 import { buildRequest, checkRunFlags, parseArgs, RUN_COMMANDS, ScriptError, splitLine, type Args, type StepRequest } from '../core/script.js';
 import { formatReport, stateImportNotes, type RunResult } from '../control/run.js';
+import { RecipeError, resolveStateInput } from '../core/recipe.js';
 import { STATE_MAX_BYTES } from '../core/state.js';
 
 /**
@@ -510,11 +511,13 @@ const TOOLS: Tool[] = [
   {
     name: 'state_import',
     // Contenu donné en JSON (pas un chemin) : un agent MCP n'obtient pas de lecture de fichiers par cet outil.
-    description: 'Importe un état (grasp state import) : cookies, localStorage par origine, sessionStorage — pour poser une session factice SANS eval, de préférence avant toute navigation (localStorage écrit sans requête au site ; sessionStorage appliqué au premier document de son origine). state : le JSON lui-même (format grasp-state v1 ou storageState Playwright), par ex. {"format":"grasp-state","version":1,"origins":[{"origin":"http://127.0.0.1:8080","localStorage":[{"name":"auth","value":"…"}]}]}. Exige allowCookies ; ce que l\'allowlist ne couvre pas est écarté et listé.',
+    description: 'Importe un état (grasp state import) : cookies, localStorage par origine, sessionStorage — pour poser une session factice SANS eval, de préférence avant toute navigation (localStorage écrit sans requête au site ; sessionStorage appliqué au premier document de son origine). state : le JSON lui-même (format grasp-state v1 ou storageState Playwright), par ex. {"format":"grasp-state","version":1,"origins":[{"origin":"http://127.0.0.1:8080","localStorage":[{"name":"auth","value":"…"}]}]}. Aussi : recette de session à valeurs littérales {"origin":"…","localStorage":{"clé":"valeur"},"cookies":{…}} ; ses références @file:/@env: (jetons lus dans un fichier, masqués) ne sont lues que par la CLI : grasp session create --state <recette.json>. Exige allowCookies ; ce que l\'allowlist ne couvre pas est écarté et listé.',
     props: { state: S('État au format JSON (texte).') },
     required: ['state'],
     async run(c, a) {
-      const state = parseStateArg(String(a.state));
+      // Recette de session à valeurs littérales : convertie ici ; ses références @file:/@env: sont refusées (CLI seulement).
+      let state: unknown;
+      try { state = resolveStateInput(parseStateArg(String(a.state)), { refs: false }).state; } catch (e) { if (e instanceof RecipeError) throw new ArgError(`state : ${e.message}`); throw e; }
       const j = (await c.call('POST', '/state/import', { state })).json() as Record<string, unknown>;
       return text(['OK', ...stateImportNotes(j)].join('\n'));
     },

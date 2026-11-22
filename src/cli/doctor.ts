@@ -10,6 +10,8 @@ import { loadEffective, permissionTargets, resolveProfileRoots } from '../contro
 import type { ResolvedConfig } from '../core/config.js';
 import { systemdStatus } from './daemon.js';
 import { PLAYWRIGHT_HINT, playwrightVersion } from '../bridge/playwright.js';
+import { WEBKIT_INSTALL_HINT, explainLaunchError, loadWebKitModule } from '../bridge/webkit.js';
+import { GraspError } from '../core/errors.js';
 
 export type Level = 'ok' | 'warn' | 'fail';
 export interface Check { name: string; level: Level; detail: string }
@@ -86,6 +88,18 @@ export async function runDoctor(paths: GraspPaths, env: NodeJS.ProcessEnv, home:
   const fb = cfg?.fallbackEngine ?? 'none';
   if (pwv !== null) add('playwright', 'ok', `playwright-core ${pwv} : --engine playwright et frame= disponibles ; repli automatique des clics : ${fb}`);
   else add('playwright', fb === 'playwright' ? 'warn' : 'ok', `playwright-core absent (optionnel)${fb === 'playwright' ? ' alors que fallbackEngine=playwright : le repli est sauté' : ''} — pour --engine playwright et frame= : ${PLAYWRIGHT_HINT}`);
+  // Moteur WebKit (session create --browser webkit) : optionnel ; démarrage RÉEL, seul test qui compte (build de la
+  // bonne révision ET bibliothèques système). Un échec est un avertissement qui dit quoi installer.
+  if (pwv !== null) {
+    const t0 = Date.now();
+    try {
+      const pw = await loadWebKitModule(env.GRASP_PLAYWRIGHT_MODULE || 'playwright-core');
+      const b = await pw.webkit.launch({ headless: true, timeout: 30_000 });
+      const v = b.version();
+      await b.close();
+      add('webkit', 'ok', `WebKit ${v} démarré et arrêté en ${Date.now() - t0} ms : session create --browser webkit disponible (mode minimal)`);
+    } catch (e) { add('webkit', 'warn', `${e instanceof GraspError ? e.message : explainLaunchError((e as Error).message, pwv)} (optionnel : seulement pour session create --browser webkit)`); }
+  } else add('webkit', 'ok', `moteur WebKit non installé (optionnel) — pour session create --browser webkit : npm i playwright-core, puis ${WEBKIT_INSTALL_HINT}`);
   const sd = systemdStatus(env);
   add('systemd', sd.ok ? 'ok' : 'warn', sd.ok ? '`grasp daemon install` disponible' : `${sd.reason} — utilisez \`grasp serve\` au premier plan`);
 

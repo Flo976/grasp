@@ -72,7 +72,48 @@ pouvez faire de nouveau, ce qui se comporte autrement ou ce qui est réparé ; l
 
 ## [Non publié]
 
-_Rien pour l'instant._
+### ✨ Ajouté
+
+- `grasp session create --state <fichier>` : ouvre une session **déjà connectée** — l'état exporté ou la recette de
+  session est importé dans la session neuve, avant toute navigation. Import refusé : la session est refermée.
+- **Recette de session** (`session create --state`, `state import`, ligne `state import` de `grasp run`) : un JSON
+  `{ "origin", "localStorage", "sessionStorage", "cookies" }` dont les valeurs peuvent être lues dans un fichier —
+  `@file:jetons.json#lite.accessToken` (chemin dans un JSON), `@file:chemin` (fichier entier), `@env:.env#CLÉ`.
+  Les valeurs ne passent ni par la ligne de commande, ni par les sorties, ni par les journaux.
+- Outil MCP `state_import` : accepte une recette de session à valeurs littérales (références `@file:` / `@env:`
+  refusées : un outil MCP ne lit aucun fichier).
+- `grasp session create --browser webkit` : **moteur WebKit** (rendu proche de Safari ; `--viewport iphone-14` :
+  iPhone, user agent compris), lancé par playwright-core, en **mode minimal** — `nav`, `back`, `forward`, `reload`,
+  `snap`, `find`, `text`, `click`, `fill`, `type`, `select`, `check`, `press`, `hover`, `wait`,
+  `expect text|url|title|sel|value|in-viewport|not-clipped|no-horizontal-overflow`, `screenshot`, `viewport`,
+  `eval`, `cookies`, `storage`, `state import`, `grasp run`. Le reste répond 501 en nommant la commande.
+- `grasp doctor` : ligne `webkit` (démarrage réel du moteur WebKit, ou ce qu'il faut installer).
+- Refus d'un domaine hors allowlist (`nav`, `back`, `tab new`, `storage --origin`, lien cliqué, redirection) : le
+  message donne la commande exacte `grasp config set allowedDomains '<liste actuelle>,<hôte>'` à proposer à
+  l'utilisateur, et rappelle le redémarrage du serveur.
+- Ref d'une page précédente : le 404 propose les éléments de la page actuelle de même rôle et de même nom (sinon
+  les plus proches) avec leur nouvelle ref, et `grasp snap --interactive` pour repartir.
+
+### 🔄 Modifié
+
+- Ref inconnue, ref disparue ou élément retiré pendant une action : le message suggère `grasp snap --interactive`
+  (éléments actionnables seulement) en plus de `snap`.
+- `grasp storage --origin` hors allowlist : même message que `nav` (`--origin refusée : domaine hors allowlist : …`).
+
+### 🔒 Sécurité
+
+- Les valeurs qu'une recette de session lit dans un fichier sont masquées dans toutes les sorties (`snap`, `text`,
+  `storage get`, `console`, erreurs, rapport de recette, journal du serveur) sous la forme `masqué:<stockage>.<clé>`.
+- `grasp storage get` : une valeur masquée l'est avant la troncature à 4 000 caractères (le début d'un jeton ne
+  peut plus ressortir d'une valeur coupée).
+- Moteur WebKit : mêmes garde-fous que Chrome — allowlist et protection SSRF sur chaque document, redirections
+  HTTP comprises (la cible d'une redirection interdite n'est jamais demandée), téléchargements et popups refusés,
+  service workers bloqués, frontières de contenu, secrets restreints à leurs domaines.
+
+### 📝 Documentation
+
+- `docs/moteur-webkit.md` : conception du moteur WebKit, traitement des redirections, limites, diagnostic d'un
+  WebKit qui ne démarre pas (révision du build, bibliothèques système), suite proposée.
 
 ---
 

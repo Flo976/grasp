@@ -11,6 +11,7 @@ import { DEFAULT_LIMITS } from '../core/limits.js';
 import { bridgeHandler } from './server.js';
 import { withContentBoundaries } from './boundaries.js';
 import type { BridgeInit } from '../control/bridges.js';
+import { WebKitSession } from './webkit.js';
 
 /**
  * Processus bridge : un par instance Chrome. Détient la connexion CDP.
@@ -23,6 +24,7 @@ let socketPath: string | undefined;
 let page: PageController | undefined;
 let tabs: Tabs | undefined;
 let attached = false;
+let webkit: WebKitSession | undefined;
 let stopping = false;
 
 const log = (m: string) => process.stderr.write(`[bridge ${process.pid}] ${m}\n`);
@@ -39,6 +41,8 @@ async function shutdown(code: number, why: string): Promise<never> {
   // Mode attach : nos onglets (popups compris) sont fermés, le navigateur de l'utilisateur reste ouvert.
   if (attached) await (tabs !== undefined ? tabs.closeAll() : page?.closeTab());
   cdp?.close();
+  // Moteur WebKit : le navigateur a été lancé par playwright-core, fermé avec lui (ses processus suivent son canal).
+  await webkit?.close();
   let exit = code;
   if (chrome) {
     try {
@@ -74,6 +78,16 @@ function getInit(): Promise<BridgeInit> {
   });
 }
 
+/** Socket Unix privé du bridge : 0600 dans un répertoire 0700. */
+async function listen(srv: Server, path: string): Promise<void> {
+  if (existsSync(path)) rmSync(path);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const prev = process.umask(0o077);
+  await new Promise<void>((r, j) => { srv.once('error', j); srv.listen(path, r); });
+  process.umask(prev);
+  chmodSync(path, 0o600);
+}
+
 async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown(0, 'SIGTERM'));
   process.on('SIGINT', () => void shutdown(0, 'SIGINT'));
@@ -92,6 +106,17 @@ async function main(): Promise<void> {
   const proxyServer = init.proxyServer ?? policy.proxyServer;
   socketPath = init.socketPath;
   const warnings: string[] = [];
+  if (init.engine === 'webkit') {
+    // Moteur WebKit (mode minimal) : pas de Chrome, pas de CDP — même API HTTP, mêmes frontières de contenu.
+    const wk = await WebKitSession.launch({ id: init.id, headless: init.headless, policy, limits: init.limits, capturesDir: init.capturesDir, viewport: init.viewport, log }, () => { if (!stopping) void shutdown(1, 'WebKit s\'est arrêté'); });
+    webkit = wk;
+    const version = `WebKit ${wk.version}`;
+    server = createServer(withContentBoundaries(policy, wk.handler(() => ({ id: init.id, chromePid: 0, version, attached: false, engine: 'webkit' }))));
+    await listen(server, socketPath);
+    const ready = { type: 'ready', pid: process.pid, chromePid: 0, chromePgid: 0, version, warnings };
+    if (process.send) process.send(ready); else process.stdout.write(`${JSON.stringify(ready)}\n`);
+    return;
+  }
   let info: { pid: number; pgid: number; version: string; windowsUserDataDir?: string };
   let devtoolsUrl: string;
   if (init.attach !== undefined) {
@@ -143,12 +168,7 @@ async function main(): Promise<void> {
   // Frontières de contenu (politique gelée) : contenu de la page encadré par un nonce par réponse.
   server = createServer(withContentBoundaries(page.policy, bridgeHandler(active, () => ({ id: init.id, chromePid: c.pid, version: c.version, attached }),
     () => ({ proxyServer: init.proxyServer ?? null, httpAuth: pc.httpAuthReport(), ...(active.viewport !== undefined ? { viewport: active.viewport } : {}) }), tabs)));
-  if (existsSync(socketPath)) rmSync(socketPath);
-  mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
-  const prev = process.umask(0o077);
-  await new Promise<void>((r, j) => { server!.once('error', j); server!.listen(socketPath, r); });
-  process.umask(prev);
-  chmodSync(socketPath, 0o600);
+  await listen(server, socketPath);
 
   const ready = { type: 'ready', pid: process.pid, chromePid: c.pid, chromePgid: c.pgid, version: c.version, warnings, ...(c.windowsUserDataDir !== undefined ? { windowsUserDataDir: c.windowsUserDataDir } : {}) };
   if (process.send) process.send(ready); else process.stdout.write(`${JSON.stringify(ready)}\n`);

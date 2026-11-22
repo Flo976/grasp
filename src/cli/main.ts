@@ -20,7 +20,7 @@ import { formatEntries, type ConsoleEntry, type ConsoleResult } from '../core/co
 import { BOUNDARY_RULE, wrapTagged, type BoundaryTag } from '../core/boundaries.js';
 import { formatNetEntries, networkLosses, type NetEntry, type NetResult } from '../core/network.js';
 import { formatReport, type RunResult } from '../control/run.js';
-import { checkRunBody, checkRunOut, readRunImports, writeRunShots } from './runfiles.js';
+import { checkRunBody, checkRunOut, readRunImports, readStateInput, writeRunShots } from './runfiles.js';
 import { describeViewport, renderViewport, type ViewportSpec } from '../core/viewport.js';
 import { parseArgs, buildRequest, consoleBody, findQuery, networkBody, readQuery, renderEval, shotQuery, waitRequest, VIEWPORT_FLAGS, VIEWPORT_USAGE, viewportBody, type Args } from '../core/script.js';
 import { parseDomains, removeSecret, setSecret } from '../core/secrets.js';
@@ -240,7 +240,9 @@ async function runCmd(c: Client, a: Args): Promise<number> {
   let body: Record<string, unknown>;
   try {
     checkRunOut(script, dir);
-    const imports = readRunImports(script, file === undefined || file === '-' ? process.cwd() : dirname(resolvePath(file)));
+    const notes: string[] = [];
+    const imports = readRunImports(script, file === undefined || file === '-' ? process.cwd() : dirname(resolvePath(file)), undefined, undefined, notes);
+    for (const n of notes) hint(`AVERTISSEMENT : ${n}`);
     // --out-dir explicite : les captures d'échec (--shot-on-error, rapport) reviennent aussi au client, écrites sous --out-dir.
     body = { script, files: true, ...(outDir !== undefined ? { clientShots: true } : {}), ...(Object.keys(imports).length > 0 ? { imports } : {}), ...(a.flags.has('continue') ? { continue: true } : {}), ...report };
     checkRunBody(body);
@@ -299,22 +301,41 @@ async function stateCmd(c: Client, a: Args, paths: GraspPaths): Promise<void> {
   }
   if (sub === 'import') {
     const file = a.pos[1];
-    if (file === undefined) throw new CliError('usage : grasp state import <fichier|->');
-    let state: unknown;
-    try { state = JSON.parse(file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8')); } catch (e) {
-      throw new CliError(`lecture de ${file === '-' ? 'stdin' : file} : ${(e as Error).message}`);
-    }
-    // file : chemin absolu, pour l'historique seulement (history --as-run en refait une ligne state import rejouable).
-    const r = await c.call('POST', '/state/import', { state, ...(file !== '-' ? { file: resolvePath(file) } : {}) });
-    const j = r.json() as { cookies: number; origins: number; localStorageKeys: number; sessionStorage: 'applied' | 'pending' | null; skipped: string[] };
+    if (file === undefined) throw new CliError('usage : grasp state import <fichier|->   (état exporté, storageState Playwright ou recette de session)');
+    const { r, j } = await sendState(c, readState(file));
     out(json ? r.text() : 'OK');
     if (json) return;
-    const ss = j.sessionStorage === 'applied' ? 'appliqué à l\'onglet' : j.sessionStorage === 'pending' ? 'appliqué au premier document de son origine' : 'aucun';
-    hint(`état importé : ${j.cookies} cookie(s), localStorage de ${j.origins} origine(s) (${j.localStorageKeys} clé(s)), sessionStorage : ${ss}`);
-    for (const s of j.skipped) hint(`AVERTISSEMENT : non importé : ${s}`);
+    importNotes(j);
     return;
   }
   throw new CliError('usage : grasp state export [fichier|-] [--origin http://hôte:port,…] | import <fichier|->');
+}
+
+interface ImportResult { cookies: number; origins: number; localStorageKeys: number; sessionStorage: 'applied' | 'pending' | null; skipped: string[]; masked?: number }
+
+/**
+ * Lit un fichier d'état ou une recette de session (références @file:/@env: résolues ICI, côté client) et l'importe
+ * dans la session du client. Les valeurs référencées partent dans le corps de la requête (jamais sur la ligne de
+ * commande), avec la liste de celles que le serveur doit masquer dans toutes ses sorties.
+ */
+function readState(file: string): ReturnType<typeof readStateInput> {
+  let input: ReturnType<typeof readStateInput>;
+  try { input = readStateInput(file); } catch (e) { throw new CliError((e as Error).message); }
+  for (const n of input.notes) hint(`AVERTISSEMENT : ${n}`);
+  return input;
+}
+
+async function sendState(c: Client, input: ReturnType<typeof readStateInput>): Promise<{ r: HttpResult; j: ImportResult }> {
+  // file : chemin absolu, pour l'historique seulement (history --as-run en refait une ligne state import rejouable).
+  const r = await c.call('POST', '/state/import', { state: input.state, ...(input.path !== undefined ? { file: input.path } : {}), ...(input.masked.length > 0 ? { masked: input.masked } : {}) });
+  return { r, j: { ...(r.json() as ImportResult), ...(input.masked.length > 0 ? { masked: input.masked.length } : {}) } };
+}
+
+function importNotes(j: ImportResult): void {
+  const ss = j.sessionStorage === 'applied' ? 'appliqué à l\'onglet' : j.sessionStorage === 'pending' ? 'appliqué au premier document de son origine' : 'aucun';
+  hint(`état importé : ${j.cookies} cookie(s), localStorage de ${j.origins} origine(s) (${j.localStorageKeys} clé(s)), sessionStorage : ${ss}`);
+  if (j.masked !== undefined) hint(`${j.masked} valeur(s) lue(s) dans un fichier : masquée(s) dans toutes les sorties (masqué:<stockage>.<clé>)`);
+  for (const s of j.skipped) hint(`AVERTISSEMENT : non importé : ${s}`);
 }
 
 /** grasp expect <assertion> … : OK sur stdout (code 0), sinon ERROR: expect: attendu … ; constaté : … (code 1). */
@@ -437,7 +458,7 @@ async function stop(paths: GraspPaths, env: NodeJS.ProcessEnv): Promise<void> {
   throw new CliError(`le serveur (pid ${pid}) n'a pas répondu à SIGTERM en ${timeout} ms : SIGKILL envoyé, ${groups} groupe(s) Chrome tué(s), socket nettoyé`);
 }
 
-const SESSION_CREATE_USAGE = 'grasp session create [--profile <nom>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -] [--viewport <LARGEURxHAUTEUR|appareil> [--mobile] [--dpr N] [--touch] [--mobile-ua]]';
+const SESSION_CREATE_USAGE = 'grasp session create [--browser chrome|webkit] [--profile <nom>] [--state <état|recette.json>] [--proxy socks5://hôte:port] [--http-auth utilisateur:motdepasse@hôte[:port] | --http-auth -] [--viewport <LARGEURxHAUTEUR|appareil> [--mobile] [--dpr N] [--touch] [--mobile-ua]]';
 
 /**
  * grasp secrets list | set NOM --domains a,b (valeur sur stdin) | rm NOM. `list` interroge le serveur (ce qu'il
@@ -591,24 +612,45 @@ async function main(argv: string[]): Promise<number> {
         const vpArg = a.flags.get('viewport');
         if (vpArg === true) throw new CliError(`usage : ${SESSION_CREATE_USAGE}`);
         const viewport = vpArg !== undefined || VIEWPORT_FLAGS.some((f) => a.flags.has(f)) ? viewportBody(a, vpArg) : undefined;
+        // --browser webkit : moteur WebKit (rendu Safari/iPhone, mode minimal) ; défaut : Chrome.
+        const browserArg = a.flags.get('browser');
+        if (browserArg === true || (browserArg !== undefined && browserArg !== 'chrome' && browserArg !== 'webkit')) throw new CliError(`--browser attend chrome ou webkit — usage : ${SESSION_CREATE_USAGE}`);
         const body = {
+          ...(browserArg === 'webkit' ? { browser: 'webkit' } : {}),
           ...(viewport !== undefined ? { viewport } : {}),
           ...(typeof prof === 'string' ? { profile: prof } : {}),
           ...(typeof proxy === 'string' ? { proxyServer: proxy } : {}),
           ...(httpAuth !== undefined ? { httpAuth } : {}),
         };
+        // --state <fichier> : état exporté ou recette de session, importé dans la session neuve AVANT toute navigation.
+        // Lu et résolu avant de créer quoi que ce soit ; import refusé (allowCookies, fichier invalide) : session refermée.
+        const stateFile = a.flags.get('state');
+        if (stateFile === true || stateFile === '') throw new CliError(`--state attend un fichier (état exporté ou recette de session) — usage : ${SESSION_CREATE_USAGE}`);
+        if (stateFile === '-' && auth === '-') throw new CliError('--state - et --http-auth - lisent tous deux stdin : donnez l\'un des deux par un fichier');
+        let stateInput: ReturnType<typeof readStateInput> | undefined;
+        if (stateFile !== undefined) { try { stateInput = readState(stateFile); } catch (e) { throw new CliError(`--state : ${(e as Error).message} — aucune session créée`); } }
         const r = await c.call('POST', '/sessions', body);
-        const j = r.json() as { id: string; profileCreated?: boolean };
-        out(json ? r.text() : j.id);
+        const j = r.json() as { id: string; profileCreated?: boolean; browser?: string; browserVersion?: string };
+        let imported: ImportResult | undefined;
+        if (stateInput !== undefined) {
+          try { imported = (await sendState(new Client(paths, j.id), stateInput)).j; } catch (e) {
+            await c.call('DELETE', `/sessions/${encodeURIComponent(j.id)}`).catch(() => undefined);
+            throw new CliError(`--state : ${(e as Error).message} — session ${j.id} refermée`, undefined, e instanceof CliError ? e.status : undefined);
+          }
+        }
+        out(json ? JSON.stringify({ ...(r.json() as object), ...(imported !== undefined ? { state: imported } : {}) }) : j.id);
+        if (imported !== undefined) importNotes(imported);
+        if (j.browser === 'webkit') hint(`moteur ${j.browserVersion ?? 'WebKit'} (mode minimal : nav, snap, find, text, click, fill, type, select, check, press, hover, wait, expect, screenshot, viewport, storage, state import ; refs e12 propres à ce moteur ; le reste répond 501)`);
         if (j.profileCreated === true) hint(`profil « ${prof as string} » créé (vide) : connectez-vous une fois dans ce profil (headless=false) pour que l'agent réutilise la session — \`grasp profiles\` pour la liste`);
         hint(`astuce : export GRASP_SESSION=${j.id}`); // stderr : `export S=$(grasp session create)` reste propre
         return 0;
       }
       if (sub === 'list') {
-        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string; proxyServer?: string | null; httpAuth?: Array<{ host: string }>; viewport?: ViewportSpec | null }>;
+        const list = (await c.call('GET', '/sessions')).json() as Array<{ id: string; profile: string | null; createdAt: string; proxyServer?: string | null; httpAuth?: Array<{ host: string }>; viewport?: ViewportSpec | null; browser?: string }>;
         if (json) out(JSON.stringify(list));
         else if (list.length) {
           out(list.map((s) => [s.id, s.profile ?? '(éphémère)', s.createdAt,
+            ...(s.browser === 'webkit' ? ['moteur webkit'] : []),
             ...(s.proxyServer ? [`proxy ${s.proxyServer}`] : []),
             ...(s.httpAuth?.length ? [`auth HTTP ${s.httpAuth.map((h) => h.host).join(',')} (identifiants masqués)`] : []),
             ...(s.viewport ? [`viewport ${describeViewport(s.viewport)}`] : []),
@@ -830,7 +872,16 @@ MCP          mcp [--session <id>] [--profile <nom>] [--no-serve]   serveur MCP s
                outils nav back forward reload scroll snap find text click fill type select check press hover wait console
                network a11y tabs tab viewport history secrets screenshot run profile ;
                session créée au premier appel et fermée à la sortie (sauf --session) ; serveur démarré si absent
-Sessions     session create [--profile <nom>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
+Sessions     session create [--browser chrome|webkit] [--profile <nom>] [--state <fichier>] [--proxy URL] [--http-auth u:mdp@hôte | -] | session list | session close [id]
+               --state <fichier> : état exporté ou recette de session importé dans la session neuve, avant toute
+               navigation (session « connectée » d'un coup ; exige allowCookies ; import refusé : session refermée)
+               --browser webkit : moteur WebKit (rendu proche de Safari ; --viewport iphone-14 : iPhone, UA compris),
+               lancé par playwright-core (npx playwright-core install webkit) ; MODE MINIMAL : nav back forward reload
+               snap find text click fill type select check press hover wait expect(text url title sel value in-viewport
+               not-clipped no-horizontal-overflow) screenshot viewport eval cookies storage state import ; mêmes
+               garde-fous (allowlist et SSRF sur chaque document, redirections comprises ; téléchargements et popups
+               refusés ; frontières de contenu ; secrets) ; refs e12 ou f1e3 valables jusqu'au rendu suivant ;
+               ni profil, ni proxy, ni --http-auth, ni onglets, console, network, a11y, scroll, pdf, upload : 501
                --proxy : proxy de cette session (socks5://127.0.0.1:1080 d'un ssh -D), surcharge proxyServer
                --http-auth : identifiants HTTP basic confiés à cet hôte seulement (allowlist exigée), jamais écrits ;
                « - » les lit sur stdin, un par ligne (hors de ps et de l'historique)
@@ -1001,6 +1052,13 @@ Sensibles    eval <expr> | cookies | upload <sél> <fichier>…   (désactivés 
                rien hors allowlist
              state import <fichier|->   avant ou après navigation ; localStorage fusionné par origine ; aussi sur
                une ligne de grasp run (state import <fichier>) et par l'outil MCP state_import
+               recette de session (au lieu d'un état exporté) : { "origin": "https://app.exemple.com",
+                 "localStorage": { "token": "@file:jetons.json#lite.accessToken", "locale": "fr" },
+                 "sessionStorage": { … }, "cookies": { "sid": "@env:.env#SESSION_ID" } }   (ou un tableau, une par origine)
+               @file:chemin#a.b.0 : valeur d'un fichier JSON (objet ou tableau : sérialisé) ; @file:chemin : fichier entier ;
+               @env:chemin#CLÉ : variable d'un fichier .env ; @@… : littéral commençant par @ ; chemins relatifs à la
+               recette, ~/ développé ; références lues par la CLI, jamais sur la ligne de commande, et masquées dans
+               toutes les sorties (masqué:localStorage.token) ; une valeur écrite en clair dans la recette ne l'est pas
              storage get|rm local|session <clé> | storage set local|session <clé> <valeur|->   [--origin <url>]
                stockage Web de l'origine AFFICHÉE (allowlist), code fixe sans eval ; exige allowCookies ;
                get : valeur sur stdout (4000 car. au plus, troncature annoncée), clé absente → code 1 ;

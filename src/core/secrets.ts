@@ -106,6 +106,7 @@ function variants(v: string): string[] {
  * une sortie bornée ne doit pas laisser fuir le début d'un secret.
  */
 export class Redactor {
+  /** Clé : le texte de remplacement (`secret:NOM`, `masqué:libellé`) ; valeur : ce qu'il remplace. */
   private readonly byName = new Map<string, Set<string>>();
   private full: RegExp | undefined;
   private cut: RegExp | undefined;
@@ -114,12 +115,20 @@ export class Redactor {
   get size(): number { return this.byName.size; }
 
   /** Ajoute une valeur (jamais retirée : un secret supprimé du fichier reste masqué jusqu'à l'arrêt). */
-  add(name: string, value: string): void {
+  add(name: string, value: string): void { this.put(`secret:${name}`, value); }
+
+  /**
+   * Valeur masquée qui n'est pas un secret du magasin (recette de session : jeton lu dans un fichier par le client) :
+   * remplacée par `masqué:<libellé>` — pas par `secret:…`, qu'un agent prendrait pour un nom utilisable avec fill.
+   */
+  mask(label: string, value: string): void { this.put(`masqué:${label}`, value); }
+
+  private put(replacement: string, value: string): void {
     if (value.length < SECRET_MIN_LENGTH) return;
-    const set = this.byName.get(name) ?? new Set<string>();
+    const set = this.byName.get(replacement) ?? new Set<string>();
     if (set.has(value)) return;
     set.add(value);
-    this.byName.set(name, set);
+    this.byName.set(replacement, set);
     this.compile();
   }
 
@@ -148,7 +157,7 @@ export class Redactor {
 
   redact(s: string): string {
     if (this.full === undefined || s.length < PREFIX_MIN) return s;
-    const to = (m: string) => `secret:${this.owner.get(m) ?? '?'}`;
+    const to = (m: string) => this.owner.get(m) ?? 'secret:?';
     let out = s.replace(this.full, to);
     if (this.cut !== undefined) out = out.replace(this.cut, to);
     return out;
